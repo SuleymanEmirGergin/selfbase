@@ -6,12 +6,8 @@ import { errMsg } from '../api.ts'
 import type { SqlResult } from '../api.ts'
 import { Grid, cellText } from '../Grid.tsx'
 import { Drawer, Empty, ErrorBox, Icon } from '../ui.tsx'
-import { useAdmin, useProject } from './context.ts'
+import { sqlMemo, useAdmin, useProject } from './context.ts'
 
-// Last query and result per project live in module memory: they survive page switches, not a reload (nothing goes
-// to storage), and one project's query never shows up in another's editor.
-const memory = new Map<string, { query: string; result: SqlResult | null }>()
-const memo = (ref: string) => memory.get(ref) ?? memory.set(ref, { query: 'select now();', result: null }).get(ref)!
 
 const theme = EditorView.theme({
   '&': { height: '32vh', minHeight: '120px', backgroundColor: 'var(--surface)', color: 'var(--text)', fontSize: '13px' },
@@ -41,7 +37,7 @@ const resultSummary = (r: { columns: string[]; rows: unknown[][]; rowCount: numb
 
 export default function Sql() {
   const api = useAdmin()
-  const mem = memo(useProject().ref)
+  const mem = sqlMemo(useProject().ref)
   const [query, setQuery] = useState(mem.query)
   const [result, setResult] = useState<SqlResult | null>(mem.result)
   const [ranQuery, setRanQuery] = useState(mem.query)

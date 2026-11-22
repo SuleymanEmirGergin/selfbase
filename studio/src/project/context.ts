@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react'
-import type { OrgRef, ProjectAdmin, ProjectDetail, Role } from '../api.ts'
+import type { OrgRef, ProjectAdmin, ProjectDetail, Role, SqlResult } from '../api.ts'
 
 export type Action = 'project.read' | 'project.write' | 'project.sql' | 'project.keys' | 'project.manage'
 
@@ -10,7 +10,8 @@ const GRANTS: Record<Role, Action[]> = {
   administrator: ['project.read', 'project.write', 'project.sql', 'project.keys', 'project.manage'],
   owner: ['project.read', 'project.write', 'project.sql', 'project.keys', 'project.manage'],
 }
-export const can = (role: Role, action: Action) => GRANTS[role].includes(action)
+// An unknown role (a newer server) grants nothing rather than crashing the project area.
+export const can = (role: Role, action: Action) => (GRANTS[role] ?? []).includes(action)
 
 export type ProjectCtx = {
   ref: string
@@ -21,6 +22,12 @@ export type ProjectCtx = {
   /** Reloads the project detail (status, services, last job). */
   reload: () => void
 }
+
+// The SQL screen's last query and result per project ref. Module memory: survives page switches, not a reload, and is
+// cleared on sign-out. It lives here, not in the lazily loaded SQL chunk, so sign-out can clear it.
+const sqlMemory = new Map<string, { query: string; result: SqlResult | null }>()
+export const sqlMemo = (ref: string) => sqlMemory.get(ref) ?? sqlMemory.set(ref, { query: 'select now();', result: null }).get(ref)!
+export const clearProjectMemory = () => sqlMemory.clear()
 
 export const Ctx = createContext<ProjectCtx | null>(null)
 export const useProject = () => useContext(Ctx)!

@@ -1,4 +1,5 @@
-import { Suspense, lazy, useEffect, useMemo, useState } from 'react'
+import { Component, Suspense, lazy, useEffect, useMemo, useState } from 'react'
+import type { ReactNode } from 'react'
 import type { ComponentType } from 'react'
 import { platform, projectAdmin } from '../api.ts'
 import type { Me } from '../api.ts'
@@ -20,8 +21,23 @@ import './project.css'
 // CodeMirror is most of the bundle; it loads with the SQL screen only.
 const Sql = lazy(() => import('./Sql.tsx'))
 
+/** A chunk that fails to load (a redeploy replaced it) shows a reload hint instead of unmounting the app. */
+class ChunkBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false }
+  static getDerivedStateFromError() { return { failed: true } }
+  render() {
+    if (!this.state.failed) return this.props.children
+    return (
+      <div className="error-box" role="alert">
+        <div>Bu ekran yüklenemedi; Studio güncellenmiş olabilir. Sayfayı yenileyin.</div>
+        <button className="btn sm" onClick={() => location.reload()}>Sayfayı yenileyin</button>
+      </div>
+    )
+  }
+}
+
 type Screen = { path: string; label: string; icon: string; group?: string; Screen: ComponentType; needs?: Action; data?: true }
-// `data` screens talk to the project's own services, so they are unavailable while it is paused.
+// `data` screens talk to the project's own services, so they are unavailable unless it is ACTIVE_HEALTHY.
 const SCREENS: Screen[] = [
   { path: 'home', label: 'Ana sayfa', icon: 'folder', Screen: Home },
   { path: 'editor', label: 'Tablolar', icon: 'table', Screen: Tables, data: true },
@@ -59,7 +75,7 @@ export default function ProjectArea({ me, onSignOut }: { me: Me; onSignOut: () =
   }
   if (!ctx) return <div className="boot"><Loading /></div>
 
-  const paused = ctx.project.status === 'INACTIVE'
+  const paused = ctx.project.status !== 'ACTIVE_HEALTHY'
   const visible = SCREENS.filter((s) => (!s.needs || ctx.can(s.needs)) && !(paused && s.data))
   const current = SCREENS.find((s) => s.path === sub) ?? SCREENS[0]
   const allowed = !current.needs || ctx.can(current.needs)
@@ -100,7 +116,7 @@ export default function ProjectArea({ me, onSignOut }: { me: Me; onSignOut: () =
         <main className="content">
           {!allowed ? <div className="state">Bu ekran için yetkiniz yok.</div>
             : paused && current.data ? <Paused />
-            : <Suspense fallback={<Loading />}><Screen key={`${ref}/${current.path}`} /></Suspense>}
+            : <ChunkBoundary key={`${ref}/${current.path}`}><Suspense fallback={<Loading />}><Screen /></Suspense></ChunkBoundary>}
         </main>
       </div>
     </Ctx.Provider>

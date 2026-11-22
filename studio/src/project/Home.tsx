@@ -2,7 +2,7 @@ import type { ServiceState } from '../api.ts'
 import { Icon } from '../ui.tsx'
 import { CopyButton, Page, StatusBadge } from '../org/common.tsx'
 import { useProject } from './context.ts'
-import { ApiKeys, Lifecycle, Section } from './parts.tsx'
+import { ApiKeys, JOB_STATUS, Lifecycle, Section } from './parts.tsx'
 
 const healthBadge = (s: ServiceState) =>
   !s.exists ? <span className="badge danger">yok</span>
@@ -11,7 +11,6 @@ const healthBadge = (s: ServiceState) =>
     : s.health === 'starting' ? <span className="badge warn">başlıyor</span>
     : <span className="badge danger">{s.health}</span>
 
-const JOB_STATUS: Record<string, string> = { pending: 'bekliyor', running: 'sürüyor', succeeded: 'tamamlandı', failed: 'başarısız' }
 
 export default function Home() {
   const { project: p, reload } = useProject()

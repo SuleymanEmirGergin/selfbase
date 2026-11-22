@@ -9,6 +9,7 @@ import { Audit, Capacity, Members, Tokens } from './org/admin.tsx'
 import { ImportProject, NewProject, Projects } from './org/projects.tsx'
 import type { OrgProps } from './org/common.tsx'
 import ProjectArea from './project/index.tsx'
+import { clearProjectMemory } from './project/context.ts'
 
 const TABS = [
   { id: '', label: 'Projeler', icon: 'folder', Screen: Projects },
@@ -23,7 +24,8 @@ const OUTSIDE_TABS = { new: NewProject, import: ImportProject } as const
 const nextPath = () => {
   const n = new URLSearchParams(location.search).get('next')
   if (!n) return ''
-  const u = new URL(n, location.origin)
+  let u: URL
+  try { u = new URL(n, location.origin) } catch { return '' } // `http://`, `//` and the like do not parse
   return u.origin === location.origin ? u.pathname + u.search + u.hash : ''
 }
 const homeOf = (me: Me) => (me.organizations[0] ? `/org/${me.organizations[0].slug}` : '/org')
@@ -124,6 +126,7 @@ export default function App() {
     // An explicit sign-out keeps no `next`: the next account must not land on this one's page. Replacing the URL
     // without emitting keeps the redirect effect from adding it back; the render below reads the new path.
     history.replaceState(null, '', '/sign-in')
+    clearProjectMemory() // the next user on this browser must not see this one's SQL query and rows
     setMe(null)
   }, [])
 

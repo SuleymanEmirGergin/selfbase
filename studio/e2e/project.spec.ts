@@ -228,6 +228,87 @@ test('a developer sees SQL; a read_only member sees neither SQL nor write or key
   await expect(page.getByRole('button', { name: 'güncelle' })).toHaveCount(0)
 })
 
+test('an unknown role renders the project area without crashing and grants nothing', async ({ page }) => {
+  const r = routes()
+  r['GET /me'] = { body: withRole('billing_only') }
+  await mockApi(page, r)
+  await page.goto(`/project/${REF}/home`)
+  await expect(page.getByRole('heading', { name: 'Ana sayfa' })).toBeVisible()
+  await expect(page.getByRole('navigation', { name: 'Ana menü' }).getByRole('link', { name: 'SQL', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'göster' })).toHaveCount(0)
+})
+
+test('a project in transition gets no data screens and shows its status', async ({ page }) => {
+  const r = routes()
+  r[`GET ${P}`] = { body: { ...fx('project-detail'), status: 'COMING_UP' } }
+  const api = await mockApi(page, r)
+  await page.goto(`/project/${REF}/editor`)
+  await expect(page.getByRole('heading', { name: 'Proje şu an kullanılamıyor' })).toBeVisible()
+  await expect(page.locator('.card.paused').getByText('Başlatılıyor')).toBeVisible()
+  await expect(page.getByRole('navigation', { name: 'Ana menü' }).getByRole('link', { name: 'Tablolar' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Duraklat' })).toHaveCount(0)
+  expect(api.calls.some((c) => c.key.includes('/admin/'))).toBe(false)
+})
+
+test('a failed SQL chunk shows a reload hint and keeps the app', async ({ page }) => {
+  await mockApi(page, routes())
+  await page.route('**/src/project/Sql.tsx*', (route) => route.abort())
+  await page.goto(`/project/${REF}/sql`)
+  await expect(page.getByRole('button', { name: 'Sayfayı yenileyin' })).toBeVisible()
+  await nav(page, 'Ana sayfa')
+  await expect(page.getByRole('heading', { name: 'Ana sayfa' })).toBeVisible()
+})
+
+test('sign-out clears the SQL memory, so the next user does not see the last query or rows', async ({ page }) => {
+  let session = true
+  const r = routes()
+  r['GET /me'] = () => (session ? { body: fx('me') } : { status: 401, body: fx('unauthorized') })
+  r['POST /refresh'] = { status: 401, body: fx('unauthorized') }
+  r['POST /logout'] = () => { session = false; return { body: {} } }
+  r['POST /login'] = () => { session = true; return { body: fx('login') } }
+  await mockApi(page, r)
+  await page.goto(`/project/${REF}/sql`)
+  await page.getByRole('textbox', { name: 'SQL sorgusu' }).click()
+  await page.keyboard.press('Control+A')
+  await page.keyboard.type('select secret_column')
+  await page.keyboard.press('Control+Enter')
+  await expect(page.getByRole('columnheader', { name: 'one' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Çıkış' }).click()
+  await page.getByLabel('E-posta').fill('other@example.test')
+  await page.getByLabel('Parola').fill('correct horse battery')
+  await page.getByRole('button', { name: 'Giriş yap' }).click()
+  // in-app navigation only: a reload would clear module memory by itself
+  await page.getByRole('link', { name: /corteqs/ }).click()
+  await nav(page, 'SQL')
+  await expect(page.getByRole('textbox', { name: 'SQL sorgusu' })).toHaveText('select now();')
+  await expect(page.getByRole('columnheader', { name: 'one' })).toHaveCount(0)
+})
+
+test('settings: a custom domain is checked and confirmed; backup status is in Turkish', async ({ page }) => {
+  const r = routes()
+  r[`POST ${P}/domains`] = { status: 202, body: fx('project-job') }
+  const api = await mockApi(page, r)
+  await page.goto(`/project/${REF}/settings`)
+  await expect(page.getByRole('cell', { name: 'tamamlandı' })).toBeVisible()
+
+  const host = page.getByLabel('Alan adı', { exact: true })
+  await host.fill('not a host')
+  await page.getByRole('button', { name: 'Ekle', exact: true }).click()
+  await expect(page.getByText('Geçerli bir alan adı yazın')).toBeVisible()
+  await host.fill('API.Example.com')
+  await page.getByRole('button', { name: 'Ekle', exact: true }).click()
+  const dialog = page.locator('dialog.confirm')
+  await expect(dialog).toContainText('sertifika')
+  await expect(dialog).toContainText('haftada en çok 3')
+  await dialog.getByRole('button', { name: 'Vazgeç' }).click()
+  expect(api.count(`POST ${P}/domains`)).toBe(0)
+  await page.getByRole('button', { name: 'Ekle', exact: true }).click()
+  await dialog.getByRole('button', { name: 'Ekle' }).click()
+  await expect.poll(() => api.count(`POST ${P}/domains`)).toBe(1)
+  expect(api.calls.find((c) => c.key === `POST ${P}/domains`)!.body).toEqual({ hostname: 'api.example.com', kind: 'custom' })
+})
+
 test('at 375 px no project screen overflows horizontally', async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 })
   await mockApi(page, routes())

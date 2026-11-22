@@ -254,6 +254,12 @@ test('next is followed only when it stays on this origin', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Projeler' })).toBeVisible()
   await signIn('//evil.com/x')
   await expect(page).toHaveURL(/\/org\/acme$/)
+  // values that do not parse as a URL at all must not throw (a blank page)
+  for (const bad of ['http://', '//']) {
+    await signIn(bad)
+    await expect(page).toHaveURL(/\/org\/acme$/)
+    await expect(page.getByRole('heading', { name: 'Projeler' })).toBeVisible()
+  }
   await signIn('/org/acme/members')
   await expect(page).toHaveURL(/\/org\/acme\/members$/)
 })

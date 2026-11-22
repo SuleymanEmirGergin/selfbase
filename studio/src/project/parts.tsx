@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import { errMsg, platform } from '../api.ts'
 import type { ApiKey } from '../api.ts'
 import { ErrorBox, Loading, confirmDanger, toast } from '../ui.tsx'
-import { CopyButton, JobSteps, useLoad } from '../org/common.tsx'
+import { CopyButton, JobSteps, StatusBadge, useLoad } from '../org/common.tsx'
 import { useProject } from './context.ts'
 
 // Pieces shared by the home and settings screens.
@@ -60,15 +60,25 @@ export function Lifecycle() {
   )
 }
 
+export const JOB_STATUS: Record<string, string> = { pending: 'bekliyor', running: 'sürüyor', succeeded: 'tamamlandı', failed: 'başarısız' }
+
+/** Shown instead of a data screen whenever the project is not ACTIVE_HEALTHY (paused or in transition). */
 export function Paused() {
+  const { project, reload } = useProject()
+  const inactive = project.status === 'INACTIVE'
   return (
     <section className="page-main">
       <div className="scroll-area">
         <div className="card paused">
-          <div className="card-head"><h2>Proje duraklatıldı</h2></div>
+          <div className="card-head">
+            <h2>{inactive ? 'Proje duraklatıldı' : 'Proje şu an kullanılamıyor'}</h2>
+            <StatusBadge status={project.status} />
+          </div>
           <div className="card-body">
-            <p className="muted">Bu ekran projenin servisleriyle çalışır. Proje devam ettirilince yeniden açılır.</p>
-            <Lifecycle />
+            <p className="muted">
+              Bu ekran projenin servisleriyle çalışır. {inactive ? 'Proje devam ettirilince yeniden açılır.' : 'Proje hazır olunca yeniden açılır.'}
+            </p>
+            {inactive ? <Lifecycle /> : <div><button className="btn" onClick={reload}>Durumu yenile</button></div>}
           </div>
         </div>
       </div>

@@ -6,10 +6,12 @@ import { navigate } from '../router.tsx'
 import { Empty, ErrorBox, Icon, Loading, confirmDanger, fmtDate, fmtSize, toast } from '../ui.tsx'
 import { Page, useLoad } from '../org/common.tsx'
 import { useProject } from './context.ts'
-import { ApiKeys, Lifecycle, Section, useJob } from './parts.tsx'
+import { ApiKeys, JOB_STATUS, Lifecycle, Section, useJob } from './parts.tsx'
 
 // Matches control's manifest rule (plan Task 14): a shorter passphrase is refused there anyway.
 const MIN_PASSPHRASE = 12
+// A lowercase DNS name with at least two labels; anything else is refused before it can cost a certificate request.
+const HOSTNAME = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/
 const KIND: Record<Domain['kind'], string> = { default: 'varsayılan', legacy: 'eski adres', custom: 'özel' }
 
 export default function Settings() {
@@ -59,9 +61,16 @@ function Domains() {
   const [kind, setKind] = useState<'legacy' | 'custom'>('custom')
   const manage = can('project.manage')
 
-  const add = (e: FormEvent) => {
+  const [hostErr, setHostErr] = useState('')
+  const add = async (e: FormEvent) => {
     e.preventDefault()
-    job.start(async () => { const r = await platform.addDomain(ref, { hostname: hostname.trim(), kind }); setHostname(''); reload(); return r })
+    const host = hostname.trim().toLowerCase()
+    if (!HOSTNAME.test(host)) return setHostErr('Geçerli bir alan adı yazın (ör. api.ornek.com).')
+    setHostErr('')
+    if (kind === 'custom' && !(await confirmDanger('Özel alan adı eklensin mi?',
+      <><code>{host}</code> için bir sertifika adresi kullanılır: haftada en çok 3 yeni adres için sertifika alınabilir. Yazım hatası o haftanın hakkını harcar.</>,
+      'Ekle'))) return
+    job.start(async () => { const r = await platform.addDomain(ref, { hostname: host, kind }); setHostname(''); reload(); return r })
   }
   const remove = async (d: Domain) => {
     if (!(await confirmDanger('Alan adı kaldırılsın mı?', <><code>{d.hostname}</code> bu projeye yönlenmeyi bırakır.</>, 'Kaldır'))) return
@@ -97,6 +106,7 @@ function Domains() {
           <button className="btn" disabled={job.busy}><Icon name="plus" />Ekle</button>
         </form>
       )}
+      {hostErr && <div className="field-error" role="alert">{hostErr}</div>}
       {job.steps}
     </Section>
   )
@@ -140,7 +150,7 @@ function Backups() {
               {data.map((b) => (
                 <tr key={b.id}>
                   <td className="small">{fmtDate(b.started_at)}</td>
-                  <td className="small">{b.status}</td>
+                  <td className="small">{JOB_STATUS[b.status] ?? b.status}</td>
                   <td className="small">{fmtSize(b.size_bytes ?? undefined)}</td>
                   <td className="mono small">{b.location ?? '—'}</td>
                 </tr>
