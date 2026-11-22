@@ -47,6 +47,12 @@ docker compose -f template/compose.yml --env-file .env up -d --build
 curl -s http://localhost:8080/health   # {"ok":true}
 ```
 
+`template/compose.yml` names its project `selfbase` (or `COMPOSE_PROJECT_NAME`), as v1's checkout
+directory did, so an existing install keeps its volumes (`selfbase_pgdata`, `selfbase_storage`, ...).
+A second stack on the same host needs its own `COMPOSE_PROJECT_NAME`. Without `--env-file .env`,
+compose reads `template/.env`. Commands that use plain `docker compose`, such as `job/restore.sh`,
+need `COMPOSE_FILE=template/compose.yml COMPOSE_ENV_FILES=.env` in the environment.
+
 Development: `npm ci` at the root installs every workspace. Tests need the test database:
 `docker compose -p sb-test -f template/compose.test.yml up -d --build --wait db rest`, then
 `TEST_COMPOSE_PROJECT=sb-test TEST_COMPOSE_FILE=../template/compose.test.yml npm test --workspaces --if-present`.

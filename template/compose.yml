@@ -1,5 +1,6 @@
+name: ${COMPOSE_PROJECT_NAME:-selfbase} # v1 project name (the checkout directory); keeps the volumes of existing installs
 # selfbase stack. Run from the repository root: docker compose -f template/compose.yml --env-file .env up -d --build
-# Values come from .env (see .env.example). Only core is published, on loopback by default (CORE_BIND).
+# Values come from .env (see .env.example); without --env-file compose reads template/.env instead. Only core is published, on loopback by default (CORE_BIND).
 # Every service: rotated json-file logs (10m x 3), no privilege gain through setuid binaries, at most
 # 512 processes. Per service below: mem_limit and cpus (change them there; docker compose up -d applies).
 x-defaults: &defaults
@@ -147,7 +148,8 @@ services:
       retries: 10
 
   # Daily backup (03:15 UTC) of the database and the storage volume, see job/backup.sh.
-  # One-shot: docker compose run --rm backup /scripts/backup.sh   Restore: job/restore.sh <timestamp>
+  # One-shot: docker compose -f template/compose.yml --env-file .env run --rm backup /scripts/backup.sh
+  # Restore: COMPOSE_FILE=template/compose.yml job/restore.sh <timestamp>
   backup:
     <<: *defaults
     build:

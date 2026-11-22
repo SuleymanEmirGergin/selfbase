@@ -1,6 +1,6 @@
-// Needs the test stack: TEST_DB_PORT=.. TEST_REST_PORT=.. docker compose -p <name> -f compose.test.yml up -d
+// Needs the test stack: TEST_DB_PORT=.. TEST_REST_PORT=.. docker compose -p <name> -f template/compose.test.yml up -d
 //   SYNC_TEST_PROJECT=<name> node --test scripts/test/sync.test.mjs          (default name sb-t13)
-// The backup round trip additionally needs the full stack (compose.yml), see the "backup" suite below.
+// The backup round trip additionally needs the full stack (template/compose.yml), see the "backup" suite below.
 import { beforeEach, describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
@@ -22,7 +22,7 @@ const P = process.env.SYNC_TEST_PROJECT ?? 'sb-t13'
 const env = { ...process.env, TARGET_DB_URL: 'postgres://postgres:test-postgres-password@db:5432/postgres', DOCKER_NETWORK: `${P}_default` }
 
 function sql(q) {
-  const r = spawnSync('docker', ['compose', '-p', P, '-f', 'compose.test.yml', 'exec', '-T', 'db', 'psql', '-U', 'postgres', '-XAtq', '-v', 'ON_ERROR_STOP=1'],
+  const r = spawnSync('docker', ['compose', '-p', P, '-f', 'template/compose.test.yml', 'exec', '-T', 'db', 'psql', '-U', 'postgres', '-XAtq', '-v', 'ON_ERROR_STOP=1'],
     { cwd: root, input: q, encoding: 'utf8' })
   assert.equal(r.status, 0, r.stderr)
   return r.stdout.trim()
@@ -208,7 +208,7 @@ describe('sync', () => {
   })
 
   test('a second concurrent sync exits with a clear message', async () => {
-    const holder = spawn('docker', ['compose', '-p', P, '-f', 'compose.test.yml', 'exec', '-T', 'db', 'psql', '-U', 'postgres', '-Xq',
+    const holder = spawn('docker', ['compose', '-p', P, '-f', 'template/compose.test.yml', 'exec', '-T', 'db', 'psql', '-U', 'postgres', '-Xq',
       '-c', `select pg_advisory_lock(${LOCK_KEY})`, '-c', 'select pg_sleep(60)'], { cwd: root, stdio: 'ignore' })
     try {
       await waitFor(() => sql(`select count(*) from pg_locks where locktype = 'advisory' and objid = ${LOCK_KEY}`) === '1')
@@ -356,7 +356,7 @@ describe('sync', () => {
   test('06-realtime-cron also enables realtime for publication tables without the trigger', () => {
     sql('create table t13.rt6 (id int primary key); create table t13.noid6 (k int); ' +
       'alter publication supabase_realtime add table t13.rt6, t13.noid6;')
-    const port = spawnSync('docker', ['compose', '-p', P, '-f', 'compose.test.yml', 'port', 'db', '5432'], { cwd: root, encoding: 'utf8' })
+    const port = spawnSync('docker', ['compose', '-p', P, '-f', 'template/compose.test.yml', 'port', 'db', '5432'], { cwd: root, encoding: 'utf8' })
       .stdout.trim().split(':').at(-1)
     const dump = mkdtempSync(join(tmpdir(), 'dump-'))
     mkdirSync(join(dump, 'catalog'))
@@ -383,8 +383,8 @@ describe('sync', () => {
 // Full stack: docker compose -p <name> --env-file <throwaway env> up -d --build, then
 //   BACKUP_TEST_PROJECT=<name> BACKUP_TEST_ENV_FILE=<env file> node --test scripts/test/sync.test.mjs
 const BP = process.env.BACKUP_TEST_PROJECT
-describe('backup', { skip: !BP && 'set BACKUP_TEST_PROJECT to a running compose.yml stack' }, () => {
-  const denv = { ...process.env, COMPOSE_PROJECT_NAME: BP, COMPOSE_ENV_FILES: process.env.BACKUP_TEST_ENV_FILE ?? '.env.test-local', MSYS_NO_PATHCONV: '1' }
+describe('backup', { skip: !BP && 'set BACKUP_TEST_PROJECT to a running template/compose.yml stack' }, () => {
+  const denv = { ...process.env, COMPOSE_PROJECT_NAME: BP, COMPOSE_FILE: 'template/compose.yml', COMPOSE_ENV_FILES: process.env.BACKUP_TEST_ENV_FILE ?? '.env.test-local', MSYS_NO_PATHCONV: '1' }
   const dc = (...a) => spawnSync('docker', ['compose', ...a], { cwd: root, env: denv, encoding: 'utf8' })
   const ok = (r) => { assert.equal(r.status, 0, r.stderr); return r.stdout.trim() }
   const db = (q) => ok(dc('exec', '-T', 'db', 'psql', '-U', 'postgres', '-XAtq', '-v', 'ON_ERROR_STOP=1', '-c', q))
@@ -394,7 +394,7 @@ describe('backup', { skip: !BP && 'set BACKUP_TEST_PROJECT to a running compose.
     const out = ok(dc('run', '--rm', '--no-deps', '-T', ...opts, 'backup', '/scripts/backup.sh'))
     return /wrote \/backups\/(\d{8}-\d{6})/.exec(out)[1]
   }
-  const restore = (...a) => spawnSync('bash', ['scripts/restore.sh', ...a], { cwd: root, env: denv, encoding: 'utf8' })
+  const restore = (...a) => spawnSync('bash', ['job/restore.sh', ...a], { cwd: root, env: denv, encoding: 'utf8' })
 
   test('backup -> lose a row and a storage file -> restore -> both are back', () => {
     db('drop table if exists public.t13_keep; create table public.t13_keep (id int primary key, v text); ' +
