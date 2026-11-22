@@ -6,6 +6,7 @@ import { app } from './app.ts'
 import { startWorkers } from './jobs/index.ts'
 import { httpProvisioner, setProvisioner } from './provisioner.ts'
 import { startReconcile } from './reconcile.ts'
+import { startSchedule } from './schedule.ts'
 
 // Schema first; a failure names the migration file only (never SQL or secrets)
 await migrate().catch((e: Error) => {
@@ -17,6 +18,7 @@ const provisioner = httpProvisioner(config.provisionerUrl, config.provisionerTok
 setProvisioner(provisioner)
 startWorkers({ db: pool, provisioner })
 startReconcile({ db: pool, provisioner })
+startSchedule(pool)
 const server = serve({ fetch: app.fetch, port: config.port }, (info) => console.log(`selfbase-control listening on :${info.port}`))
 
 // Deploys send SIGTERM: stop taking requests, let the ones in flight finish, then close the pool.

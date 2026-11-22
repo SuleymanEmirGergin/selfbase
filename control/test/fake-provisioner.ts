@@ -1,7 +1,7 @@
 // In-memory Provisioner: records every call, models ensure's idempotence (a container is created only when
 // missing, changed or listed in recreate), and can be told to fail or to report states.
 import { createHash } from 'node:crypto'
-import type { EnsureInput, Provisioner, ProjectState, ServiceState } from '../src/provisioner.ts'
+import type { EnsureInput, JobState, Provisioner, ProjectState, ServiceState } from '../src/provisioner.ts'
 import { ProvisionerError } from '../src/provisioner.ts'
 
 export const SERVICES = ['db', 'rest', 'core', 'fn', 'pooler']
@@ -15,6 +15,8 @@ export class FakeProvisioner implements Provisioner {
   created = { networks: [] as string[], containers: [] as string[] }
   projects = new Map<string, P>()
   health: string | null = 'healthy'
+  /** What jobStatus reports for a job (a test sets it; the default is a success with no output). */
+  jobResult: (ref: string, type: string) => JobState = () => ({ status: 'succeeded', exitCode: 0, tail: '' })
   private failing = new Map<string, number>()
   private after = new Map<string, () => Promise<void> | void>()
 
@@ -120,7 +122,7 @@ export class FakeProvisioner implements Provisioner {
   }
   async jobStatus(ref: string, type: string) {
     await this.rec('jobStatus', [ref, type])
-    return { status: 'succeeded' as const, exitCode: 0, tail: '' }
+    return this.jobResult(ref, type)
   }
   async logs(ref: string, service: string, tail: number) {
     await this.rec('logs', [ref, service, tail])

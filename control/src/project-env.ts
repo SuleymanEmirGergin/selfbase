@@ -11,7 +11,7 @@ export const SECRET_ENV = ['POSTGRES_PASSWORD', 'AUTHENTICATOR_PASSWORD', 'JWT_S
 export const THIRD_PARTY_SECRET_ENV = ['SMTP_PASS', 'GOOGLE_CLIENT_SECRET', 'AUTH_SMS_HOOK_SECRET'] as const
 
 // non-secret config and v1's compose defaults; SITE_URL defaults to PUBLIC_URL
-const CONFIG_DEFAULTS: Record<string, string> = {
+export const CONFIG_DEFAULTS: Record<string, string> = {
   PGRST_DB_SCHEMAS: 'public',
   PGRST_DB_MAX_ROWS: '1000',
   AUTH_REDIRECT_ALLOWLIST: '',

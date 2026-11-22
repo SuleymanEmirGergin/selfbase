@@ -59,6 +59,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     certProbe: oneOf('CERT_PROBE', 'on', ['on', 'off']),
     logsUrl: env.LOGS_URL || 'http://selfbase-logs:9428',
     backupRetentionDays: num('BACKUP_RETENTION_DAYS', 7),
+    // the host backup directory as control sees it (mounted read-only): an import reads project.json there
+    backupDir: env.BACKUP_DIR || '/backups',
     smtp: {
       host: env.SMTP_HOST || '',
       port: num('SMTP_PORT', 587),

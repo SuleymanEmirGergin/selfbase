@@ -1,7 +1,7 @@
 // Project lifecycle jobs (spec 7.6). Every step is idempotent: running a finished step again changes nothing, so
 // a job resumed after a restart can repeat the step it was in.
 import pg from 'pg'
-import { admit, type Size } from '../admission.ts'
+import { admit, AdmissionError, type Size } from '../admission.ts'
 import { config } from '../config.ts'
 import { ApiError } from '../errors.ts'
 import { allocateHost, hostsOf, releaseHost } from '../hosts.ts'
@@ -48,9 +48,15 @@ async function savepoint<T>(c: pg.PoolClient, fn: () => Promise<T>): Promise<T> 
 }
 
 export type CreateInput = { orgId: string; name: string; size: Size; pool: 'project' | 'test'; createdBy: string | null
-  reuseSecrets?: Record<string, string>; dbPass?: string }
+  reuseSecrets?: Record<string, string>; dbPass?: string
+  /** an import: project_config rows by section, and the job that brings the project up instead of project.create */
+  config?: Record<string, Record<string, unknown>>
+  job?: { type: string; status: string; payload: Record<string, unknown> } }
 
-/** Admits, inserts the row (status COMING_UP, so it counts at once) and enqueues project.create, all or nothing. */
+/**
+ * Admits, inserts the row (status COMING_UP, or the job's status, so it counts at once) and enqueues project.create
+ * (or input.job), all or nothing.
+ */
 export async function createProject(pool: pg.Pool, input: CreateInput): Promise<{ project: Project; jobId: string }> {
   const ref = newRef()
   const given = { ...input.reuseSecrets, ...(input.dbPass ? { POSTGRES_PASSWORD: input.dbPass } : {}) }
@@ -67,19 +73,24 @@ export async function createProject(pool: pg.Pool, input: CreateInput): Promise<
     await allocateSubnet(c, (subnet) => savepoint(c, async () => {
       project = (await c.query(
         `insert into control.projects (ref, org_id, name, status, size, template_version, subnet, node_id)
-         values ($1, $2, $3, 'COMING_UP', $4, $5, $6, (select id from control.nodes where name = $7)) returning *`,
-        [ref, input.orgId, input.name, input.size, version, subnet, config.nodeName],
+         values ($1, $2, $3, $8, $4, $5, $6, (select id from control.nodes where name = $7)) returning *`,
+        [ref, input.orgId, input.name, input.size, version, subnet, config.nodeName, input.job?.status ?? 'COMING_UP'],
       )).rows[0]
     }))
     // in the request: the values never enter the job payload
     for (const [name, value] of Object.entries(given)) await putSecret(c, project, name, 'platform', value)
-    const jobId = await enqueue(c, { type: 'project.create', projectId: project.id, payload: { pool: input.pool }, createdBy: input.createdBy })
+    for (const [section, data] of Object.entries(input.config ?? {})) {
+      await c.query('insert into control.project_config (project_id, section, data, updated_by) values ($1, $2, $3, $4)',
+        [project.id, section, data, input.createdBy])
+    }
+    const job = input.job ?? { type: 'project.create', payload: { pool: input.pool } }
+    const jobId = await enqueue(c, { type: job.type, projectId: project.id, payload: job.payload, createdBy: input.createdBy })
     return { project, jobId }
   })
 }
 
-const need = (ctx: JobCtx): Project => ctx.project ?? (() => { throw new Error('the job has no project') })()
-const setStatus = (ctx: JobCtx, status: string) => ctx.db.query('update control.projects set status = $2 where id = $1', [need(ctx).id, status])
+export const need = (ctx: JobCtx): Project => ctx.project ?? (() => { throw new Error('the job has no project') })()
+export const setStatus = (ctx: JobCtx, status: string) => ctx.db.query('update control.projects set status = $2 where id = $1', [need(ctx).id, status])
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 async function ensure(ctx: JobCtx, recreate: string[] = []) {
@@ -97,19 +108,26 @@ async function ensure(ctx: JobCtx, recreate: string[] = []) {
     subnet: p.subnet, hosts, env, recreate })
 }
 
-async function healthy(ctx: JobCtx) {
+export async function healthy(ctx: JobCtx) {
   const p = need(ctx)
   const until = Date.now() + ctx.waits.healthyMs
   for (;;) {
-    const s = await ctx.provisioner.inspect(p.ref)
-    const bad = s.services.filter((x) => !x.exists || x.state !== 'running' || (x.health !== null && x.health !== 'healthy'))
-    if (s.services.length && !bad.length) return
-    if (Date.now() >= until) throw new Error(`not healthy within ${ctx.waits.healthyMs / 1000} s: ${bad.map((x) => x.service).join(', ')}`)
+    let waitingFor: string
+    // one failed read (provisioner restarting, a lock wait) is not a verdict: only the deadline is
+    try {
+      const s = await ctx.provisioner.inspect(p.ref)
+      const bad = s.services.filter((x) => !x.exists || x.state !== 'running' || (x.health !== null && x.health !== 'healthy'))
+      if (s.services.length && !bad.length) return
+      waitingFor = bad.map((x) => x.service).join(', ')
+    } catch (e) {
+      waitingFor = `the provisioner (${(e as Error).message})`
+    }
+    if (Date.now() >= until) throw new Error(`not healthy within ${ctx.waits.healthyMs / 1000} s: ${waitingFor}`)
     await pause(ctx.waits.pollMs)
   }
 }
 
-async function certificate(ctx: JobCtx) {
+export async function certificate(ctx: JobCtx) {
   const host = (await hostsOf(ctx.db, need(ctx).id))[0]
   const until = Date.now() + ctx.waits.certificateMs
   while ((await ctx.probe(host)) !== 'ok') {
@@ -123,6 +141,7 @@ async function certificate(ctx: JobCtx) {
 async function warm(ctx: JobCtx) {
   const p = need(ctx)
   const key = (await getSecrets(ctx.db, p)).SERVICE_ROLE_KEY
+  if (!key) return ctx.log('warm_skipped', { reason: 'no SERVICE_ROLE_KEY' })
   const until = Date.now() + ctx.waits.warmMs
   let last = ''
   for (;;) {
@@ -140,19 +159,18 @@ async function warm(ctx: JobCtx) {
   }
 }
 
-const step = (name: string, run: (ctx: JobCtx) => Promise<unknown>, retry = true) =>
+export const step = (name: string, run: (ctx: JobCtx) => Promise<unknown>, retry = true) =>
   ({ name, retry, run: async (ctx: JobCtx) => { await run(ctx) } })
 // these poll on their own budgets (120 s, 10 min); a retry would only multiply the time the light lane waits
-const healthySteps = [step('healthy', healthy, false), step('warm', warm)]
-const activate = step('activate', (ctx) => setStatus(ctx, 'ACTIVE_HEALTHY'))
+export const healthySteps = [step('healthy', healthy, false), step('warm', warm)]
+export const activate = step('activate', (ctx) => setStatus(ctx, 'ACTIVE_HEALTHY'))
 // the status a failed job leaves, unless it failed at a step listed in `keep` (status unchanged)
-const failTo = (status: string, keep: string[] = []) => ({
+export const failTo = (status: string, keep: string[] = []) => ({
   onFail: async (ctx: JobCtx) => { if (ctx.project && !keep.includes(ctx.step)) await setStatus(ctx, status) },
 })
 
-// onFail releases nothing: the operator deletes or retries. A certificate that is late leaves COMING_UP, and
-// reconcile turns it ACTIVE_HEALTHY once the probe passes.
-defineJob('project.create', 'light', [
+// up to ensure: shared with project.import
+export const createSteps = [
   step('allocate', (ctx) => allocateHost(ctx.db, { projectId: need(ctx).id, ref: need(ctx).ref, pool: ctx.job.payload.pool ?? 'project' })),
   step('secrets', async (ctx) => {
     const p = need(ctx)
@@ -172,6 +190,12 @@ defineJob('project.create', 'light', [
     }
   }),
   step('ensure', (ctx) => ensure(ctx)),
+]
+
+// onFail releases nothing: the operator deletes or retries. A certificate that is late leaves COMING_UP, and
+// reconcile turns it ACTIVE_HEALTHY once the probe passes.
+defineJob('project.create', 'light', [
+  ...createSteps,
   ...healthySteps,
   step('certificate', certificate, false),
   activate,
@@ -188,7 +212,11 @@ defineJob('project.restore', 'light', [
   step('admit', (ctx) => withAdmission(ctx.db, async (c) => {
     const p = need(ctx)
     // excluding itself makes a repeated step count the project once
-    await admit(c, { size: p.size as Size, excludeProjectId: p.id })
+    await admit(c, { size: p.size as Size, excludeProjectId: p.id }).catch(async (e) => {
+      // the refusal's numbers go with the failed job (Studio shows the project's last job)
+      if (e instanceof AdmissionError) await ctx.log('admission_refused', e.details)
+      throw e
+    })
     await c.query(`update control.projects set status = 'RESTORING', paused_at = null where id = $1`, [p.id])
   })),
   // ensure, not start: a domain or config changed while paused must reach the containers (their router labels).
@@ -237,6 +265,7 @@ defineJob('project.upgrade', 'light', [
   step('ensure', (ctx) => ensure(ctx, recreateOf(ctx))),
   ...healthySteps,
   activate,
-], failTo('ACTIVE_UNHEALTHY'))
+  // refused for a missing current_template_version: nothing changed, the status stays
+], failTo('ACTIVE_UNHEALTHY', ['version']))
 
 export { withAdmission }

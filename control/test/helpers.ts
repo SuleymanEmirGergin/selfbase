@@ -78,3 +78,18 @@ export async function project(orgId: string, o: { name?: string; status?: string
   await pool.query(`insert into control.project_domains (project_id, hostname, kind) values ($1, $2, 'default')`, [p.id, `${ref}.${config.baseDomain}`])
   return { ...p, secrets } as { id: string; ref: string; name: string; status: string; secrets: Record<string, string> }
 }
+
+// ---- import (Task 14 tests) ----
+
+// every key of v1's .env.example (branch v1), commented ones too, each with a distinctive value
+export const V1_KEYS = ['POSTGRES_PASSWORD', 'JWT_SECRET', 'ANON_KEY', 'SERVICE_ROLE_KEY', 'PUBLIC_URL', 'TRUST_PROXY', 'SITE_URL',
+  'AUTH_REDIRECT_ALLOWLIST', 'AUTH_CONFIRM_EMAIL', 'AUTH_PHONE_ENABLED', 'AUTH_MIN_PASSWORD', 'AUTH_SECURE_EMAIL_CHANGE',
+  'AUTH_REFRESH_REUSE_INTERVAL', 'AUTH_SET_PASSWORD_URL', 'AUTH_RATE_LIMIT_SIGN_IN', 'AUTH_RATE_LIMIT_VERIFY', 'AUTH_RATE_LIMIT_REFRESH',
+  'AUTH_RATE_LIMIT_EMAIL', 'AUTH_OTP_EXPIRY', 'AUTH_EMAIL_INTERVAL', 'AUTH_SMS_HOOK_SECRET', 'SMTP_HOST', 'SMTP_PORT', 'SMTP_USER',
+  'SMTP_PASS', 'SMTP_FROM', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_AUTH_URL', 'GOOGLE_TOKEN_URL', 'GOOGLE_USERINFO_URL',
+  'PANEL_ADMIN_EMAIL', 'PANEL_ADMIN_PASSWORD_HASH', 'CORE_BIND', 'CORE_PORT', 'STORAGE_MAX_UPLOAD_BYTES', 'SUPABASE_DIR', 'PGRST_URL',
+  'FN_URL', 'FN_IMPORT_TIMEOUT_MS', 'DOCKER_NETWORK', 'TARGET_DB_URL', 'TARGET_DB_URL_HOST', 'BACKUP_DIR', 'BACKUP_RETENTION_DAYS']
+export const v1Env = (over: Record<string, string> = {}) => {
+  const vals = Object.fromEntries(V1_KEYS.map((k) => [k, `v1-value-of-${k.toLowerCase()}`]))
+  return { text: ['# v1 .env', '', ...Object.entries({ ...vals, ...over }).map(([k, v]) => `${k}=${v}`), ''].join('\n'), vals: { ...vals, ...over } }
+}

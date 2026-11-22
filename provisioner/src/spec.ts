@@ -42,6 +42,8 @@ export const dryRunEnv = (tpl: Template) => Object.fromEntries([...JSON.stringif
 const SIZE_NAMES: string[] = ['micro', 'small', 'medium']
 const HOST_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/
 const DIR_RE = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)?$/
+// a restore may also read the operator's drop area for v1 and foreign dumps: import/<org slug>/<name>
+const IMPORT_DIR_RE = /^import\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/
 const JOB_TYPES: string[] = ['backup', 'restore', 'clone', 'basebackup', 'volume-copy', 'migra-diff']
 const JOB_CMD: Partial<Record<JobType, string[]>> = { backup: ['bash', '/scripts/backup.sh'], restore: ['bash', '/scripts/restore.sh'] }
 const JOB_ENV = new Set(['PGHOST', 'PGPASSWORD', 'PGUSER', 'PGDATABASE', 'BACKUP_SUBDIR', 'BACKUP_RETENTION_DAYS', 'RESTORE_DIR', 'MANIFEST_B64'])
@@ -212,9 +214,9 @@ export function buildProject(input: EnsureInput, tpl: Template, sizes: Sizes, no
   }
 }
 
-function checkDir(dir: unknown) {
-  if (typeof dir !== 'string' || !DIR_RE.test(dir) || dir.split('/').some((p) => p === '.' || p === '..')) {
-    refuse(400, 'invalid_dir', 'dir must be one or two plain path segments')
+function checkDir(dir: unknown, restore: boolean) {
+  if (typeof dir !== 'string' || !(DIR_RE.test(dir) || (restore && IMPORT_DIR_RE.test(dir))) || dir.split('/').some((p) => p === '.' || p === '..')) {
+    refuse(400, 'invalid_dir', 'dir must be one or two plain path segments (a restore also import/<a>/<b>)')
   }
 }
 
@@ -235,7 +237,7 @@ export function buildJob(input: JobInput, node: NodeSettings): ContainerSpec {
   const env = { ...stringMap(input.env) }
   for (const k of Object.keys(env)) if (!JOB_ENV.has(k)) refuse(400, 'invalid_env', `env key ${k} is not allowed`)
   if (args.dir !== undefined) env[type === 'backup' ? 'BACKUP_SUBDIR' : 'RESTORE_DIR'] = args.dir
-  for (const k of ['BACKUP_SUBDIR', 'RESTORE_DIR']) if (Object.hasOwn(env, k)) checkDir(env[k])
+  for (const k of ['BACKUP_SUBDIR', 'RESTORE_DIR']) if (Object.hasOwn(env, k)) checkDir(env[k], k === 'RESTORE_DIR')
 
   const service = `job-${type}`
   const name = containerName(ref, service)
