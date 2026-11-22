@@ -1,16 +1,23 @@
 import { defineConfig, devices } from '@playwright/test'
 
-// Runs against an already running stack (compose), e.g. PANEL_URL=http://localhost:54481.
+// The specs intercept every /platform call with page.route fixtures, so a plain Vite dev server is enough.
+const port = Number(process.env.STUDIO_E2E_PORT || 5181)
+
 export default defineConfig({
   testDir: 'e2e',
-  timeout: 60_000,
+  timeout: 30_000,
   workers: 1,
   reporter: 'list',
   use: {
     ...devices['Desktop Chrome'],
-    baseURL: process.env.PANEL_URL || 'http://localhost:8080',
+    baseURL: `http://localhost:${port}`,
     viewport: { width: 1440, height: 900 },
     colorScheme: 'dark',
     trace: 'retain-on-failure',
+  },
+  webServer: {
+    command: `npx vite --port ${port} --strictPort`,
+    url: `http://localhost:${port}`,
+    reuseExistingServer: !process.env.CI,
   },
 })

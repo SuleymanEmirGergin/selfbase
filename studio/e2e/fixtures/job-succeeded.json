@@ -1,0 +1,41 @@
+{
+  "id": "5b7e0c3d-0000-4000-8000-0000000000f1",
+  "type": "project.create",
+  "status": "succeeded",
+  "step": 6,
+  "steps": [
+    "allocate",
+    "secrets",
+    "ensure",
+    "healthy",
+    "certificate",
+    "activate"
+  ],
+  "error": null,
+  "events": [
+    {
+      "at": "2026-11-22T12:00:01Z",
+      "event": "allocate"
+    },
+    {
+      "at": "2026-11-22T12:00:02Z",
+      "event": "secrets"
+    },
+    {
+      "at": "2026-11-22T12:00:03Z",
+      "event": "ensure"
+    },
+    {
+      "at": "2026-11-22T12:00:04Z",
+      "event": "healthy"
+    },
+    {
+      "at": "2026-11-22T12:00:05Z",
+      "event": "certificate"
+    },
+    {
+      "at": "2026-11-22T12:00:06Z",
+      "event": "activate"
+    }
+  ]
+}

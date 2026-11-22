@@ -1,0 +1,18 @@
+{
+  "id": "4f1c2a9e-0000-4000-8000-000000000001",
+  "email": "owner@example.test",
+  "organizations": [
+    {
+      "id": "8a0f2c1e-0000-4000-8000-0000000000a1",
+      "slug": "acme",
+      "name": "Acme",
+      "role": "owner"
+    },
+    {
+      "id": "8a0f2c1e-0000-4000-8000-0000000000b2",
+      "slug": "beta",
+      "name": "Beta Lab",
+      "role": "developer"
+    }
+  ]
+}
