@@ -1,8 +1,8 @@
 # Throwaway test stack (db + rest). Values here are test-only, never real secrets.
-# Parallel checkouts: docker compose -p <name> -f compose.test.yml up -d, with TEST_DB_PORT / TEST_REST_PORT set.
+# Parallel checkouts: docker compose -p <name> -f template/compose.test.yml up -d, with TEST_DB_PORT / TEST_REST_PORT set.
 services:
   db:
-    build: ./db
+    build: ../db
     environment:
       POSTGRES_PASSWORD: test-postgres-password
     ports:

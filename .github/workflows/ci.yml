@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  push:
+    branches: [v2]
+  pull_request:
+    branches: [v2]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      TEST_COMPOSE_PROJECT: sb-ci
+      TEST_COMPOSE_FILE: ../template/compose.test.yml # relative to a workspace directory
+      TEST_DB_PORT: "54329"
+      TEST_REST_PORT: "54330"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: docker compose -p sb-ci -f template/compose.test.yml up -d --build --wait db rest
+      - run: npm run typecheck --workspaces --if-present
+      - run: npm test --workspaces --if-present
+      - run: node --test scripts/test/workspace.test.mjs scripts/test/compose-env.test.mjs
+
+  images:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [db, core, fn, rest, pooler, job, control, provisioner]
+    steps:
+      - uses: actions/checkout@v4
+      # shortcut: db/Dockerfile still copies bootstrap/ relative to db/, so it builds with context db until Task 3 rewrites it
+      - run: docker build -f ${{ matrix.image }}/Dockerfile -t selfbase-${{ matrix.image }}:ci ${{ matrix.image == 'db' && 'db' || '.' }}
+
+  # Reserved for Task 17 (end-to-end stack test).
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "e2e arrives with Task 17"

@@ -25,26 +25,36 @@ Only `core` is published. `net.http_post` calls are queued in the database and s
 
 | Path | What |
 |---|---|
-| `compose.yml` | the whole stack; values from `.env` (see `.env.example`) |
+| `package.json` | npm workspaces: `core`, `control`, `provisioner`, `studio`, `client`; one lockfile at the root |
+| `template/` | `compose.yml`, the whole stack (values from `.env`, see `.env.example`); `compose.test.yml`, the test database |
 | `db/` | Postgres image and `bootstrap/*.sql` (Supabase-compatible schemas, roles and shims) |
 | `core/` | auth, storage, realtime, admin API, gateway (Node 24, Hono) |
 | `fn/` | edge function host (Deno) |
-| `panel/` | admin panel (React), built into the core image |
+| `studio/` | dashboard (React), today's admin panel |
+| `control/`, `provisioner/` | control plane and Docker provisioner (stubs for now) |
+| `rest/`, `pooler/`, `job/` | PostgREST and PgBouncer images; backup/restore job image (`job/backup.sh`, `job/restore.sh`) |
 | `client/` | `selfbase-js`, the supabase-js drop-in; `client/dist/` is committed |
-| `scripts/` | key generation, panel password, Supabase migration, sync, backup |
+| `scripts/` | key generation, panel password, Supabase migration, sync |
 
 ## Quick start
 
-Needs Docker with Compose 2.24+ and Node 22+.
+Needs Docker with Compose 2.24+ and Node 22+. Run everything from the repository root.
 
 ```sh
 cp .env.example .env
 node scripts/gen-keys.mjs       # paste the 3 lines into .env, add POSTGRES_PASSWORD (URL-safe)
-docker compose up -d --build    # then: curl -s http://localhost:8080/health  ->  {"ok":true}
+docker compose -f template/compose.yml --env-file .env up -d --build
+curl -s http://localhost:8080/health   # {"ok":true}
 ```
 
+Development: `npm ci` at the root installs every workspace. Tests need the test database:
+`docker compose -p sb-test -f template/compose.test.yml up -d --build --wait db rest`, then
+`TEST_COMPOSE_PROJECT=sb-test TEST_COMPOSE_FILE=../template/compose.test.yml npm test --workspaces --if-present`.
+CI (`.github/workflows/ci.yml`) does the same and builds all eight images; a `v*` tag pushes them to
+GHCR (`images.yml`).
+
 The panel is at `http://localhost:8080/panel/`; set its login with `node scripts/set-panel-password.mjs`
-in a real terminal (after `npm ci` in `core/`).
+in a real terminal (after `npm ci` at the root).
 
 ## Guide
 

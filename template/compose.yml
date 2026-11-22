@@ -1,4 +1,5 @@
-# selfbase stack. Values come from .env (see .env.example). Only core is published, on loopback by default (CORE_BIND).
+# selfbase stack. Run from the repository root: docker compose -f template/compose.yml --env-file .env up -d --build
+# Values come from .env (see .env.example). Only core is published, on loopback by default (CORE_BIND).
 # Every service: rotated json-file logs (10m x 3), no privilege gain through setuid binaries, at most
 # 512 processes. Per service below: mem_limit and cpus (change them there; docker compose up -d applies).
 x-defaults: &defaults
@@ -14,7 +15,7 @@ x-defaults: &defaults
 services:
   db:
     <<: *defaults
-    build: ./db
+    build: ../db
     mem_limit: 1g
     cpus: 2
     shm_size: 256m # Docker's 64m default breaks parallel queries ("could not resize shared memory segment")
@@ -56,7 +57,7 @@ services:
   core:
     <<: *defaults
     build:
-      context: .
+      context: ..
       dockerfile: core/Dockerfile
     mem_limit: 512m
     cpus: 1
@@ -119,13 +120,13 @@ services:
   fn:
     <<: *defaults
     build:
-      context: .
+      context: ..
       dockerfile: fn/Dockerfile
     mem_limit: 512m
     cpus: 1
     restart: unless-stopped
     env_file:
-      - path: fn.env
+      - path: ../fn.env
         required: false
     environment:
       SUPABASE_URL: http://core:8080
@@ -137,7 +138,7 @@ services:
       FUNCTIONS_DIR: /supabase/functions
       FN_IMPORT_TIMEOUT_MS: ${FN_IMPORT_TIMEOUT_MS:-30000}
     volumes:
-      - ${SUPABASE_DIR:-./fn/empty}:/supabase:ro
+      - ${SUPABASE_DIR:-../fn/empty}:/supabase:ro
       - denocache:/deno-dir # downloaded function dependencies survive restarts
     healthcheck:
       test: ["CMD", "nc", "-z", "127.0.0.1", "8000"]
@@ -145,13 +146,13 @@ services:
       timeout: 3s
       retries: 10
 
-  # Daily backup (03:15 UTC) of the database and the storage volume, see scripts/backup.sh.
-  # One-shot: docker compose run --rm backup /scripts/backup.sh   Restore: scripts/restore.sh <timestamp>
+  # Daily backup (03:15 UTC) of the database and the storage volume, see job/backup.sh.
+  # One-shot: docker compose run --rm backup /scripts/backup.sh   Restore: job/restore.sh <timestamp>
   backup:
     <<: *defaults
     build:
-      context: ./scripts
-      dockerfile: backup.Dockerfile
+      context: ..
+      dockerfile: job/Dockerfile
     mem_limit: 512m
     cpus: 0.5
     init: true # bash in --daily mode would ignore SIGTERM as PID 1

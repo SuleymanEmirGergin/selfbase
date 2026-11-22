@@ -1,0 +1,38 @@
+name: images
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io/suleymanemirgergin
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [db, core, fn, rest, pooler, job, control, provisioner]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: build and push
+        env:
+          IMAGE: ${{ env.REGISTRY }}/selfbase-${{ matrix.image }}
+          # shortcut: db/Dockerfile still copies bootstrap/ relative to db/, so it builds with context db until Task 3 rewrites it
+          CONTEXT: ${{ matrix.image == 'db' && 'db' || '.' }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          sha="sha-${GITHUB_SHA::7}"
+          docker build -f "${{ matrix.image }}/Dockerfile" -t "$IMAGE:$version" -t "$IMAGE:$sha" "$CONTEXT"
+          docker push "$IMAGE:$version"
+          docker push "$IMAGE:$sha"

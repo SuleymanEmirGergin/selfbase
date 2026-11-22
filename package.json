@@ -1,0 +1,6 @@
+{
+  "name": "selfbase",
+  "private": true,
+  "version": "2.1.0",
+  "workspaces": ["core", "control", "provisioner", "studio", "client"]
+}

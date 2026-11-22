@@ -1,4 +1,4 @@
-// Fails when core/fn read an env variable that compose.yml does not pass to that service
+// Fails when core/fn read an env variable that template/compose.yml does not pass to that service
 // (so it could never be set in a compose deployment) and that is not deliberately internal.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 
 const root = join(import.meta.dirname, '..', '..')
-const compose = readFileSync(join(root, 'compose.yml'), 'utf8')
+const compose = readFileSync(join(root, 'template', 'compose.yml'), 'utf8')
 
 // Text of one top-level service block (2-space indented key up to the next one).
 function serviceBlock(name) {
@@ -73,7 +73,7 @@ function config(env) {
   const dir = mkdtempSync(join(tmpdir(), 'sb-config-'))
   try {
     writeFileSync(join(dir, 'empty.env'), '')
-    return spawnSync('docker', ['compose', '-f', join(root, 'compose.yml'), '--env-file', join(dir, 'empty.env'), 'config', '--format', 'json'],
+    return spawnSync('docker', ['compose', '-f', join(root, 'template', 'compose.yml'), '--env-file', join(dir, 'empty.env'), 'config', '--format', 'json'],
       { env: { ...process.env, ...env, COMPOSE_PROJECT_NAME: 'sb-config-check' }, encoding: 'utf8', timeout: 60000 })
   } finally { rmSync(dir, { recursive: true, force: true }) }
 }

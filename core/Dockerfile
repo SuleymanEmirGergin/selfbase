@@ -1,24 +1,20 @@
-# Build context is the repo root (compose.yml: context ., dockerfile core/Dockerfile)
-
-# Admin panel: static build, served by core at /panel/*
-FROM node:24.22.2-slim AS panel
-WORKDIR /app/panel
-COPY panel/package.json panel/package-lock.json ./
-RUN npm ci
-COPY panel/ ./
-RUN npm run build
-
+# Build context is the repository root. Dependencies come from the root lockfile (npm workspaces);
+# every workspace's package.json is copied so npm ci sees the lockfile's whole tree.
 FROM node:24.22.2-slim
 
 ENV NODE_ENV=production
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+COPY core/package.json core/
+COPY control/package.json control/
+COPY provisioner/package.json provisioner/
+COPY studio/package.json studio/
+COPY client/package.json client/
+RUN npm ci --omit=dev --workspace selfbase-core && npm cache clean --force
+
 WORKDIR /app/core
-
-COPY core/package.json core/package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
-
 COPY core/src ./src
-# config.panelDir default ../panel/dist, relative to /app/core
-COPY --from=panel /app/panel/dist /app/panel/dist
 
 RUN mkdir -p /data/storage && chown node:node /data/storage
 USER node

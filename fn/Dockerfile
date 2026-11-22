@@ -1,4 +1,4 @@
-# Build context is the repository root (compose.yml), so the client bundle is baked in: deploy tools
+# Build context is the repository root (template/compose.yml, CI), so the client bundle is baked in: deploy tools
 # such as Coolify do not put repository files behind relative bind mounts.
 FROM denoland/deno:alpine-2.1.4
 WORKDIR /app

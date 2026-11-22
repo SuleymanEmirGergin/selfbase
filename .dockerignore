@@ -6,10 +6,11 @@ fn.env
 dump
 data
 .superpowers
-panel/dist
-panel/test-results
-panel/playwright-report
+studio/dist
+studio/test-results
+studio/playwright-report
 **/.env
 **/.env.*
 !**/.env.example
 backups
+.claude
