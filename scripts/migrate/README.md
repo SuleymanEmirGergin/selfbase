@@ -16,7 +16,8 @@ percent-encoded inside the URL variables.
 | `SUPABASE_DB_URL` | 01 | Source, session pooler URL (`postgres.<ref>` user) |
 | `SUPABASE_URL` | 04, 05 | `https://<ref>.supabase.co` |
 | `SUPABASE_SERVICE_KEY` | 04 | Service key, only to download storage files |
-| `TARGET_DB_URL` | 02, 03, 05, 06 | selfbase superuser URL (`postgres`); a `*.supabase.co`/`*.supabase.com` host is refused |
+| `TARGET_DB_URL` | 02, 03 (and 05, 06 unless `TARGET_DB_URL_HOST` is set) | selfbase superuser URL (`postgres`) reachable from a container (`db:5432`); a `*.supabase.co`/`*.supabase.com` host is refused |
+| `TARGET_DB_URL_HOST` | 05, 06 | Optional. Same database as seen from the host (`localhost:<published port>`); preferred over `TARGET_DB_URL` when set (empty = unset). Same Supabase-host refusal; never printed |
 | `PUBLIC_URL` | 05 | selfbase public origin |
 | `SERVICE_ROLE_KEY` | 06 | Fallback value for the vault secrets (see 06) |
 | `NOTIFY_DISPATCH_SECRET`, `RADAR_NEWS_CRON_SECRET` | 06 | Optional; the edge functions' values for the two vault secrets |
@@ -27,8 +28,8 @@ turns the URL into `PG*` variables (password in `PGPASSWORD`), so no password ap
 line, neither docker's nor psql's; 05 and 06 hand the URL to `pg` in-process. 01, 02 and the 03 pipe
 (`psql_target` from `lib.sh`) run in a container, so `TARGET_DB_URL` there must be reachable from a container: set `DOCKER_NETWORK` to the
 compose network and use the service name (`db:5432`), or use `host.docker.internal:<port>`. 05 and
-06 run on the host (they use `pg` from `core/node_modules`, so `npm ci` in `core/` first), so their
-`TARGET_DB_URL` uses `localhost:<port>`.
+06 run on the host (they use `pg` from `core/node_modules`, so `npm ci` in `core/` first), so they
+use `TARGET_DB_URL_HOST` (`localhost:<port>`) when set, else `TARGET_DB_URL`. With both set, `.env` needs no edits between steps.
 
 **Pause writes on the source during step 1.** 01 reads everything from one exported snapshot, but
 if the pooler refuses to export one it says so and the reads are separate.

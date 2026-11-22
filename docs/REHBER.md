@@ -361,7 +361,7 @@ Tek istisna `PANEL_ADMIN_PASSWORD_HASH`: onu script yazar ve içindeki `$`'ları
 <!-- verify against final sync/backup: BACKUP_DIR / BACKUP_RETENTION_DAYS row above -->
 
 Taşıma (bölüm 7) ve sync (bölüm 10) için ayrıca `SUPABASE_DB_URL`, `SUPABASE_URL`,
-`SUPABASE_SERVICE_KEY`, `TARGET_DB_URL`, `DOCKER_NETWORK` gibi değişkenleri de `.env`'e yazacaksın;
+`SUPABASE_SERVICE_KEY`, `TARGET_DB_URL`, `TARGET_DB_URL_HOST`, `DOCKER_NETWORK` gibi değişkenleri de `.env`'e yazacaksın;
 onlar orada anlatılıyor.
 
 `.env.example`'da yorum satırı olarak duran `AUTH_OTP_EXPIRY`, `AUTH_EMAIL_INTERVAL`,
@@ -680,14 +680,16 @@ yükleniyor. Her adım tek transaction: hata olursa geri alınır, sebebi düzel
    | `SUPABASE_URL` | `https://<ref>.supabase.co` |
    | `SUPABASE_SERVICE_KEY` | Kaynağın service role anahtarı. Sadece dosyaları indirmek için. |
    | `DOCKER_NETWORK` | `<COMPOSE_PROJECT_NAME>_default`, ör. `selfbase-deneme_default`. Kontrol: `docker network ls`. |
-   | `TARGET_DB_URL` | `postgres://postgres:<POSTGRES_PASSWORD>@db:5432/postgres` |
+   | `TARGET_DB_URL` | `postgres://postgres:<POSTGRES_PASSWORD>@db:5432/postgres` (container'dan erişim: 01, 02, 03) |
+   | `TARGET_DB_URL_HOST` | `postgres://postgres:<POSTGRES_PASSWORD>@localhost:55432/postgres` (bilgisayardan erişim: 05, 06; port `LOCAL_DB_PORT`) |
    | `PUBLIC_URL` | zaten var |
    | `NOTIFY_DISPATCH_SECRET`, `RADAR_NEWS_CRON_SECRET` | İsteğe bağlı: `fn.env`'deki aynı adlı değerler (aşağıda adım 8) |
 
    Neden `db:5432`: 01, 02 ve 03'ün `psql`'i bir container'da çalışır ve `DOCKER_NETWORK` ile selfbase'in
-   ağına katılır, orada veritabanının adı `db`. 05 ve 06 ise bilgisayarında çalışır; onlar için adım 7'de
-   `TARGET_DB_URL`'i değiştireceksin. Supabase adresi (`*.supabase.co/.com`) hedef olarak verilirse
-   script'ler reddeder: yanlışlıkla canlıya yazamazsın.
+   ağına katılır, orada veritabanının adı `db`. 05 ve 06 ise bilgisayarında çalışır; onlar
+   `TARGET_DB_URL_HOST`'u kullanır (varsa), yoksa `TARGET_DB_URL`'e döner. İki adres aynı şifreyi
+   taşır; `.env`'i adımlar arasında değiştirmen gerekmez. Supabase adresi (`*.supabase.co/.com`) iki
+   değişkenden birinde bile verilirse script'ler reddeder: yanlışlıkla canlıya yazamazsın.
 
 4. **Kaynakta yazmaları durdur** (1. adım boyunca). Script tek bir anlık görüntüden (snapshot) okur,
    ama pooler buna izin vermezse ayrı okumalar yapar ve bunu söyler.
@@ -704,16 +706,14 @@ node scripts/migrate/03-auth-storage.sql.mjs policies | psql_target  # 5
 node scripts/migrate/04-files.mjs                                    # 6
 ```
 
-Burada `.env`'de `TARGET_DB_URL`'i `postgres://postgres:<POSTGRES_PASSWORD>@localhost:55432/postgres`
-yap (05 ve 06 bilgisayarında çalışır, veritabanına açılan porttan ulaşır), sonra:
+05 ve 06 bilgisayarında çalışır ve `.env`'deki `TARGET_DB_URL_HOST` ile veritabanına açılan porttan
+ulaşır (`compose.local.yml` ile başlatılmış olmalı). `.env`'de bir şey değiştirme:
 
 ```bash
 node scripts/migrate/05-rewrite-urls.mjs --dry-run                   # 7a
 node scripts/migrate/05-rewrite-urls.mjs                             # 7b
 node scripts/migrate/06-realtime-cron.mjs                            # 8
 ```
-
-Bitince `TARGET_DB_URL`'i tekrar `@db:5432` hâline getir (sync onu container'dan kullanır, bölüm 10).
 
 | Adım | Ne yapar | Neden | Ne görmelisin |
 |---|---|---|---|
@@ -1173,9 +1173,9 @@ Kodda `shortcut:` olarak işaretli olmayan ama bilinen eksikler:
 | Realtime mesajı gelmiyor | Tabloda realtime açık değil | `select selfbase.enable_realtime('public.<tablo>');` (tabloda `id` kolonu olmalı). Filtrede sadece `eq` çalışır. |
 | Bildirim fonksiyonu 401/403 dönüyor, `selfbase.http_queue`'da `failed` | Vault sırrı fonksiyonun env'iyle aynı değil | Bölüm 7, "Vault sırları". Kuyruğa bak: `select status, url, last_error from selfbase.http_queue order by id desc limit 10;` |
 | `selfbase.http_queue`'da `blocked` | `*.supabase.co`'ya gidip iç karşılığı olmayan bir istek | Bilerek engellendi; isteği yapan cron/trigger'ı incele. |
-| Taşıma script'i `points at a Supabase host` | `TARGET_DB_URL` Supabase'i gösteriyor | Hedef selfbase olmalı (bölüm 7). |
+| Taşıma script'i `points at a Supabase host` | `TARGET_DB_URL` ya da `TARGET_DB_URL_HOST` Supabase'i gösteriyor | Hedef selfbase olmalı (bölüm 7). |
 | 01-03 `could not translate host name "db"` | `DOCKER_NETWORK` yok ya da yanlış | `docker network ls`, `<proje adı>_default`. |
-| 05/06 `getaddrinfo ENOTFOUND db` | 05 ve 06 bilgisayarda çalışır | `TARGET_DB_URL`'i `localhost:<LOCAL_DB_PORT>` yap, `compose.local.yml` ile başlat. |
+| 05/06 `getaddrinfo ENOTFOUND db` | 05 ve 06 bilgisayarda çalışır, `TARGET_DB_URL_HOST` yok | `.env`'e `TARGET_DB_URL_HOST=postgres://postgres:<POSTGRES_PASSWORD>@localhost:<LOCAL_DB_PORT>/postgres` ekle, `compose.local.yml` ile başlat. |
 | `02 pre: the target is not empty` | Hedefte zaten veri var | Boş bir kurulum: `docker compose down -v`, tekrar `up`. |
 
 Hâlâ çözülmediyse: `docker compose logs --tail 200 core` çıktısını (içinde sır olmadığını kontrol

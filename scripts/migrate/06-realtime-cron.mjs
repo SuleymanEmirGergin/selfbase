@@ -5,11 +5,11 @@
 //     --activate is given, so the source and selfbase never both run the pipelines: run once without
 //     the flag, and again with --activate at cutover (source jobs inactive keep inactive either way).
 //   - vault secrets the migrations read (vault.decrypted_secrets where name = ...)
-// Re-runnable. Env (or .env at the repo root): TARGET_DB_URL, SERVICE_ROLE_KEY.
+// Re-runnable. Env (or .env at the repo root): TARGET_DB_URL_HOST or, when unset, TARGET_DB_URL; SERVICE_ROLE_KEY.
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { connect, loadEnv, requireEnv } from './05-rewrite-urls.mjs'
+import { connect, hostDbVar, loadEnv, requireEnv } from './05-rewrite-urls.mjs'
 
 // From `grep "vault.decrypted_secrets where name ="` over corteqsemir's migrations. Both are shared
 // secrets the edge functions compare with their env var (value below); that env var wins here too,
@@ -18,7 +18,8 @@ const VAULT_NAMES = { notification_dispatch_secret: 'NOTIFY_DISPATCH_SECRET', ra
 
 const activate = process.argv.includes('--activate')
 loadEnv()
-const [dbUrl, serviceKey] = requireEnv('TARGET_DB_URL', 'SERVICE_ROLE_KEY')
+const dbVar = hostDbVar()
+const [dbUrl, serviceKey] = requireEnv(dbVar, 'SERVICE_ROLE_KEY')
 const dir = process.env.DUMP_DIR || fileURLToPath(new URL('../../dump', import.meta.url))
 function catalog(name) {
   const file = join(dir, 'catalog', `${name}.json`)
@@ -29,7 +30,7 @@ function catalog(name) {
 }
 
 let failed = 0
-const db = await connect(dbUrl)
+const db = await connect(dbUrl, dbVar)
 
 for (const t of catalog('realtime_tables')) {
   const rel = `${db.escapeIdentifier(t.schema)}.${db.escapeIdentifier(t.table)}`
