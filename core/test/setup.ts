@@ -14,6 +14,7 @@ Object.assign(process.env, {
   DB_HOST: 'localhost',
   DB_PORT: dbPort,
   POSTGRES_PASSWORD: 'test-postgres-password',
+  PLATFORM_DIR: '../db/platform',
   JWT_SECRET: TEST_JWT_SECRET,
   ANON_KEY: await apiKey('anon'),
   SERVICE_ROLE_KEY: await apiKey('service_role'),

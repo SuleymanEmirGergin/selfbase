@@ -8,7 +8,7 @@ import type { JwtClaims } from './jwt.ts'
 export const pool = new pg.Pool({ ...config.db, max: 10, connectionTimeoutMillis: 10_000 })
 
 // Same login PostgREST uses: NOINHERIT and can only switch to the API roles, never superuser.
-const userPool = new pg.Pool({ ...config.db, user: 'authenticator', max: 10, connectionTimeoutMillis: 10_000 })
+const userPool = new pg.Pool({ ...config.db, user: 'authenticator', password: config.authenticatorPassword, max: 10, connectionTimeoutMillis: 10_000 })
 
 // An idle client whose backend dies (database restart) emits 'error' on the pool; unhandled, it would end the process.
 // The pool drops that client and the next query opens a fresh one.

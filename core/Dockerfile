@@ -15,6 +15,7 @@ RUN npm ci --omit=dev --workspace selfbase-core && npm cache clean --force
 
 WORKDIR /app/core
 COPY core/src ./src
+COPY db/platform /app/db/platform
 
 RUN mkdir -p /data/storage && chown node:node /data/storage
 USER node
