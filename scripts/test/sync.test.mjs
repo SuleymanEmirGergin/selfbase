@@ -49,7 +49,7 @@ describe('sync', () => {
   beforeEach(() => sql('drop table if exists selfbase.applied_migrations, selfbase.sync_inflight; truncate supabase_migrations.schema_migrations; ' +
     'drop schema if exists t13 cascade; create schema t13;'))
   const noGuard = () => assert.equal(sql("select (select count(*) from selfbase.sync_inflight) + " +
-    "(select count(*) from pg_class where relname = '_selfbase_sync_guard')"), '0')
+    "(select count(*) from pg_class where relname like '\\_selfbase\\_sync\\_guard%')"), '0')
 
   test('second of two fails: first recorded, second not, exit 1; a re-run does not re-apply the first', () => {
     const d = repo({ [M1]: ok1, [M2]: bad2 })
@@ -98,10 +98,10 @@ describe('sync', () => {
     assert.equal(sql("select to_regclass('t13.t') is null and to_regclass('t13.u') is null"), 't')
   })
 
-  // With standard_conforming_strings off (the setting name comes from a VALUES row, which no static scan
+  // With standard_conforming_strings off (the setting name is built at run time, which no static scan
   // can follow), psql and the server read 'a\', ' as one string and run what follows; the scan reads
   // two strings and sees nothing.
-  const hide = (sqlText) => "select set_config(x, 'off', false) from (values ('standard_conforming_strings')) v(x);\n" +
+  const hide = (sqlText) => "select set_config('standard_' || 'conforming_strings', 'off', false);\n" +
     `create table t13.h (id int);\nselect 'a\\', '; ${sqlText} -- '\nselect 2;\ncreate table t13.after (id int);\n`
 
   test('tripwire: a COMMIT the scan cannot see fails the run truthfully and records nothing', () => {
@@ -134,7 +134,17 @@ describe('sync', () => {
     const r = sync(repo({ [M1]: hide('commit; begin; create temp table _selfbase_sync_guard () on commit drop;') }))
     assert.equal(r.status, 1)
     assert.match(r.stderr, /committed outside the expected transaction; it is NOT recorded/)
+    assert.match(r.stderr, /see the limits in the header of scripts\/sync\.mjs/)
     assert.equal(applied(), '')
+    noGuard()
+  })
+
+  test('tripwire: a hidden ROLLBACK that opens a new read-write transaction cannot fake the guard', () => {
+    const r = sync(repo({ [M1]: hide('rollback; begin read write; create temp table _selfbase_sync_guard () on commit drop;') }))
+    assert.equal(r.status, 1)
+    assert.match(r.stderr, /sync's guard was gone when the record was to be written/)
+    assert.equal(applied(), '')
+    assert.equal(sql("select to_regclass('t13.h') is null and to_regclass('t13.after') is null"), 't')
     noGuard()
   })
 
@@ -473,7 +483,27 @@ test('scan: nothing may change the read-only mode sync runs the file in', () => 
   assert.match(scan('begin read only;\nselect 1;\ncommit;\n').error, /READ ONLY BEGIN/)
   assert.match(scan('select 1;\nbegin read write;\nselect 2;\ncommit;\n').error, /BEGIN with options/)
   assert.equal(scan('begin read write;\nselect 1;\ncommit;\n').error, undefined)
-  assert.equal(scan('set transaction isolation level serializable;\n').error, undefined)
+  for (const s of ['set transaction isolation level serializable;', 'set transaction isolation level read committed;',
+    'set local transaction isolation level repeatable read;']) {
+    assert.match(scan(`${s}\nselect 1;\n`).error ?? '', /set the isolation level on the BEGIN statement/, s)
+  }
+  assert.equal(scan('show transaction_read_only;\nshow standard_conforming_strings;\nselect 1;\n').error, undefined)
+})
+
+test('scan: setting names are seen through quotes, and pg_settings cannot be written', () => {
+  for (const s of ['set "standard_conforming_strings" = off;', "select set_config(E'standard_conforming_strings', 'off', false);",
+    "select set_config($$standard_conforming_strings$$, 'off', false);", "select \"set_config\"('backslash_quote', 'on', false);",
+    "select set_config($x$Standard_Conforming_Strings$x$, 'off', false);", 'set "backslash_quote" = on;',
+    "update pg_settings set setting = 'off' where name = 'standard_conforming_strings';"]) {
+    assert.match(scan(`select 1;\n${s}\n`).error ?? '', /quotes|set_config|pg_settings/, s)
+  }
+  for (const s of ['set "default_transaction_read_only" = off;', "select set_config(E'transaction_read_only', 'off', false);",
+    "select set_config($$default_transaction_read_only$$, 'off', false);",
+    "update pg_catalog.pg_settings set setting = 'off' where name = 'default_transaction_read_only';"]) {
+    assert.match(scan(`select 1;\n${s}\n`).error ?? '', /read-only mode|set_config|pg_settings/, s)
+  }
+  assert.match(scan("update \"pg_settings\" set setting = 'x' where name = 'work_mem';\n").error, /writes to pg_settings/)
+  assert.equal(scan("select setting from pg_settings where name = 'work_mem';\n-- standard_conforming_strings in a comment\n").error, undefined)
 })
 
 test('scan: casts, slices and time literals are not psql variables', () => {

@@ -111,6 +111,12 @@ Tests: `node --test scripts/migrate/test/rewrite.test.mjs` and `bash scripts/mig
   `node scripts/sync.mjs --repo <corteqsemir>` whenever the team adds migrations (`--dry-run` lists
   first; `--mark-applied <file>` records a file applied by hand). Same `TARGET_DB_URL` rules as 02.
   Details in the header of `scripts/sync.mjs`.
+  Limits: sync runs migrations as a superuser and trusts them. Applying a file and recording it happen
+  atomically for files whose transaction control the scanner can see. A file that hides transaction
+  control from the scanner (setting names built at run time, quote-mode tricks) can break that, and
+  then "(rolled back)" or "applied" may not describe the database exactly. Effects that are not
+  transactional at all (NOTIFY, dblink or pg_background, COPY ... TO PROGRAM, lo_export, session
+  settings) are never undone by a rollback.
 - The compose `backup` service writes `/backups/<UTC timestamp>/` (database, roles, storage) every
   day at 03:15 UTC; `docker compose run --rm backup /scripts/backup.sh` makes one now.
 - `scripts/restore.sh <timestamp> --yes-overwrite` restores over the running stack. It does not

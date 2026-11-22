@@ -12,12 +12,19 @@
 // A file psql could run differently from how it is scanned here (meta-commands other than \echo,
 // \qecho, \warn, \encoding and `\set ON_ERROR_STOP on`, psql variables), with transaction control
 // beyond one wrapper, or with a statement that cannot run in a transaction, is refused before any of it runs.
-// Independent of that scan, a guard created at the start of the transaction must still exist when the
-// record is written, so a COMMIT the scan missed fails the run (reported as committed, NOT recorded).
+// Independent of that scan, the session is read-only outside the one intended transaction, and a guard
+// table and inflight row carrying a random per-run token must both still exist when the record is
+// written, so a COMMIT or ROLLBACK the scan missed fails the run instead of being recorded.
 // One sync at a time per database (advisory lock).
+// Limits: sync runs migrations as a superuser and trusts them. Applying a file and recording it happen
+// atomically for files whose transaction control the scanner can see. A file that hides transaction
+// control from the scanner (setting names built at run time, quote-mode tricks) can break that, and then
+// "(rolled back)" or "applied" may not describe the database exactly. Effects that are not transactional
+// at all (NOTIFY, dblink or pg_background, COPY ... TO PROGRAM, lo_export, session settings) are never
+// undone by a rollback.
 // Env (or .env at the repo root): TARGET_DB_URL, a superuser URL reachable from a container (service name
 // plus DOCKER_NETWORK, or host.docker.internal:<port>). Values are never printed.
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
 import { lstatSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -35,9 +42,11 @@ const lineOf = (s, i) => s.slice(0, i).split('\n').length
 // keywords and offsets can be read from the rest. A backslash outside those starts a psql meta-command
 // that runs to the end of its line, where psql's own lexer applies (quotes, comment openers and $$ are
 // plain text there): such lines are blanked too and returned in `metas`. An unterminated construct is
-// an error (psql would read the rest of the file into it).
+// an error (psql would read the rest of the file into it). `bare` is the file with only comments and
+// meta-command lines blanked, for checks that must see names inside quotes.
 export function lex(sql) {
   const out = sql.split('')
+  const bare = sql.split('') // only comments and meta-command lines blanked; strings and quoted names kept
   const n = sql.length
   const metas = []
   const quoteEnd = (k, q, esc) => {
@@ -80,10 +89,11 @@ export function lex(sql) {
     }
     if (j === -2) return { error: `has an unterminated ${what} starting at line ${lineOf(sql, i)}` }
     if (j < 0) { i++; continue }
-    for (let k = i; k < j; k++) if (out[k] !== '\n') out[k] = ' '
+    const quoted = /^(string|quoted|dollar)/.test(what)
+    for (let k = i; k < j; k++) if (out[k] !== '\n') { out[k] = ' '; if (!quoted) bare[k] = ' ' }
     i = j
   }
-  return { m: out.join(''), metas }
+  return { m: out.join(''), metas, bare: bare.join('') }
 }
 
 const NO_TX = /^(vacuum|create database|drop database|alter system|create tablespace|drop tablespace|(create|alter|drop) subscription|create (unique )?index concurrently|drop index concurrently|reindex\b.*\bconcurrently\b|alter table\b.*\bdetach partition\b.*\bconcurrently\b)/
@@ -100,7 +110,7 @@ const UTF8_ENC = /^set\s+(session\s+|local\s+)?(client_encoding\s*(to|=)|names)\
 export function scan(sql) {
   const lexed = lex(sql)
   if (lexed.error) return lexed
-  const { m, metas } = lexed
+  const { m, metas, bare } = lexed
   // Meta-commands: only output, \encoding UTF8 and \set ON_ERROR_STOP on. \if hides statements, \gset/\g
   // end one, \set feeds variables, \i \c \! \o \copy reach other files, databases or the shell.
   for (const { at, line } of metas) {
@@ -136,18 +146,26 @@ export function scan(sql) {
   for (const s of stmts) {
     if (NO_TX.test(s.t)) return { error: `contains "${s.t.slice(0, 60)}", which cannot run inside a transaction` }
     if (OTHER_TX.test(s.t)) return { error: `contains ${s.t.split(' ')[0].toUpperCase()} (transaction control)` }
+    if (/^show\b/.test(s.t)) continue
     const raw = sql.slice(s.at, s.end).trim()
-    if (/\bbackslash_quote\b/.test(s.t) || (/\bstandard_conforming_strings\b/.test(s.t) && !SCS_ON.test(raw)) ||
-        (/^set (session |local )?(client_encoding|names)\b/.test(s.t) && !UTF8_ENC.test(raw))) {
-      return { error: `changes how quotes or text are read ("${s.t.slice(0, 60)}"); only standard_conforming_strings = on and UTF8 are allowed` }
+    const k = bare.slice(s.at, s.end).toLowerCase() // names inside strings and quoted identifiers count here
+    const quoteMode = `changes how quotes or text are read ("${s.t.slice(0, 60)}"); only standard_conforming_strings = on and UTF8 are allowed`
+    const readOnly = `changes the transaction read-only mode ("${s.t.slice(0, 60)}"), which sync relies on`
+    if (/\b(update|insert\s+into|delete\s+from|merge\s+into)\s+(only\s+)?("?pg_catalog"?\s*\.\s*)?"?pg_settings\b/.test(k)) {
+      return { error: `writes to pg_settings ("${s.t.slice(0, 60)}"), which changes sync's session settings` }
+    }
+    const name = /\b(standard_conforming_strings|backslash_quote|client_encoding|default_transaction_read_only|transaction_read_only)\b/.exec(k)?.[1]
+    if (name && /\bset_config"?\s*\(/.test(k)) return { error: `calls set_config('${name}', ...), which changes how sync's session reads the file` }
+    if (name === 'backslash_quote' || (name === 'standard_conforming_strings' && !SCS_ON.test(raw)) ||
+        (name === 'client_encoding' && !UTF8_ENC.test(raw)) || (/^set (session |local )?names\b/.test(s.t) && !UTF8_ENC.test(raw))) {
+      return { error: quoteMode }
     }
     // sync runs the file read-only except inside its one transaction; nothing may switch that back
-    if (/\b(default_transaction_read_only|transaction_read_only)\b/.test(s.t) || /^set (session |local )?transaction\b.*\bread\b/.test(s.t) ||
-        /^set session characteristics\b/.test(s.t) || /^reset all\b/.test(s.t)) {
-      return { error: `changes the transaction read-only mode ("${s.t.slice(0, 60)}"), which sync relies on` }
+    if (/transaction_read_only$/.test(name ?? '') || /^set session characteristics\b/.test(s.t) || /^reset all\b/.test(s.t)) return { error: readOnly }
+    if (/^set (session |local )?transaction\b/.test(s.t)) {
+      return { error: /\bread (only|write)\b/.test(s.t) ? readOnly
+        : `sets transaction options outside its BEGIN ("${s.t.slice(0, 60)}"); set the isolation level on the BEGIN statement` }
     }
-    const cfg = /\bset_config\s*\(\s*'(standard_conforming_strings|backslash_quote|client_encoding|default_transaction_read_only|transaction_read_only)'/i.exec(raw)
-    if (cfg) return { error: `calls set_config('${cfg[1]}', ...), which changes how sync's session reads the file` }
   }
   const begins = stmts.filter((s) => /^(begin|start transaction)\b/.test(s.t))
   const commits = stmts.filter((s) => /^(commit|end)\b/.test(s.t))
@@ -215,7 +233,9 @@ async function takeLock() {
 // migration committed outside that transaction (a COMMIT the scan did not see).
 const CREATE = `create table if not exists selfbase.applied_migrations (
   name text primary key, applied_at timestamptz not null default now(), checksum text);
-create table if not exists selfbase.sync_inflight (name text primary key, started_at timestamptz not null default now());`
+create table if not exists selfbase.sync_inflight (name text primary key, started_at timestamptz not null default now());
+alter table selfbase.sync_inflight add column if not exists nonce text;`
+const LIMITS = 'sync: see the limits in the header of scripts/sync.mjs'
 const record = (f) => `insert into selfbase.applied_migrations (name, checksum) values (${lit(f.name)}, ${lit(f.sum)})
   on conflict (name) do nothing;\n${f.version ? `insert into supabase_migrations.schema_migrations (version, name)
   values (${lit(f.version)}, ${lit(f.label)}) on conflict (version) do nothing;\n` : ''}`
@@ -383,8 +403,13 @@ select 'V', version, coalesce(name, '') from supabase_migrations.schema_migratio
     const t = f.text
     const b = s.ownBegin ? s.beginEnd : 0
     const c = s.commitAt < 0 ? t.length : s.commitAt
-    const guard = `create temp table _selfbase_sync_guard () on commit drop; insert into selfbase.sync_inflight (name) values (${lit(f.name)});`
-    const rec = `\nreset role;\nselect from pg_temp._selfbase_sync_guard;\ndelete from selfbase.sync_inflight where name = ${lit(f.name)};\n${record(f)}`
+    // A random token per run names the guard and marks the inflight row, so a file cannot re-create either.
+    const nonce = randomBytes(16).toString('hex')
+    const guard = `create temp table _selfbase_sync_guard_${nonce} () on commit drop; ` +
+      `insert into selfbase.sync_inflight (name, nonce) values (${lit(f.name)}, '${nonce}');`
+    const rec = `\nreset role;\nselect from pg_temp._selfbase_sync_guard_${nonce};\ndo $sync_${nonce}$ declare n int; begin\n` +
+      `delete from selfbase.sync_inflight where name = ${lit(f.name)} and nonce = '${nonce}'; get diagnostics n = row_count;\n` +
+      `if n <> 1 then raise exception 'sync: its inflight row is gone (% rows)', n; end if; end $sync_${nonce}$;\n${record(f)}`
     const sql = `set default_transaction_read_only = on; ${s.ownBegin ? '' : 'begin read write; '}${t.slice(0, b)}` +
       `${s.ownBegin ? ' set transaction read write;' : ''} ${guard} ${t.slice(b, c)}` +
       (s.commitAt < 0 ? `\n;${rec}commit;\n` : `${rec}${t.slice(c)}`)
@@ -394,14 +419,14 @@ select 'V', version, coalesce(name, '') from supabase_migrations.schema_migratio
     const out = r.stderr.split('\n').filter((l) => l && !/there is already a transaction in progress/.test(l))
       .map((l) => l.replace(/^psql:<stdin>:/, `${f.name}:`))
     const unseenCommit = out.some((l) => /there is no transaction in progress/.test(l))
-    const guardGone = out.some((l) => /_selfbase_sync_guard" does not exist/.test(l))
+    const guardGone = out.some((l) => /_selfbase_sync_guard_[0-9a-f]+" does not exist|its inflight row is gone/.test(l))
     if (r.status !== 0 || unseenCommit) {
-      const tail = `(${done} applied before it):\n${out.join('\n')}`
-      const check = run("-At", `select name from selfbase.sync_inflight where name = ${lit(f.name)};
+      const tail = `(${done} applied before it):\n${out.join('\n')}\n${LIMITS}`
+      const check = run("-At", `select name from selfbase.sync_inflight where name = ${lit(f.name)} and nonce = '${nonce}';
 delete from selfbase.sync_inflight where name = ${lit(f.name)};`)
       if (check.status !== 0) {
-        stop(`sync: FAILED ${f.name}: could not determine whether it committed; it is NOT recorded; inspect the database ` +
-          `before running sync again ${tail}\n${check.stderr.trim()}`)
+        stop(`sync: FAILED ${f.name}: could not determine whether it committed or was recorded; inspect the database ` +
+          `before running sync again (${done} applied before it):\n${out.join('\n')}\n${check.stderr.trim()}\n${LIMITS}`)
       }
       if (check.stdout.trim() || unseenCommit) {
         const msg = `sync: FAILED ${f.name}: it committed outside the expected transaction; it is NOT recorded; ` +
