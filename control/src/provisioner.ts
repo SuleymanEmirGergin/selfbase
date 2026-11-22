@@ -40,6 +40,14 @@ export class ProvisionerError extends ApiError {
     super(502, code, message)
     this.upstream = upstream
   }
+  /**
+   * A refusal that the same request gets again (400 invalid_env from a render failure, invalid_service, invalid_dir,
+   * 404 project_not_found or job_not_found, 409 subnet_conflict or backup_dir_unset, 501): a job step does not retry
+   * it. 409 job_running (another job is still running) and transport failures (upstream 0) may pass.
+   */
+  get permanent(): boolean {
+    return (this.upstream >= 400 && this.upstream < 500 && this.code !== 'job_running') || this.upstream === 501
+  }
 }
 
 // The provisioner holds its jobs lock through an image pull (up to 120 s) and stops services one by one, each

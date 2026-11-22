@@ -94,7 +94,7 @@ export const v1Project = (p: ProjectRow) => ({
   database: { host: 'db', version: '17', postgres_engine: '17', release_channel: 'ga' },
 })
 // Studio matches organization_id against /platform/me's organization ids
-const platformProject = (p: ProjectRow) => ({ ...v1Project(p), organization_id: p.org_id, size: p.size, certificate: p.certificate })
+export const platformProject = (p: ProjectRow) => ({ ...v1Project(p), organization_id: p.org_id, size: p.size, certificate: p.certificate })
 
 export function projectName(name: unknown): string {
   if (typeof name !== 'string' || !name.trim() || name.trim().length > 100) throw bad('name must be 1 to 100 characters')

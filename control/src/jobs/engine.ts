@@ -5,13 +5,14 @@
 // - jobs.step holds the index of the next step; it advances in the transaction that records the step's
 //   job_events row, so a restart resumes at the first step not recorded as done.
 // - A failing step is tried up to 3 times with backoff; then the job is `failed` with the error's message and the
-//   job's onFail sets the project's status. An ApiError below 500 (admission, host cap) is not retried.
+//   job's onFail sets the project's status. An ApiError below 500 (admission, host cap) and a permanent provisioner
+//   refusal (ProvisionerError.permanent) are not retried.
 // - jobs.attempts counts the tries of the current step (reset when the next step starts).
 import pg from 'pg'
 import type { Db } from '../db.ts'
 import { probeCertificate } from '../cert.ts'
 import { ApiError } from '../errors.ts'
-import type { Provisioner } from '../provisioner.ts'
+import { ProvisionerError, type Provisioner } from '../provisioner.ts'
 import { SECRET_ENV, THIRD_PARTY_SECRET_ENV } from '../project-env.ts'
 
 export type Lane = 'light' | 'heavy'
@@ -149,7 +150,7 @@ export function startWorkers(deps: WorkerDeps): { stop(): Promise<void> } {
           await step.run(await ctxFor(step.name))
         } catch (e) {
           const err = e instanceof Error ? e : new Error(String(e))
-          const fatal = step.retry === false || (err instanceof ApiError && err.status < 500)
+          const fatal = step.retry === false || (err instanceof ApiError && err.status < 500) || (err instanceof ProvisionerError && err.permanent)
           if (fatal || attempts >= MAX_ATTEMPTS) return fail(step.name, err)
           await c.query(`insert into control.job_events (job_id, status, step, message) values ($1, 'retry', $2, $3)`, [job.id, step.name, message(err)])
           for (let t = backoffMs * 4 ** (attempts - 1); t > 0 && !stopping; t -= 100) await sleep(Math.min(t, 100))
