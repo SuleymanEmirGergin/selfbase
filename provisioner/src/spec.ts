@@ -123,7 +123,14 @@ export function buildProject(input: EnsureInput, tpl: Template, sizes: Sizes, no
     refuse(400, 'invalid_host', 'hosts must be lowercase DNS names')
   }
   const table = sizes[size]
-  const res = (service: string) => Object.hasOwn(table, service) ? table[service] : refuse(500, 'size_missing', `sizes.${size}.${service} is missing`)
+  const res = (service: string) => {
+    const r = Object.hasOwn(table, service) ? table[service] : refuse(500, 'size_missing', `sizes.${size}.${service} is missing`)
+    // Docker reads 0, null or a negative value as "no limit"
+    const ok = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v > 0
+    for (const k of ['mem_mb', 'cpus', 'pids'] as const) if (!ok(r[k])) refuse(500, 'size_invalid', `sizes.${size}.${service}.${k} must be a number > 0`)
+    if (r.shm_mb !== undefined && !ok(r.shm_mb)) refuse(500, 'size_invalid', `sizes.${size}.${service}.shm_mb must be a number > 0`)
+    return r
+  }
   const db = Object.hasOwn(table, 'db') ? table.db : undefined
   const pooler = Object.hasOwn(table, 'pooler') ? table.pooler : undefined
   const env: Record<string, string> = {

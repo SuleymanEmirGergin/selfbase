@@ -180,6 +180,18 @@ test('a service with no entry in sizes is refused', () => {
   assert.throws(() => buildProject(input(), tpl, sizes, NODE), code('size_missing'))
 })
 
+test('a size entry with a missing, zero, negative or non-numeric limit is refused', () => {
+  for (const field of ['mem_mb', 'cpus', 'pids', 'shm_mb']) {
+    for (const bad of [undefined, NaN, 0, -1, '512', Infinity]) {
+      const sizes = structuredClone(SIZES) as any
+      if (bad === undefined) delete sizes.micro.db[field]
+      else sizes.micro.db[field] = bad
+      if (field === 'shm_mb' && bad === undefined) continue // shm_mb is optional
+      assert.throws(() => buildProject(input(), tpl, sizes, NODE), code('size_invalid'), `${field}=${String(bad)}`)
+    }
+  }
+})
+
 test('specHash is stable and follows the body', () => {
   const a = buildProject(input(), tpl, SIZES, NODE).containers
   const b = buildProject(input(), tpl, SIZES, NODE).containers
@@ -243,4 +255,7 @@ test('template.ts --check validates and renders every size', () => {
   assert.match(out, /micro, small, medium/)
   writeFileSync(join(dir, 'compose.yml'), readFileSync(fixturePath, 'utf8').replace('init: true', 'init: true\n    privileged: true'))
   assert.throws(() => execFileSync(process.execPath, [cli, '--check', join(dir, 'compose.yml')], { stdio: 'pipe' }))
+  copyFileSync(fixturePath, join(dir, 'compose.yml'))
+  writeFileSync(join(dir, 'sizes.json'), JSON.stringify({ ...SIZES, medium: { ...SIZES.medium, core: { mem_mb: 0, cpus: 1, pids: 512 } } }))
+  assert.throws(() => execFileSync(process.execPath, [cli, '--check', join(dir, 'compose.yml')], { stdio: 'pipe' }), /size_invalid|medium\.core/)
 })
