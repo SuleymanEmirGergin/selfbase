@@ -19,7 +19,10 @@ const key = () => new TextEncoder().encode(config.jwtSecret)
 // compared against when the email is wrong or login is disabled, so timing reveals neither
 const DUMMY_HASH = bcrypt.hashSync(randomUUID(), 10)
 
-/** Client IP: the socket address, or the proxy-appended X-Forwarded-For entry when TRUST_PROXY=true. */
+/**
+ * Client IP: the socket address, or, when TRUST_PROXY=true, the RIGHTMOST X-Forwarded-For entry (the one our proxy
+ * appended); entries to its left are client-supplied and spoofable.
+ */
 function clientIp(c: Context): string {
   if (process.env.TRUST_PROXY === 'true') {
     const xff = c.req.header('x-forwarded-for')?.split(',').map((s) => s.trim()).filter(Boolean)
@@ -37,14 +40,15 @@ function failure(ip: string) {
   fails.set(ip, { count, resetAt: now + LOCK_MS })
 }
 const locked = (ip: string) => {
+  const now = Date.now()
+  for (const [k, f] of fails) if (f.resetAt <= now) fails.delete(k) // prune so the map cannot grow without bound
   const f = fails.get(ip)
-  if (f && f.resetAt <= Date.now()) fails.delete(ip)
-  return !!f && f.resetAt > Date.now() && f.count >= MAX_FAILS
+  return !!f && f.count >= MAX_FAILS
 }
 
 const isLocalHttp = (c: Context) => {
   const u = new URL(c.req.url)
-  return u.protocol === 'http:' && (u.hostname === 'localhost' || u.hostname === '127.0.0.1')
+  return u.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname)
 }
 
 /** 403 for a POST/PATCH/DELETE whose Origin header is another site (the panel is same-origin). */

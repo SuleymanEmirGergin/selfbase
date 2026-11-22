@@ -42,10 +42,19 @@ router.post('/policies', async (c) => {
   const sql = `create policy ${q(name)} on ${qrel(rel)} as ${b.permissive === false ? 'restrictive' : 'permissive'} for ${command}
     to ${roles.map((r) => (r === 'public' ? 'public' : q(r))).join(', ')}`
     + (b.using ? ` using (${b.using})` : '') + (b.check ? ` with check (${b.check})` : '')
-  await withTx(async (db) => {
-    await db.query(sql)
-    await audit(db, 'policies.create', `${rel.schema}.${rel.name}`, { name, command, roles, using: b.using ?? null, check: b.check ?? null })
-  })
+  // dedicated connection, destroyed afterwards: whatever the expression text does to the session stays out of the pool
+  const client = await pool.connect()
+  try {
+    await client.query('begin')
+    await client.query(sql)
+    await audit(client, 'policies.create', `${rel.schema}.${rel.name}`, { name, command, roles, using: b.using ?? null, check: b.check ?? null })
+    await client.query('commit')
+  } catch (err) {
+    await client.query('rollback').catch(() => {})
+    throw err
+  } finally {
+    client.release(true)
+  }
   return c.json({})
 })
 

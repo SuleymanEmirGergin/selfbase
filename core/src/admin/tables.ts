@@ -4,20 +4,25 @@ import type { Context } from 'hono'
 import { pool } from '../db.ts'
 import { withTx } from '../auth/users.ts'
 import { adminError, audit, column, getRelation, listRelations, q, qrel, readBody } from './ident.ts'
-import type { Relation } from './ident.ts'
+import type { Column, Relation } from './ident.ts'
 
 // Values JSON represents exactly keep pg's parser; everything else (bigint, numeric, bytea, dates, arrays...)
 // stays the database's text form, which the write path below casts straight back.
-const KEEP = new Set([16, 21, 23, 700, 701, 114, 3802]) // bool, int2, int4, float4, float8, json, jsonb
+const KEEP = new Set([16, 21, 23, 114, 3802]) // bool, int2, int4, json, jsonb
+const FLOATS = new Set([700, 701]) // float4, float8: NaN and +-Infinity have no JSON number, so they stay strings
+const float = (v: string) => (Number.isFinite(Number(v)) ? Number(v) : v)
 export const rowTypes = {
-  getTypeParser: (oid: number, format?: any) => (KEEP.has(oid) ? pg.types.getTypeParser(oid, format) : (v: string) => v),
+  getTypeParser: (oid: number, format?: any) =>
+    KEEP.has(oid) ? pg.types.getTypeParser(oid, format) : FLOATS.has(oid) ? float : (v: string) => v,
 }
 
 const OPS: Record<string, string> = { eq: '=', neq: '<>', gt: '>', gte: '>=', lt: '<', lte: '<=', like: 'like', ilike: 'ilike', is: 'is' }
 const IS_VALUES: Record<string, string> = { null: 'null', true: 'true', false: 'false' }
 
-/** Parameter text for a JSON value, cast by the caller to the column type. */
-const asText = (v: unknown) => (v === null || v === undefined ? null : typeof v === 'object' ? JSON.stringify(v) : String(v))
+const JSON_TYPES = new Set(['json', 'jsonb'])
+/** Parameter text for a JSON value, cast by the caller to the column type; json columns always get JSON text. */
+const asText = (v: unknown, col: Column) =>
+  v === null || v === undefined ? null : JSON_TYPES.has(col.type) || typeof v === 'object' ? JSON.stringify(v) : String(v)
 
 const int = (v: string | undefined, dflt: number, max: number) => {
   const n = v === undefined || v === '' ? dflt : Number(v)
@@ -34,7 +39,7 @@ function pkWhere(rel: Relation, pk: unknown, params: unknown[]): string {
   if (keys.length !== pkCols.length || !pkCols.every((c) => keys.includes(c.name)))
     throw adminError(400, `pk must give exactly the primary key columns: ${pkCols.map((c) => c.name).join(', ')}`)
   return pkCols.map((c) => {
-    params.push(asText((pk as any)[c.name]))
+    params.push(asText((pk as any)[c.name], c))
     return `${q(c.name)} = $${params.length}::${c.type}`
   }).join(' and ')
 }
@@ -99,7 +104,7 @@ router.post('/rows/:schema/:table', async (c) => {
   const rel = await relOf(c)
   const values = valuesOf(await readBody(c))
   const cols = Object.keys(values).map((k) => column(rel, k))
-  const params = cols.map((col) => asText(values[col.name]))
+  const params = cols.map((col) => asText(values[col.name], col))
   const sql = cols.length
     ? `insert into ${qrel(rel)} (${cols.map((col) => q(col.name)).join(', ')}) values (${cols.map((col, i) => `$${i + 1}::${col.type}`).join(', ')}) returning *`
     : `insert into ${qrel(rel)} default values returning *`
@@ -117,7 +122,7 @@ router.patch('/rows/:schema/:table', async (c) => {
   const values = valuesOf(body)
   const cols = Object.keys(values).map((k) => column(rel, k))
   if (!cols.length) throw adminError(400, 'values must not be empty')
-  const params: unknown[] = cols.map((col) => asText(values[col.name]))
+  const params: unknown[] = cols.map((col) => asText(values[col.name], col))
   const set = cols.map((col, i) => `${q(col.name)} = $${i + 1}::${col.type}`).join(', ')
   const where = pkWhere(rel, body.pk, params)
   const row = await withTx(async (db) => {

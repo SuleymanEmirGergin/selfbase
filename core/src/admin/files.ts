@@ -41,6 +41,13 @@ router.get(OBJ, async (c) => {
   return fileResponse(bucket, name, await readMetaUnchecked(bucket, name), c.req.header('range'))
 })
 
+/** Audit after a file write; a failed insert is logged and answered 500 instead of vanishing. */
+const auditFile = (action: string, target: string, detail: object) =>
+  audit(pool, action, target, detail).catch((err) => {
+    console.error(`admin: audit failed after ${action} ${target}: ${err.message}`)
+    throw adminError(500, 'the change was applied but its audit row could not be written')
+  })
+
 const tooLarge = () => new StorageError(413, 'Payload too large', 'The object exceeded the maximum allowed size')
 
 // raw body with the file's content type; always an upsert (the operator overwrites on purpose)
@@ -52,14 +59,14 @@ router.post(OBJ, bodyLimit({ maxSize: MAX_UPLOAD, onError: () => { throw tooLarg
   // shortcut: body (capped at STORAGE_MAX_UPLOAD_BYTES) buffered in memory, as in the storage API
   const data = Buffer.from(await c.req.arrayBuffer())
   const res = await uploadObject(SERVICE, await getBucket(bucket), name, data, mimetype, 'no-cache', true)
-  await audit(pool, 'files.upload', `${bucket}/${name}`, { size: data.length, mimetype })
+  await auditFile('files.upload', `${bucket}/${name}`, { size: data.length, mimetype })
   return c.json(res)
 })
 
 router.delete(OBJ, async (c) => {
   const { bucket, name } = c.req.param()
   if (!(await removeObjects(SERVICE, bucket, [name])).length) throw notFound()
-  await audit(pool, 'files.delete', `${bucket}/${name}`, {})
+  await auditFile('files.delete', `${bucket}/${name}`, {})
   return c.json({})
 })
 

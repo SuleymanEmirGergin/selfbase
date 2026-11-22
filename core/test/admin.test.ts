@@ -13,6 +13,8 @@ const { app } = await import('../src/app.ts')
 const { pool, asUser } = await import('../src/db.ts')
 const { config } = await import('../src/config.ts')
 const { verify, sign } = await import('../src/jwt.ts')
+const { sqlLimits } = await import('../src/admin/sql.ts')
+const { SignJWT } = await import('jose')
 
 const ADMIN_EMAIL = 'admin@example.test'
 const ADMIN_PW = 'panel-test-password'
@@ -48,6 +50,9 @@ beforeAll(async () => {
     create table ${S}.items (id int primary key, label text not null, big bigint, at timestamptz, data jsonb);
     create table ${S}.victim (id int);
     create table ${S}.nopk (v text);
+    create table ${S}.docs (id int primary key, j jsonb);
+    create table ${S}.floats (id int primary key, f float8, r real);
+    insert into ${S}.floats values (1, 'NaN', 'Infinity'), (2, '-Infinity', 1.5);
     grant select on ${S}.items to anon;
     alter table ${S}.items enable row level security;
     insert into ${S}.items values (1, 'one', 9007199254740993, '2026-01-02 03:04:05.123456+00', '{"a":1}'), (2, 'two', null, null, null);
@@ -143,6 +148,59 @@ describe('panel session', () => {
     expect((await login(ADMIN_EMAIL, ADMIN_PW)).status).toBe(200) // other IPs unaffected
   })
 
+  it('throttles by socket IP when TRUST_PROXY is off', async () => {
+    const saved = process.env.TRUST_PROXY
+    process.env.TRUST_PROXY = 'false'
+    const viaSocket = (ip: string, password: string, xff = randomUUID()) =>
+      app.request('http://localhost/admin/login', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-forwarded-for': xff },
+        body: JSON.stringify({ email: ADMIN_EMAIL, password }),
+      }, { incoming: { socket: { remoteAddress: ip } } })
+    try {
+      const ip = `10.0.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250)}`
+      for (let i = 0; i < 5; i++) expect((await viaSocket(ip, 'wrong')).status).toBe(401)
+      // a fresh X-Forwarded-For value is ignored without TRUST_PROXY
+      expect((await viaSocket(ip, ADMIN_PW)).status).toBe(429)
+      expect((await viaSocket('10.9.9.9', ADMIN_PW)).status).toBe(200)
+    } finally {
+      process.env.TRUST_PROXY = saved
+    }
+  })
+
+  it('behind a trusted proxy keys on the rightmost X-Forwarded-For entry', async () => {
+    const proxySeen = randomUUID()
+    for (let i = 0; i < 5; i++) expect((await login(ADMIN_EMAIL, 'wrong', `${randomUUID()}, ${proxySeen}`)).status).toBe(401)
+    // a spoofed leftmost entry does not open a fresh bucket
+    expect((await login(ADMIN_EMAIL, ADMIN_PW, `1.2.3.4, ${proxySeen}`)).status).toBe(429)
+  })
+
+  it('rejects a role-carrying panel token and an alg:none token', async () => {
+    const key = new TextEncoder().encode(process.env.JWT_SECRET!)
+    const withRole = await new SignJWT({ panel: true, role: 'service_role', email: ADMIN_EMAIL })
+      .setProtectedHeader({ alg: 'HS256' }).setExpirationTime('1h').sign(key)
+    const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url')
+    const none = `${b64({ alg: 'none', typ: 'JWT' })}.${b64({ panel: true, email: ADMIN_EMAIL, exp: Math.floor(Date.now() / 1000) + 3600 })}.`
+    for (const t of [withRole, none]) expect((await app.request('/admin/me', { headers: { cookie: `sb_panel=${t}` } })).status).toBe(401)
+  })
+
+  it('treats http://[::1] as local (no Secure)', async () => {
+    const res = await app.request('http://[::1]/admin/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forwarded-for': randomUUID() },
+      body: JSON.stringify({ email: ADMIN_EMAIL, password: ADMIN_PW }),
+    })
+    expect(res.status).toBe(200)
+    expect(res.headers.get('set-cookie')).not.toMatch(/Secure/)
+  })
+
+  it('accepts PUBLIC_URL origin and a missing Origin on state-changing requests', async () => {
+    const pub = new URL(config.publicUrl).origin
+    expect(pub).not.toBe('http://localhost')
+    expect((await call('POST', '/sql', { body: { query: 'select 1' }, headers: { origin: pub } })).status).toBe(200)
+    expect((await call('POST', '/sql', { body: { query: 'select 1' } })).status).toBe(200)
+  })
+
   it('rejects a cross-origin state-changing request with 403', async () => {
     const res = await call('POST', '/sql', { body: { query: 'select 1' }, headers: { origin: 'http://evil.example' } })
     expect(res.status).toBe(403)
@@ -210,6 +268,22 @@ describe('tables and rows', () => {
     expect(audit.rows.map((a) => a.action)).toEqual(['rows.delete', 'rows.update', 'rows.insert'])
   })
 
+  it('round-trips jsonb values exactly, strings included', async () => {
+    const cases: unknown[] = ['123', 'true', 'hello', 123, true, { a: [1, 'x'] }, [1, 2], null]
+    for (const [i, v] of cases.entries()) {
+      const r = await json(await call('POST', `/rows/${S}/docs`, { body: { values: { id: i, j: v } } }))
+      expect(r, JSON.stringify(v)).toMatchObject({ status: 200, body: { id: i, j: v } })
+      const upd = await json(await call('PATCH', `/rows/${S}/docs`, { body: { pk: { id: i }, values: { j: v } } }))
+      expect(upd.body.j).toEqual(v)
+      expect((await pool.query(`select j from ${S}.docs where id = $1`, [i])).rows[0].j).toEqual(v)
+    }
+  })
+
+  it('returns NaN and infinities as strings', async () => {
+    const { body } = await json(await call('GET', `/rows/${S}/floats?order=id.asc`))
+    expect(body.rows).toEqual([{ id: 1, f: 'NaN', r: 'Infinity' }, { id: 2, f: '-Infinity', r: 1.5 }])
+  })
+
   it('answers database errors as 400 with the message', async () => {
     const r = await json(await call('POST', `/rows/${S}/items`, { body: { values: { id: 'abc', label: 'x' } } }))
     expect(r.status).toBe(400)
@@ -251,6 +325,15 @@ describe('policies', () => {
     expect((await call('DELETE', '/policies', { body: { schema: S, table: 'items', name: 'anon reads one' } })).status).toBe(200)
     expect(await anonCount()).toBe(0)
     expect((await call('DELETE', '/policies', { body: { schema: S, table: 'items', name: 'anon reads one' } })).status).toBe(404)
+  })
+
+  it('policy expression text cannot leave session state in the pool', async () => {
+    const res = await call('POST', '/policies', {
+      body: { schema: S, table: 'items', name: 'leaky', command: 'SELECT', roles: ['anon'], using: 'false); set statement_timeout = 7; select (1' },
+    })
+    expect(res.status).toBe(200)
+    for (let i = 0; i < 12; i++) expect((await pool.query('show statement_timeout')).rows[0].statement_timeout).toBe('0')
+    await pool.query(`drop policy leaky on ${S}.items`)
   })
 
   it('validates command and roles', async () => {
@@ -295,6 +378,16 @@ describe('sql runner', () => {
     expect((await sql('show statement_timeout')).body.rows).toEqual([['30s']])
     await sql('set statement_timeout = 1')
     for (let i = 0; i < 12; i++) expect((await pool.query('show statement_timeout')).rows[0].statement_timeout).toBe('0')
+  })
+
+  it('keeps the timeout after a commit inside the script', async () => {
+    sqlLimits.statementTimeout = '200ms'
+    try {
+      const { body } = await sql('commit; select pg_sleep(2)')
+      expect(body.error.message).toMatch(/statement timeout/)
+    } finally {
+      sqlLimits.statementTimeout = '30s'
+    }
   })
 
   it('audits every execution', async () => {

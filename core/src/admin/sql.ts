@@ -4,6 +4,8 @@ import { adminError, audit, readBody } from './ident.ts'
 import { rowTypes } from './tables.ts'
 
 const MAX_ROWS = 1000
+/** Mutable so tests can shorten it. */
+export const sqlLimits = { statementTimeout: '30s' }
 
 const router = new Hono()
 
@@ -15,8 +17,9 @@ router.post('/sql', async (c) => {
   const started = performance.now()
   let out: Record<string, unknown>
   try {
+    // session-level (not SET LOCAL) so a `commit;` inside the script cannot drop it; the client is destroyed below
+    await client.query({ text: 'select set_config($1, $2, false)', values: ['statement_timeout', sqlLimits.statementTimeout] })
     await client.query('begin')
-    await client.query(`set local statement_timeout = '30s'`)
     // shortcut: the whole result is read into memory before the 1000-row cap; use a cursor if huge selects hurt
     const res = await client.query({ text: query, rowMode: 'array', types: rowTypes })
     await client.query('commit')
