@@ -22,6 +22,11 @@ export const config = {
   authConfirmEmail: bool(env.AUTH_CONFIRM_EMAIL, true),
   authPhoneEnabled: bool(env.AUTH_PHONE_ENABLED, false),
   authMinPassword: Number(env.AUTH_MIN_PASSWORD || 6),
+  // link / OTP lifetime and per-user minimum gap between auth mails, seconds (docs/auth-settings.md)
+  authOtpExpiry: Number(env.AUTH_OTP_EXPIRY || 3600),
+  authEmailInterval: Number(env.AUTH_EMAIL_INTERVAL || 60),
+  // Standard Webhooks secret for FN_URL/send-phone-otp-hook, "v1,whsec_<base64>"
+  authSmsHookSecret: env.AUTH_SMS_HOOK_SECRET || '',
   smtp: {
     host: env.SMTP_HOST || '',
     port: Number(env.SMTP_PORT || 587),
@@ -32,6 +37,9 @@ export const config = {
   google: {
     clientId: env.GOOGLE_CLIENT_ID || '',
     clientSecret: env.GOOGLE_CLIENT_SECRET || '',
+    authUrl: env.GOOGLE_AUTH_URL || 'https://accounts.google.com/o/oauth2/v2/auth',
+    tokenUrl: env.GOOGLE_TOKEN_URL || 'https://oauth2.googleapis.com/token',
+    userinfoUrl: env.GOOGLE_USERINFO_URL || 'https://openidconnect.googleapis.com/v1/userinfo',
   },
   panelAdminEmail: env.PANEL_ADMIN_EMAIL || '',
   panelAdminPasswordHash: env.PANEL_ADMIN_PASSWORD_HASH || '',
