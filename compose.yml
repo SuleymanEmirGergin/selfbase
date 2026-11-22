@@ -112,6 +112,28 @@ services:
       timeout: 3s
       retries: 10
 
+  # Daily backup (03:15 UTC) of the database and the storage volume, see scripts/backup.sh.
+  # One-shot: docker compose run --rm backup /scripts/backup.sh   Restore: scripts/restore.sh <timestamp>
+  backup:
+    image: postgres:17
+    init: true # bash in --daily mode would ignore SIGTERM as PID 1
+    restart: unless-stopped
+    command: ["bash", "/scripts/backup.sh", "--daily"]
+    environment:
+      PGHOST: db
+      PGUSER: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: postgres
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-7}
+    volumes:
+      - storage:/data/storage:ro
+      - ${BACKUP_DIR:-backups}:/backups
+      - ./scripts:/scripts:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   pgdata:
   storage:
+  backups:
