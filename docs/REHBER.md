@@ -1067,6 +1067,15 @@ Remove-Item $env:TEMP\panel.env
 `Get-Content` hash'i gösterir (şifreyi değil). İki satırı sunucudaki `.env`'e (ya da Coolify'a, bölüm 5)
 yapıştır, core'u yeniden başlat. Dosya repo dışında (`$env:TEMP`) duruyor ki unutulursa git'e girmesin.
 
+**Coolify'da `$` sorunu:** Coolify, değerdeki `$`'ları (Literal işaretli olsa bile) bozar; core'a hash boş
+gelir. Coolify'a hash'i `$` içermeyen `b64:` biçiminde gir. Şu komut onu ekrana basmadan panoya koyar:
+
+```powershell
+$l = Get-Content $env:TEMP\panel.env | Where-Object { $_ -like 'PANEL_ADMIN_PASSWORD_HASH=*' }; 'b64:' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($l.Substring(26).Replace('$$','$'))) | Set-Clipboard
+```
+
+Core `b64:` ile başlayan değeri kendisi çözer; düz hash de çalışmaya devam eder.
+
 Script, aynı ad iki kez yazılmış bir `.env`'i değiştirmez: `PANEL_ADMIN_EMAIL is set twice (lines 3 and
 9); keep one` gibi bir mesajla durur. Taşıma script'leri de aynı durumda durur. Birini sil, tekrar
 çalıştır. (Örneğin `gen-keys` çıktısını dosyanın sonuna eklersen `.env.example`'daki boş `JWT_SECRET=`

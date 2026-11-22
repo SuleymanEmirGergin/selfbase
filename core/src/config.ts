@@ -8,6 +8,8 @@ const bool = (v: string | undefined, dflt: boolean) => {
   return v === 'true'
 }
 const list = (v: string | undefined) => (v ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+// "b64:<base64>" carries a bcrypt hash without any `$`: some deploy tools (Coolify) mangle `$` in env values
+export const decodeHash = (v: string | undefined) => (v?.startsWith('b64:') ? Buffer.from(v.slice(4), 'base64').toString('utf8') : v || '')
 
 export const config = {
   port: Number(env.PORT || 8080),
@@ -58,7 +60,7 @@ export const config = {
     userinfoUrl: env.GOOGLE_USERINFO_URL || 'https://openidconnect.googleapis.com/v1/userinfo',
   },
   panelAdminEmail: env.PANEL_ADMIN_EMAIL || '',
-  panelAdminPasswordHash: env.PANEL_ADMIN_PASSWORD_HASH || '',
+  panelAdminPasswordHash: decodeHash(env.PANEL_ADMIN_PASSWORD_HASH),
   panelDir: env.PANEL_DIR || '../panel/dist',
   storageDir: env.STORAGE_DIR || '/data/storage',
   pgrstUrl: env.PGRST_URL || 'http://rest:3000',
