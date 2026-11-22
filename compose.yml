@@ -1,7 +1,23 @@
 # selfbase stack. Values come from .env (see .env.example). Only core is published, on loopback by default (CORE_BIND).
+# Every service: rotated json-file logs (10m x 3), no privilege gain through setuid binaries, at most
+# 512 processes. Per service below: mem_limit and cpus (change them there; docker compose up -d applies).
+x-defaults: &defaults
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+  security_opt:
+    - no-new-privileges:true
+  pids_limit: 512
+
 services:
   db:
+    <<: *defaults
     build: ./db
+    mem_limit: 1g
+    cpus: 2
+    shm_size: 256m # Docker's 64m default breaks parallel queries ("could not resize shared memory segment")
     restart: unless-stopped
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
@@ -14,7 +30,10 @@ services:
       retries: 30
 
   rest:
+    <<: *defaults
     image: postgrest/postgrest:v14.1
+    mem_limit: 256m
+    cpus: 1
     restart: unless-stopped
     environment:
       PGRST_DB_URI: postgres://authenticator:${POSTGRES_PASSWORD}@db:5432/postgres
@@ -35,9 +54,12 @@ services:
       retries: 30
 
   core:
+    <<: *defaults
     build:
       context: .
       dockerfile: core/Dockerfile
+    mem_limit: 512m
+    cpus: 1
     init: true
     restart: unless-stopped
     ports:
@@ -95,7 +117,10 @@ services:
   # Deno function host. SUPABASE_DIR is the host path of the app's supabase/ folder (functions/ + config.toml);
   # unset, an empty placeholder is mounted and every function name answers 404.
   fn:
+    <<: *defaults
     build: ./fn
+    mem_limit: 512m
+    cpus: 1
     restart: unless-stopped
     env_file:
       - path: fn.env
@@ -122,7 +147,10 @@ services:
   # Daily backup (03:15 UTC) of the database and the storage volume, see scripts/backup.sh.
   # One-shot: docker compose run --rm backup /scripts/backup.sh   Restore: scripts/restore.sh <timestamp>
   backup:
+    <<: *defaults
     image: postgres:17.12
+    mem_limit: 512m
+    cpus: 0.5
     init: true # bash in --daily mode would ignore SIGTERM as PID 1
     restart: unless-stopped
     command: ["bash", "/scripts/backup.sh", "--daily"]

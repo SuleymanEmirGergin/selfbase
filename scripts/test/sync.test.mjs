@@ -355,6 +355,9 @@ describe('backup', { skip: !BP && 'set BACKUP_TEST_PROJECT to a running compose.
     const ts = backup()
     assert.match(inBackup(`cat /backups/${ts}/MANIFEST`), /^db\.dump \d+ [0-9a-f]{64}\nglobals\.sql \d+ [0-9a-f]{64}\nstorage\.tar\.gz \d+ [0-9a-f]{64}$/)
     assert.match(inBackup(`head -c 300 /backups/${ts}/globals.sql`), /PostgreSQL database cluster dump/)
+    // private to the backup's owner: the dump holds every row and the auth password hashes
+    assert.deepEqual(inBackup(`stat -c '%a %n' /backups/${ts} /backups/${ts}/*`).trim().split('\n').sort(),
+      [`700 /backups/${ts}`, ...['MANIFEST', 'db.dump', 'globals.sql', 'storage.tar.gz'].map((f) => `600 /backups/${ts}/${f}`)].sort())
     db("delete from public.t13_keep where id = 2; update public.t13_keep set v = 'x'")
     ok(core('rm /data/storage/t13/f.txt && echo new > /data/storage/t13/new.txt'))
 

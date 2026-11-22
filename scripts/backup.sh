@@ -11,6 +11,7 @@
 # and a "backup: FAILED" line.
 # shortcut: backups live on the same server, add off-site copy before production
 set -euo pipefail
+umask 077 # the dump holds every row and the auth password hashes: owner-only files and directories
 
 if [ "${1:-}" = --daily ]; then
   while :; do
