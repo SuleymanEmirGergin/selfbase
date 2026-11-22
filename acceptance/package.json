@@ -1,0 +1,16 @@
+{
+  "name": "selfbase-acceptance",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Acceptance suite against a deployed selfbase project (full and live modes)",
+  "scripts": {
+    "acceptance": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "~5.9.3",
+    "vitest": "^5.1.1"
+  }
+}
