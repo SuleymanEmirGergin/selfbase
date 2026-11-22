@@ -118,7 +118,9 @@ services:
   # unset, an empty placeholder is mounted and every function name answers 404.
   fn:
     <<: *defaults
-    build: ./fn
+    build:
+      context: .
+      dockerfile: fn/Dockerfile
     mem_limit: 512m
     cpus: 1
     restart: unless-stopped
@@ -136,7 +138,6 @@ services:
       FN_IMPORT_TIMEOUT_MS: ${FN_IMPORT_TIMEOUT_MS:-30000}
     volumes:
       - ${SUPABASE_DIR:-./fn/empty}:/supabase:ro
-      - ./client/dist:/client:ro
       - denocache:/deno-dir # downloaded function dependencies survive restarts
     healthcheck:
       test: ["CMD", "nc", "-z", "127.0.0.1", "8000"]
@@ -148,7 +149,9 @@ services:
   # One-shot: docker compose run --rm backup /scripts/backup.sh   Restore: scripts/restore.sh <timestamp>
   backup:
     <<: *defaults
-    image: postgres:17.12
+    build:
+      context: ./scripts
+      dockerfile: backup.Dockerfile
     mem_limit: 512m
     cpus: 0.5
     init: true # bash in --daily mode would ignore SIGTERM as PID 1
@@ -163,7 +166,6 @@ services:
     volumes:
       - storage:/data/storage:ro
       - ${BACKUP_DIR:-backups}:/backups
-      - ./scripts:/scripts:ro
     depends_on:
       db:
         condition: service_healthy

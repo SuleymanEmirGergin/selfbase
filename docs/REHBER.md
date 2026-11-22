@@ -1214,6 +1214,10 @@ docker compose run --rm backup bash /scripts/backup.sh
 
 Beklenen: `backup: wrote /backups/20261122-101500 (12M)` gibi bir satır.
 
+`backup.sh` ve `restore.sh` backup image'ına gömülüdür, `fn` image'ına da `client/dist` (Coolify gibi
+araçlar repo dosyalarını göreli bind mount'la konteynere koymaz). Bu dosyaları değiştirdiysen
+`docker compose up -d --build backup fn` ile yeniden derle.
+
 Yedekler varsayılan olarak `backups` adlı Docker volume'ünde. Sunucuda bir klasörde olmalı (yukarıdaki
 kutu): `.env`'e `BACKUP_DIR=/opt/selfbase/backups` yaz.
 

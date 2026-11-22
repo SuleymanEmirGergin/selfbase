@@ -136,13 +136,19 @@ export async function handle(req: Request, info?: Deno.ServeHandlerInfo): Promis
 
 if (import.meta.main) {
   if (jwtSecret.length < 32) throw new Error('JWT_SECRET must be set (at least 32 characters)')
-  for await (const entry of Deno.readDir(functionsDir)) {
-    // shortcut: a function's own deno.json/import_map.json is not merged (CorteQS has none); merge when one appears.
-    for (const f of ['deno.json', 'deno.jsonc', 'import_map.json']) {
-      if (await Deno.stat(`${functionsDir}/${entry.name}/${f}`).then(() => true, () => false)) {
-        console.warn(`${entry.name}/${f} is ignored; add its imports to fn/import_map.json`)
+  try {
+    for await (const entry of Deno.readDir(functionsDir)) {
+      // shortcut: a function's own deno.json/import_map.json is not merged (CorteQS has none); merge when one appears.
+      for (const f of ['deno.json', 'deno.jsonc', 'import_map.json']) {
+        if (await Deno.stat(`${functionsDir}/${entry.name}/${f}`).then(() => true, () => false)) {
+          console.warn(`${entry.name}/${f} is ignored; add its imports to fn/import_map.json`)
+        }
       }
     }
+  } catch (e) {
+    // no functions mounted yet (SUPABASE_DIR unset): serve anyway, every function name answers 404
+    if (!(e instanceof Deno.errors.NotFound)) throw e
+    console.warn(`${functionsDir} does not exist; no functions are served`)
   }
   realServe({ port, hostname: '0.0.0.0' }, handle)
 }
