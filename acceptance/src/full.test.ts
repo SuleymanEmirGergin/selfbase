@@ -80,8 +80,8 @@ describe.skipIf(env.mode !== 'full')('full', () => {
         failures.push(`${what}: ${firstLine(e)}`)
       }
     }
-    try {
-      if (!gatePassed) return
+    // its early returns end the cleanup only: the summary and the throw below always follow
+    const cleanup = async () => {
       await step('close A channels', async () => A?.removeAllChannels())
       await step('close B channels', async () => B?.removeAllChannels())
       if (!(await running())) {
@@ -117,9 +117,9 @@ describe.skipIf(env.mode !== 'full')('full', () => {
         if (nonZero.length) throw new Error(`left: ${nonZero.map(([k, n]) => `${k} ${n}`).join(', ')}`)
       })
       if (left) failures.push(left)
-    } finally {
-      summary({ prefix, ...(aborted ? { aborted } : {}), ...(failures.length ? { cleanup_failures: failures } : {}) })
     }
+    if (gatePassed) await step('cleanup', cleanup)
+    summary({ prefix, ...(aborted ? { aborted } : {}), ...(failures.length ? { cleanup_failures: failures } : {}) })
     if (failures.length) throw new Error(`cleanup: ${failures.join(' | ')}`)
   })
 

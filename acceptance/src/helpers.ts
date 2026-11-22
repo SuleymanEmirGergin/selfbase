@@ -178,7 +178,7 @@ export async function mgmtHealth() {
 export async function mgmtKeys() {
   const k = await mgmt('GET', `/v1/projects/${env.ref}/api-keys`)
   // status and error code only: this body carries keys
-  expect(k.status, `api-keys -> ${k.status} ${k.json?.error ?? ''}`).toBe(200)
+  expect(k.status, `api-keys -> ${k.status} ${firstLine(k.json?.error ?? '')}`).toBe(200)
   const key = (name: string): string => k.json.find((x: { name: string }) => x.name === name)?.api_key ?? ''
   expect(key('anon') === env.anon, 'anon is the project key, in full').toBe(true)
   const svc = key('service_role')
