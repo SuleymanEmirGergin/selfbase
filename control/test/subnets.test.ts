@@ -58,3 +58,18 @@ describe('subnets', () => {
     await expect(allocateSubnet(pool, () => pool.query('select 1/0'))).rejects.toThrow(/division by zero/)
   })
 })
+
+describe('subnet retries', () => {
+  test('a writer that always conflicts stops at the pool size with pool_exhausted', async () => {
+    const before = config.projectSubnetPool
+    let calls = 0
+    const conflict = async () => { calls++; throw Object.assign(new Error('dup'), { code: '23505', constraint: 'projects_subnet_key' }) }
+    try {
+      config.projectSubnetPool = '10.207.0.0/25'
+      expect((await allocateSubnet(pool, conflict).catch((x) => x)).code).toBe('pool_exhausted')
+      expect(calls).toBe(4)
+    } finally {
+      config.projectSubnetPool = before
+    }
+  })
+})

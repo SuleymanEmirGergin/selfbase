@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { config } from '../src/config.ts'
 import { pool } from '../src/db.ts'
 import { newRef } from '../src/ids.ts'
@@ -116,6 +116,9 @@ describe('host slots and the weekly cap', () => {
 })
 
 describe('domains', () => {
+  beforeEach(() => { config.legacyHostnames = [`legacy.${BASE}`] })
+  afterEach(() => { config.legacyHostnames = [] })
+
   test('custom under the base domain is refused; legacy and custom elsewhere do not count', async () => {
     const a = await project()
     await allocateHost(pool, { ...a, pool: 'project' })
@@ -134,6 +137,8 @@ describe('domains', () => {
   test('a duplicate hostname is refused', async () => {
     const [a, b] = [await project(), await project()]
     const { hostname } = await allocateHost(pool, { ...a, pool: 'project' })
+    // listed, so the refusal below is the slot's, not the legacy list's
+    config.legacyHostnames.push(hostname)
     await addDomain(pool, a.projectId, 'api.example.com', 'custom')
     expect((await refusal(addDomain(pool, b.projectId, 'api.example.com', 'custom'))).code).toBe('hostname_taken')
     expect((await refusal(addDomain(pool, b.projectId, hostname, 'legacy'))).code).toBe('hostname_taken')
@@ -146,5 +151,37 @@ describe('domains', () => {
     const a = await project()
     for (const h of ['a`) || Host(`evil', 'no_underscore.com', 'single', '-a.com', ''])
       expect((await refusal(addDomain(pool, a.projectId, h, 'custom'))).code).toBe('invalid_hostname')
+  })
+
+  test('the control host and TEST_HOST are refused whatever the kind', async () => {
+    const a = await project()
+    const control = new URL(config.publicUrl).host
+    config.legacyHostnames.push(control, config.testHost)
+    for (const h of [control, config.testHost, control.toUpperCase()])
+      for (const kind of ['legacy', 'custom'] as const)
+        expect((await refusal(addDomain(pool, a.projectId, h, kind))).code).toBe('hostname_taken')
+    expect(await hostsOf(pool, a.projectId)).toEqual([])
+  })
+
+  test('a legacy name under the base domain must be in LEGACY_HOSTNAMES', async () => {
+    const a = await project()
+    const e = await refusal(addDomain(pool, a.projectId, `other.${BASE}`, 'legacy'))
+    expect(e.code).toBe('legacy_not_allowed')
+    expect(e.message).toMatch(/host slot/)
+    // outside the base domain legacy needs no list
+    await addDomain(pool, a.projectId, 'old.example.org', 'legacy')
+    await addDomain(pool, a.projectId, `LEGACY.${BASE}`, 'legacy')
+    expect(await hostsOf(pool, a.projectId)).toEqual([`legacy.${BASE}`, 'old.example.org'])
+    expect(await newHostsThisWeek(pool)).toBe(0)
+  })
+})
+
+describe('LEGACY_HOSTNAMES', () => {
+  test('is lowercased, trimmed and validated', async () => {
+    const { loadConfig } = await import('../src/config.ts')
+    const env = { ...process.env }
+    expect(loadConfig(env).legacyHostnames).toEqual([])
+    expect(loadConfig({ ...env, LEGACY_HOSTNAMES: ' A.Example.test , b.example.test,' }).legacyHostnames).toEqual(['a.example.test', 'b.example.test'])
+    expect(() => loadConfig({ ...env, LEGACY_HOSTNAMES: 'a.example.test,bad host' })).toThrow(/config: LEGACY_HOSTNAMES/)
   })
 })

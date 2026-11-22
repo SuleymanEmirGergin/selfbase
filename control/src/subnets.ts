@@ -21,12 +21,11 @@ const LOWEST_FREE = `
  * Without `take` nothing is reserved. `take` must not run inside an open transaction: the conflict would abort it.
  */
 export async function allocateSubnet(db: Db, take?: (subnet: string) => Promise<unknown>): Promise<string> {
-  for (;;) {
+  // each conflict means another allocation took a subnet, so the pool size bounds the tries
+  const tries = 2 ** Math.max(27 - Number(config.projectSubnetPool.split('/')[1]), 0)
+  for (let i = 0; i < tries; i++) {
     const subnet: string | undefined = (await db.query(LOWEST_FREE, [config.projectSubnetPool])).rows[0]?.subnet
-    if (!subnet) {
-      throw new SubnetError('pool_exhausted',
-        `Every /27 network of ${config.projectSubnetPool} is in use. Delete a project you do not use, or ask the operator to widen PROJECT_SUBNET_POOL.`)
-    }
+    if (!subnet) break
     try {
       await take?.(subnet)
       return subnet
@@ -36,4 +35,6 @@ export async function allocateSubnet(db: Db, take?: (subnet: string) => Promise<
       throw e
     }
   }
+  throw new SubnetError('pool_exhausted',
+    `Every /27 network of ${config.projectSubnetPool} is in use. Delete a project you do not use, or ask the operator to widen PROJECT_SUBNET_POOL.`)
 }

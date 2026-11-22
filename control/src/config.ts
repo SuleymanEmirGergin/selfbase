@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url'
 
 export type Config = ReturnType<typeof loadConfig>
 
+export const HOSTNAME_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
+
 export function loadConfig(env: Record<string, string | undefined> = process.env) {
   const need = (k: string) => env[k] || fail(`${k} is required`)
   const num = (k: string, dflt: number) => {
@@ -23,6 +25,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const jwtSecret = need('CONTROL_JWT_SECRET')
   if (jwtSecret.length < 32) fail('CONTROL_JWT_SECRET must be at least 32 characters')
   const base = need('BASE_DOMAIN')
+  const legacyHostnames = (env.LEGACY_HOSTNAMES || '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean)
+  for (const h of legacyHostnames) if (!HOSTNAME_RE.test(h)) fail('LEGACY_HOSTNAMES must be a comma-separated list of hostnames')
 
   return {
     port: num('PORT', 8080),
@@ -48,6 +52,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     maxNewHostsPerWeek: num('MAX_NEW_HOSTS_PER_WEEK', 3),
     branchHostSlots: num('BRANCH_HOST_SLOTS', 2),
     testHost: env.TEST_HOST || `sb-test.${base}`,
+    // hostnames under BASE_DOMAIN that already hold a certificate (v1's host); the only legacy names allowed there
+    legacyHostnames,
     certProbe: oneOf('CERT_PROBE', 'on', ['on', 'off']),
     logsUrl: env.LOGS_URL || 'http://selfbase-logs:9428',
     backupRetentionDays: num('BACKUP_RETENTION_DAYS', 7),

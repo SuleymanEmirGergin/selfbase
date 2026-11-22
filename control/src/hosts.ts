@@ -1,11 +1,11 @@
 // Hostnames are scarce on sslip.io (spec 7.3, AC-33): a host, once certified, is kept as a host_slots row and
 // reused; at most MAX_NEW_HOSTS_PER_WEEK new ones are made in any 7 days, the control host included.
 import pg from 'pg'
-import { config } from './config.ts'
+import { config, HOSTNAME_RE } from './config.ts'
 import type { Db } from './db.ts'
 import { ApiError } from './errors.ts'
 
-type HostCode = 'new_host_cap' | 'test_host_busy' | 'custom_under_base' | 'hostname_taken' | 'invalid_hostname'
+type HostCode = 'new_host_cap' | 'test_host_busy' | 'custom_under_base' | 'legacy_not_allowed' | 'hostname_taken' | 'invalid_hostname'
 
 export class HostError extends ApiError {
   details: Record<string, unknown>
@@ -18,7 +18,6 @@ export class HostError extends ApiError {
 // serializes every slot change, so the cap check and the insert it allows cannot interleave
 const LOCK = 7213016
 const WEEK_MS = 7 * 86400e3
-const HOSTNAME_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
 
 // shortcut: a passed client must not already be in a transaction (begin/commit here would end the caller's)
 async function tx<T>(db: Db, fn: (c: pg.PoolClient) => Promise<T>): Promise<T> {
@@ -42,8 +41,8 @@ async function issuedThisWeek(db: Db): Promise<Date[]> {
   const rows = (await db.query(
     `select first_issued_at as at from control.host_slots where first_issued_at > now() - interval '7 days'
      union all
-     select value::timestamptz from control.settings
-      where key = 'control_host_first_issued_at' and value::timestamptz > now() - interval '7 days'
+     select at from (select case when key = 'control_host_first_issued_at' then value::timestamptz end as at from control.settings) s
+      where at > now() - interval '7 days'
      order by 1`,
   )).rows
   return rows.map((r) => r.at as Date)
@@ -106,13 +105,26 @@ export async function releaseHost(db: Db, projectId: string): Promise<void> {
   })
 }
 
-/** A legacy or custom hostname for the project. Neither counts against the cap (no slot is made). */
+/**
+ * A legacy or custom hostname for the project. Neither counts against the cap (no slot is made), so a name under
+ * BASE_DOMAIN is accepted only when it already holds a certificate (LEGACY_HOSTNAMES).
+ */
 export async function addDomain(db: Db, projectId: string, hostname: string, kind: 'legacy' | 'custom'): Promise<void> {
   const h = hostname.trim().toLowerCase()
   if (!HOSTNAME_RE.test(h)) throw new HostError('invalid_hostname', `"${hostname}" is not a valid hostname. Use a name such as api.example.com.`)
+  // a project router for these would steal Studio's or the test project's traffic
+  if (h === new URL(config.publicUrl).host.toLowerCase() || h === config.testHost.toLowerCase()) {
+    throw new HostError('hostname_taken', `${h} is used by selfbase itself. Choose another hostname.`)
+  }
   const base = config.baseDomain.toLowerCase()
-  if (kind === 'custom' && (h === base || h.endsWith(`.${base}`))) {
-    throw new HostError('custom_under_base', `${h} is under ${base}, which selfbase manages itself. Use a hostname of your own domain.`)
+  if (h === base || h.endsWith(`.${base}`)) {
+    if (kind === 'custom') {
+      throw new HostError('custom_under_base', `${h} is under ${base}, which selfbase manages itself. Use a hostname of your own domain.`)
+    }
+    if (!config.legacyHostnames.includes(h)) {
+      throw new HostError('legacy_not_allowed',
+        `${h} is under ${base} and has no certificate yet, so it would count as a new hostname. Request a host slot for the project instead.`)
+    }
   }
   await tx(db, async (c) => {
     const taken = await c.query(
