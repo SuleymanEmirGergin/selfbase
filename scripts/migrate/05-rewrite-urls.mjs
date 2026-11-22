@@ -4,7 +4,8 @@
 // storage (avatar URLs in auth.users meta data, identity_data, object metadata).
 //   node scripts/migrate/05-rewrite-urls.mjs --dry-run   affected rows per table.column, no writes
 //   node scripts/migrate/05-rewrite-urls.mjs             applies (one transaction per column, triggers off)
-// Env (or .env at the repo root): SUPABASE_URL, PUBLIC_URL, TARGET_DB_URL (reachable from this host).
+// Env (or .env at the repo root): SUPABASE_URL, PUBLIC_URL, TARGET_DB_URL_HOST or, when unset, TARGET_DB_URL
+// (reachable from this host).
 // Also holds the helpers the other Node scripts share (env reader, target guard, pg connection).
 import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -68,18 +69,22 @@ export function parseUrl(name, value) {
 // Trailing dots are stripped: abc.supabase.co. is the same host.
 export const isSupabaseHost = (url) => /\.supabase\.(co|com)$/i.test(new URL(url).hostname.replace(/\.+$/, ''))
 
+// Host-side scripts (05, 06) prefer TARGET_DB_URL_HOST (localhost:<published port>) over TARGET_DB_URL
+// (container-reachable, db:5432). Returns the variable's NAME so errors can say which one without its value.
+export const hostDbVar = (env = process.env) => (env.TARGET_DB_URL_HOST ? 'TARGET_DB_URL_HOST' : 'TARGET_DB_URL')
+
 // The target must be selfbase, never the hosted project being migrated away from.
-export function refuseSupabaseTarget(url) {
-  parseUrl('TARGET_DB_URL', url)
+export function refuseSupabaseTarget(url, name = 'TARGET_DB_URL') {
+  parseUrl(name, url)
   if (isSupabaseHost(url)) {
-    console.error('TARGET_DB_URL points at a Supabase host; it must be the selfbase database')
+    console.error(`${name} points at a Supabase host; it must be the selfbase database`)
     process.exit(2)
   }
 }
 
 // pg comes from core/node_modules (cd core && npm ci); no extra dependency for the scripts.
-export async function connect(url) {
-  refuseSupabaseTarget(url)
+export async function connect(url, name = 'TARGET_DB_URL') {
+  refuseSupabaseTarget(url, name)
   let pg
   try {
     pg = createRequire(new URL('../../core/package.json', import.meta.url))('pg')
@@ -92,7 +97,7 @@ export async function connect(url) {
     client = new pg.Client({ connectionString: url })
     await client.connect()
   } catch (e) {
-    console.error(`cannot connect to TARGET_DB_URL: ${e.code || e.message.replace(/postgres(ql)?:\/\/\S+/g, '<db-url>')}`)
+    console.error(`cannot connect to ${name}: ${e.code || e.message.replace(/postgres(ql)?:\/\/\S+/g, '<db-url>')}`)
     process.exit(1)
   }
   return client
@@ -101,7 +106,8 @@ export async function connect(url) {
 async function main() {
   loadEnv()
   const dryRun = process.argv.includes('--dry-run')
-  const [supabaseUrl, publicUrl, dbUrl] = requireEnv('SUPABASE_URL', 'PUBLIC_URL', 'TARGET_DB_URL')
+  const dbVar = hostDbVar()
+  const [supabaseUrl, publicUrl, dbUrl] = requireEnv('SUPABASE_URL', 'PUBLIC_URL', dbVar)
   const fromHost = parseUrl('SUPABASE_URL', supabaseUrl).host
   const toOrigin = parseUrl('PUBLIC_URL', publicUrl).origin
   if (!fromHost.endsWith('.supabase.co')) {
@@ -109,7 +115,7 @@ async function main() {
     process.exit(2)
   }
   const needle = `https://${fromHost}`
-  const db = await connect(dbUrl)
+  const db = await connect(dbUrl, dbVar)
   // base type: the domain's base for domains, else the column type itself
   const { rows: cols } = await db.query(
     `select n.nspname as schema, c.relname as table, a.attname as column, format_type(a.atttypid, a.atttypmod) as type

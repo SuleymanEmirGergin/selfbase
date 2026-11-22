@@ -353,14 +353,15 @@ Tek istisna `PANEL_ADMIN_PASSWORD_HASH`: onu script yazar ve içindeki `$`'ları
 | Değişken | Ne | Varsayılan |
 |---|---|---|
 | `COMPOSE_PROJECT_NAME` | Docker proje adı (bölüm 3, adım 4). Aynı makinede iki kurulum için şart. | klasör adı |
-| `CORE_PORT` | core'un makinede açıldığı port. `8090` gibi bir sayı her arayüzde açar; `127.0.0.1:8090` sadece makinenin içinden erişilir (proxy arkasında bunu kullan). | `8080` |
+| `CORE_PORT` | core'un makinede açıldığı port. Sadece port numarası yaz (`8090`); adres `CORE_BIND` ile verilir. | `8080` |
+| `CORE_BIND` | core'un hangi adreste açıldığı. Varsayılan `127.0.0.1`: sadece makinenin içinden erişilir (reverse proxy aynı makinedeyse doğrusu bu). `0.0.0.0` core'u ağdaki herkese açar; sadece aynı makinede proxy yoksa yaz. | `127.0.0.1` |
 | `LOCAL_DB_PORT` | `compose.local.yml` ile veritabanının `127.0.0.1`'de açıldığı port | `55432` |
 | `BACKUP_DIR`, `BACKUP_RETENTION_DAYS` | Yedeklerin yeri (volume adı ya da sunucudaki klasör) ve kaç gün saklanacağı (bölüm 11) | `backups` volume'ü, `7` |
 
 <!-- verify against final sync/backup: BACKUP_DIR / BACKUP_RETENTION_DAYS row above -->
 
 Taşıma (bölüm 7) ve sync (bölüm 10) için ayrıca `SUPABASE_DB_URL`, `SUPABASE_URL`,
-`SUPABASE_SERVICE_KEY`, `TARGET_DB_URL`, `DOCKER_NETWORK` gibi değişkenleri de `.env`'e yazacaksın;
+`SUPABASE_SERVICE_KEY`, `TARGET_DB_URL`, `TARGET_DB_URL_HOST`, `DOCKER_NETWORK` gibi değişkenleri de `.env`'e yazacaksın;
 onlar orada anlatılıyor.
 
 `.env.example`'da yorum satırı olarak duran `AUTH_OTP_EXPIRY`, `AUTH_EMAIL_INTERVAL`,
@@ -432,10 +433,10 @@ Variables** sekmesinde listeler. Bölüm 4'teki tabloya göre doldur:
 - `PUBLIC_URL=https://selfbase.ornek.com`, `SITE_URL=` uygulamanın adresi,
   `AUTH_REDIRECT_ALLOWLIST=` uygulamanın adresleri.
 - `TRUST_PROXY=true` (Traefik `X-Forwarded-For` ekler).
-- `CORE_PORT=127.0.0.1:18080`. Neden: `compose.yml` core'un portunu makinede de açar. Coolify'da
-  buna gerek yok (trafik proxy'den gelir), ama açık kalırsa core HTTPS'siz olarak internete açılır ve
-  sunucudaki başka bir 8080 ile çakışabilir. `127.0.0.1:` öneki onu sadece sunucunun içine kapatır.
-  Sunucuda 18080 kullanılıyorsa başka bir port seç. **(doğrulanacak: Coolify'ın `ports` satırını
+- `CORE_PORT=18080`. Neden: `compose.yml` core'un portunu makinede de açar. Coolify'da buna gerek
+  yok (trafik proxy'den gelir), ama sunucudaki başka bir 8080 ile çakışabilir. `CORE_BIND` varsayılan
+  olarak `127.0.0.1` olduğu için core zaten sadece sunucunun içinden erişilir, HTTPS'siz internete
+  açılmaz; `CORE_BIND`'e dokunma. Sunucuda 18080 kullanılıyorsa başka bir port seç. **(doğrulanacak: Coolify'ın `ports` satırını
   olduğu gibi kullandığı)**
 - `SUPABASE_DIR=/opt/apps/corteqsemir/supabase` (1. adım).
 - SMTP ve Google bilgileri geldiyse onlar.
@@ -534,10 +535,10 @@ PUBLIC_URL=https://selfbase.ornek.com
 SITE_URL=https://app.ornek.com
 TRUST_PROXY=true
 COMPOSE_PROJECT_NAME=selfbase-corteqs
-CORE_PORT=127.0.0.1:8080
 ```
 
-`CORE_PORT=127.0.0.1:8080`: core sadece sunucunun içinden erişilir. Dışarıdan tek yol Caddy (HTTPS).
+`CORE_BIND` ve `CORE_PORT` yazmana gerek yok: `CORE_BIND` varsayılan olarak `127.0.0.1` olduğu için core
+sadece sunucunun içinden erişilir (`127.0.0.1:8080`). Dışarıdan tek yol Caddy (HTTPS).
 `TRUST_PROXY=true` çünkü önünde Caddy var. Fonksiyonlar için uygulama reposunu da sunucuya al ve
 `SUPABASE_DIR`'i yaz (bölüm 5, adım 1'deki gibi), sırlar için `fn.env` (bölüm 4). Nano'da kaydet:
 `Ctrl+O`, `Enter`, çık: `Ctrl+X`.
@@ -551,7 +552,7 @@ curl -s http://127.0.0.1:8080/health
 ```
 
 Beklenen: dört servis `Up ... (healthy)`, sonra `{"ok":true}`. Dışarıdan `http://<sunucu-ip>:8080`
-**açılmamalı**; açılıyorsa `CORE_PORT`'u `127.0.0.1:` ile yazmamışsındır.
+**açılmamalı**; açılıyorsa `.env`'de `CORE_BIND=0.0.0.0` yazmışsındır, sil.
 
 ```bash
 docker compose port core 8080
@@ -621,7 +622,7 @@ sudo ufw allow 80,443/tcp
 sudo ufw enable
 ```
 
-Not: Docker'ın açtığı portlar ufw kurallarını atlar. Bu yüzden 5. adımdaki `127.0.0.1:` öneki önemli;
+Not: Docker'ın açtığı portlar ufw kurallarını atlar. Bu yüzden `CORE_BIND`'in varsayılanı (`127.0.0.1`) önemli;
 ufw'ye güvenme.
 
 **8. Yeniden başlatma.** Ayrı bir servis dosyası gerekmez: compose'daki `restart: unless-stopped`
@@ -679,14 +680,16 @@ yükleniyor. Her adım tek transaction: hata olursa geri alınır, sebebi düzel
    | `SUPABASE_URL` | `https://<ref>.supabase.co` |
    | `SUPABASE_SERVICE_KEY` | Kaynağın service role anahtarı. Sadece dosyaları indirmek için. |
    | `DOCKER_NETWORK` | `<COMPOSE_PROJECT_NAME>_default`, ör. `selfbase-deneme_default`. Kontrol: `docker network ls`. |
-   | `TARGET_DB_URL` | `postgres://postgres:<POSTGRES_PASSWORD>@db:5432/postgres` |
+   | `TARGET_DB_URL` | `postgres://postgres:<POSTGRES_PASSWORD>@db:5432/postgres` (container'dan erişim: 01, 02, 03) |
+   | `TARGET_DB_URL_HOST` | `postgres://postgres:<POSTGRES_PASSWORD>@localhost:55432/postgres` (bilgisayardan erişim: 05, 06; port `LOCAL_DB_PORT`) |
    | `PUBLIC_URL` | zaten var |
    | `NOTIFY_DISPATCH_SECRET`, `RADAR_NEWS_CRON_SECRET` | İsteğe bağlı: `fn.env`'deki aynı adlı değerler (aşağıda adım 8) |
 
    Neden `db:5432`: 01, 02 ve 03'ün `psql`'i bir container'da çalışır ve `DOCKER_NETWORK` ile selfbase'in
-   ağına katılır, orada veritabanının adı `db`. 05 ve 06 ise bilgisayarında çalışır; onlar için adım 7'de
-   `TARGET_DB_URL`'i değiştireceksin. Supabase adresi (`*.supabase.co/.com`) hedef olarak verilirse
-   script'ler reddeder: yanlışlıkla canlıya yazamazsın.
+   ağına katılır, orada veritabanının adı `db`. 05 ve 06 ise bilgisayarında çalışır; onlar
+   `TARGET_DB_URL_HOST`'u kullanır (varsa), yoksa `TARGET_DB_URL`'e döner. İki adres aynı şifreyi
+   taşır; `.env`'i adımlar arasında değiştirmen gerekmez. Supabase adresi (`*.supabase.co/.com`) iki
+   değişkenden birinde bile verilirse script'ler reddeder: yanlışlıkla canlıya yazamazsın.
 
 4. **Kaynakta yazmaları durdur** (1. adım boyunca). Script tek bir anlık görüntüden (snapshot) okur,
    ama pooler buna izin vermezse ayrı okumalar yapar ve bunu söyler.
@@ -703,16 +706,14 @@ node scripts/migrate/03-auth-storage.sql.mjs policies | psql_target  # 5
 node scripts/migrate/04-files.mjs                                    # 6
 ```
 
-Burada `.env`'de `TARGET_DB_URL`'i `postgres://postgres:<POSTGRES_PASSWORD>@localhost:55432/postgres`
-yap (05 ve 06 bilgisayarında çalışır, veritabanına açılan porttan ulaşır), sonra:
+05 ve 06 bilgisayarında çalışır ve `.env`'deki `TARGET_DB_URL_HOST` ile veritabanına açılan porttan
+ulaşır (`compose.local.yml` ile başlatılmış olmalı). `.env`'de bir şey değiştirme:
 
 ```bash
 node scripts/migrate/05-rewrite-urls.mjs --dry-run                   # 7a
 node scripts/migrate/05-rewrite-urls.mjs                             # 7b
 node scripts/migrate/06-realtime-cron.mjs                            # 8
 ```
-
-Bitince `TARGET_DB_URL`'i tekrar `@db:5432` hâline getir (sync onu container'dan kullanır, bölüm 10).
 
 | Adım | Ne yapar | Neden | Ne görmelisin |
 |---|---|---|---|
@@ -1084,7 +1085,7 @@ Yeni bir uygulamayı canlıya koyarken sırayla:
 - [ ] **Ad:** `COMPOSE_PROJECT_NAME=selfbase-<uygulama>` (Coolify'da proje adı yeter).
 - [ ] **Anahtar üret:** `gen-keys.mjs` + veritabanı şifresi. Her kurulumda yeni; asla kopyalama.
 - [ ] **Adresler:** `PUBLIC_URL` (selfbase'in kendi alan adı), `SITE_URL`, `AUTH_REDIRECT_ALLOWLIST`.
-- [ ] **Port:** düz Docker'da `CORE_PORT=127.0.0.1:<boş port>`, proxy bu porta gider.
+- [ ] **Port:** `CORE_PORT=<boş port>`, proxy bu porta gider. `CORE_BIND` varsayılanı `127.0.0.1`, core dışarıdan açılmaz.
 - [ ] **`TRUST_PROXY=true`** (proxy arkasında).
 - [ ] **Fonksiyonlar:** uygulama reposunu sunucuya al, `SUPABASE_DIR`; sırlar için `fn.env`.
 - [ ] **SMTP:** `SMTP_*`. Yoksa e-postalar gitmez (`selfbase.mail_log`).
@@ -1172,9 +1173,9 @@ Kodda `shortcut:` olarak işaretli olmayan ama bilinen eksikler:
 | Realtime mesajı gelmiyor | Tabloda realtime açık değil | `select selfbase.enable_realtime('public.<tablo>');` (tabloda `id` kolonu olmalı). Filtrede sadece `eq` çalışır. |
 | Bildirim fonksiyonu 401/403 dönüyor, `selfbase.http_queue`'da `failed` | Vault sırrı fonksiyonun env'iyle aynı değil | Bölüm 7, "Vault sırları". Kuyruğa bak: `select status, url, last_error from selfbase.http_queue order by id desc limit 10;` |
 | `selfbase.http_queue`'da `blocked` | `*.supabase.co`'ya gidip iç karşılığı olmayan bir istek | Bilerek engellendi; isteği yapan cron/trigger'ı incele. |
-| Taşıma script'i `points at a Supabase host` | `TARGET_DB_URL` Supabase'i gösteriyor | Hedef selfbase olmalı (bölüm 7). |
+| Taşıma script'i `points at a Supabase host` | `TARGET_DB_URL` ya da `TARGET_DB_URL_HOST` Supabase'i gösteriyor | Hedef selfbase olmalı (bölüm 7). |
 | 01-03 `could not translate host name "db"` | `DOCKER_NETWORK` yok ya da yanlış | `docker network ls`, `<proje adı>_default`. |
-| 05/06 `getaddrinfo ENOTFOUND db` | 05 ve 06 bilgisayarda çalışır | `TARGET_DB_URL`'i `localhost:<LOCAL_DB_PORT>` yap, `compose.local.yml` ile başlat. |
+| 05/06 `getaddrinfo ENOTFOUND db` | 05 ve 06 bilgisayarda çalışır, `TARGET_DB_URL_HOST` yok | `.env`'e `TARGET_DB_URL_HOST=postgres://postgres:<POSTGRES_PASSWORD>@localhost:<LOCAL_DB_PORT>/postgres` ekle, `compose.local.yml` ile başlat. |
 | `02 pre: the target is not empty` | Hedefte zaten veri var | Boş bir kurulum: `docker compose down -v`, tekrar `up`. |
 
 Hâlâ çözülmediyse: `docker compose logs --tail 200 core` çıktısını (içinde sır olmadığını kontrol

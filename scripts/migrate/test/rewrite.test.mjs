@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { isSupabaseHost, parseEnv, rewrite } from '../05-rewrite-urls.mjs'
+import { hostDbVar, isSupabaseHost, parseEnv, rewrite } from '../05-rewrite-urls.mjs'
 
 const from = 'abcdefghijklmnopqrst.supabase.co'
 const to = 'https://api.example.com'
@@ -64,7 +64,7 @@ test('Supabase hosts are refused as target', () => {
 test('an unparsable URL is reported by name, never echoed', () => {
   const secret = 'pa/ss#word'
   const ok = { SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co', PUBLIC_URL: 'https://a.example',
-    TARGET_DB_URL: 'postgres://u:p@localhost:1/db', SUPABASE_SERVICE_KEY: 'k', SERVICE_ROLE_KEY: 'k', STORAGE_DIR: '.' }
+    TARGET_DB_URL: 'postgres://u:p@localhost:1/db', TARGET_DB_URL_HOST: '', SUPABASE_SERVICE_KEY: 'k', SERVICE_ROLE_KEY: 'k', STORAGE_DIR: '.' }
   for (const [script, arg, name] of [
     ['03-auth-storage.sql.mjs', 'rows', 'TARGET_DB_URL'],
     ['04-files.mjs', '', 'SUPABASE_URL'],
@@ -79,5 +79,29 @@ test('an unparsable URL is reported by name, never echoed', () => {
     assert.equal(r.status, 2, `${script}: ${r.stderr}`)
     assert.match(r.stderr, new RegExp(`${name} is not a valid URL \\(percent-encode the password\\)`))
     assert.ok(!r.stderr.includes(secret) && !r.stdout.includes(secret), `${script} printed the input`)
+  }
+})
+
+test('host-side scripts prefer TARGET_DB_URL_HOST; empty or unset falls back to TARGET_DB_URL', () => {
+  assert.equal(hostDbVar({ TARGET_DB_URL: 'a', TARGET_DB_URL_HOST: 'b' }), 'TARGET_DB_URL_HOST')
+  assert.equal(hostDbVar({ TARGET_DB_URL: 'a', TARGET_DB_URL_HOST: '' }), 'TARGET_DB_URL')
+  assert.equal(hostDbVar({ TARGET_DB_URL: 'a' }), 'TARGET_DB_URL')
+})
+
+test('TARGET_DB_URL_HOST gets the same guards: unparsable and Supabase hosts refused, value never printed', () => {
+  const secret = 'pa/ss#word'
+  const base = { SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co', PUBLIC_URL: 'https://a.example',
+    TARGET_DB_URL: 'postgres://u:p@localhost:1/db', SERVICE_ROLE_KEY: 'k', DUMP_DIR: 'nonexistent' }
+  for (const script of ['05-rewrite-urls.mjs', '06-realtime-cron.mjs']) {
+    for (const [value, msg] of [
+      [`postgres://u:${secret}@localhost:1/db`, /TARGET_DB_URL_HOST is not a valid URL/],
+      [`postgres://postgres:${encodeURIComponent(secret)}@abcdefghijklmnopqrst.supabase.co:5432/postgres`, /TARGET_DB_URL_HOST points at a Supabase host/],
+    ]) {
+      const r = spawnSync(process.execPath, [fileURLToPath(new URL(`../${script}`, import.meta.url)), '--dry-run'],
+        { env: { ...process.env, ...base, TARGET_DB_URL_HOST: value }, encoding: 'utf8', timeout: 20000 })
+      assert.equal(r.status, 2, `${script}: ${r.stderr}`)
+      assert.match(r.stderr, msg)
+      assert.ok(!r.stderr.includes(secret) && !r.stdout.includes(secret), `${script} printed the input`)
+    }
   }
 })
