@@ -1,8 +1,7 @@
-FROM postgis/postgis:17-3.5
+# Debian 13 (trixie) base with current Postgres 17; pgvector and pg_cron come from PGDG.
+FROM postgis/postgis:17-3.6@sha256:1ac10b2551ba84ae05db8e7da477afcd0a3fede99bcb7705da2ee157390cb095
 
-# The base image is bullseye; PGDG moved bullseye to its archive host.
-RUN sed -i 's#apt.postgresql.org/pub/repos/apt/#apt-archive.postgresql.org/pub/repos/apt/#' /etc/apt/sources.list.d/pgdg.list \
- && apt-get update \
+RUN apt-get update \
  && apt-get install -y --no-install-recommends postgresql-17-pgvector postgresql-17-cron \
  && rm -rf /var/lib/apt/lists/*
 
