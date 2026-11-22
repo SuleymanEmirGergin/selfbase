@@ -6,3 +6,6 @@ fn.env
 dump
 data
 .superpowers
+panel/dist
+panel/test-results
+panel/playwright-report
