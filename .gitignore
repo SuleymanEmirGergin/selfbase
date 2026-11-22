@@ -5,3 +5,7 @@ data/
 node_modules/
 dist/
 .superpowers/
+.env.test-local
+.vitest/
+.test-storage/
+.test-functions/
