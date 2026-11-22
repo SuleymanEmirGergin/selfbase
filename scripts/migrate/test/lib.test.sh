@@ -16,6 +16,17 @@ eq "$C" ' spaced' 'env: key trimmed, value literal'
 eq "${D-unset}" unset 'env: non-identifier key skipped'
 eq "$PRESET" keep 'env: existing variable wins'
 
+# A key set twice (e.g. gen-keys output appended under the empty JWT_SECRET= line) is refused, nothing exported
+tmp="$(mktemp)"
+printf '%s\n' 'DUP_OTHER=x' 'DUP_KEY=' '# later' 'DUP_KEY=filled' > "$tmp"
+unset DUP_KEY DUP_OTHER
+out="$(load_env "$tmp" 2>&1)" && rc=0 || rc=$?
+eq "$rc" 2 'env: duplicate key refused'
+eq "$out" "$tmp: DUP_KEY is set twice (lines 2 and 4); keep one" 'env: duplicate key message'
+load_env "$tmp" 2>/dev/null || true
+eq "${DUP_OTHER-unset}|${DUP_KEY-unset}" 'unset|unset' 'env: nothing exported from a refused file'
+rm -f "$tmp"
+
 U='postgres://postgres.abcdefghijklmnopqrst:p%40ss%25w%5Cd@aws-1-eu-west-2.pooler.supabase.com:5432/postgres?sslmode=require'
 ( pgenv U
   eq "$PGUSER" postgres.abcdefghijklmnopqrst 'pgenv: user'

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, chmodSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { setEnvValues, getEnvValue, escapeCompose, writeEnvFile, processKeys, validatePassword } from '../set-panel-password.mjs'
+import { setEnvValues, getEnvValue, escapeCompose, writeEnvFile, processKeys, validatePassword, duplicateKey } from '../set-panel-password.mjs'
 
 const script = fileURLToPath(new URL('../set-panel-password.mjs', import.meta.url))
 const HASH = '$2b$12$Abc.def/GHI0123456789abcdefghijklmnopqrstuvwxyzABCDEFG'
@@ -28,6 +28,13 @@ test('keeps CRLF style, also when appending to a file without final newline', ()
   const out = setEnvValues('A=1\r\nPANEL_ADMIN_EMAIL=old\r\nB=2', vals)
   assert.equal(out, `A=1\r\nPANEL_ADMIN_EMAIL=a@b.co\r\nB=2\r\nPANEL_ADMIN_PASSWORD_HASH=${escapeCompose(HASH)}\r\n`)
   assert.ok(!/[^\r]\n/.test(out))
+})
+
+test('an env file with a key set twice is refused with the key and both lines', () => {
+  assert.equal(duplicateKey('A=1\r\nPANEL_ADMIN_EMAIL=\r\n# x\r\nPANEL_ADMIN_EMAIL=a@b.co\r\n', '.env'),
+    '.env: PANEL_ADMIN_EMAIL is set twice (lines 2 and 4); keep one, then run this again')
+  assert.match(duplicateKey('JWT_SECRET=\nB=2\nJWT_SECRET=x', 'x.env'), /JWT_SECRET is set twice \(lines 1 and 3\)/)
+  assert.equal(duplicateKey('A=1\n#A=2\nB=A=3\n', '.env'), null)
 })
 
 test('empty file and idempotent re-run', () => {

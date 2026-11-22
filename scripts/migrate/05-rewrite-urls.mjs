@@ -26,23 +26,35 @@ export const SKIPPED_SCHEMAS = ['realtime', 'vault', 'net', 'graphql', 'graphql_
   'information_schema']
 
 // Same rules as lib.sh's load_env: KEY=value per line, value literal to end of line, trailing \r
-// dropped, # lines skipped; keys already in the environment win.
-export function parseEnv(text) {
+// dropped, # lines skipped; keys already in the environment win. A key set twice throws (readers would
+// disagree on which one counts).
+export function parseEnv(text, name = '.env') {
   const vars = {}
-  for (let line of text.split('\n')) {
+  const lineOf = {}
+  text.split('\n').forEach((line, n) => {
     line = line.replace(/\r$/, '')
-    if (/^\s*(#|$)/.test(line) || !line.includes('=')) continue
+    if (/^\s*(#|$)/.test(line) || !line.includes('=')) return
     const i = line.indexOf('=')
     const key = line.slice(0, i).trim()
-    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) vars[key] = line.slice(i + 1)
-  }
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return
+    if (Object.hasOwn(vars, key)) throw new Error(`${name}: ${key} is set twice (lines ${lineOf[key]} and ${n + 1}); keep one`)
+    vars[key] = line.slice(i + 1)
+    lineOf[key] = n + 1
+  })
   return vars
 }
 
 export function loadEnv() {
   const file = new URL('../../.env', import.meta.url)
   if (!existsSync(file)) return
-  for (const [k, v] of Object.entries(parseEnv(readFileSync(file, 'utf8')))) {
+  let vars
+  try {
+    vars = parseEnv(readFileSync(file, 'utf8'))
+  } catch (e) {
+    console.error(e.message)
+    process.exit(2)
+  }
+  for (const [k, v] of Object.entries(vars)) {
     if (process.env[k] === undefined) process.env[k] = v
   }
 }

@@ -12,3 +12,4 @@ panel/playwright-report
 **/.env
 **/.env.*
 !**/.env.example
+backups

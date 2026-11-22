@@ -1,5 +1,6 @@
-# Local development only: publishes the database on localhost so host-side scripts
-# (scripts/migrate/05, 06, scripts/sync.mjs) can reach it. Never use on a server.
+# Local development only: publishes the database on localhost so the host-side scripts
+# (scripts/migrate/05 and 06, through TARGET_DB_URL_HOST) can reach it. scripts/sync.mjs does not need it:
+# it runs psql in a container through TARGET_DB_URL and DOCKER_NETWORK. Never use on a server.
 services:
   db:
     ports:

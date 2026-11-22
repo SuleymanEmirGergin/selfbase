@@ -8,7 +8,7 @@
 // Identity of a migration is its file name, recorded in selfbase.applied_migrations (created here) with a
 // sha256 of the file. Each file runs in ONE explicit transaction (its own BEGIN ... COMMIT wrapper, or
 // one sync adds) together with its record and its version in supabase_migrations.schema_migrations, as
-// postgres through psql in postgres:17 with the file on stdin; the first failure stops the run (exit 1).
+// postgres through psql in postgres:17.12 with the file on stdin; the first failure stops the run (exit 1).
 // A file psql could run differently from how it is scanned here (meta-commands other than \echo,
 // \qecho, \warn, \encoding and `\set ON_ERROR_STOP on`, psql variables), with transaction control
 // beyond one wrapper, or with a statement that cannot run in a transaction, is refused before any of it runs.
@@ -188,7 +188,7 @@ export function scan(sql) {
 const lit = (s) => `'${s.replace(/'/g, "''")}'`
 const VERSION = /^(\d{14})_(.*)\.sql$/
 
-// psql in postgres:17 via lib.sh's container_run: the script and data go on stdin, the URL is split
+// psql in postgres:17.12 via lib.sh's container_run: the script and data go on stdin, the URL is split
 // into PG* variables inside the container (password in PGPASSWORD), both output streams are redacted.
 const net = () => (process.env.DOCKER_NETWORK ? ['--network', process.env.DOCKER_NETWORK] : [])
 const bashEnv = () => ({ ...process.env, MSYS_NO_PATHCONV: '1', PGOPTIONS: '-c client_min_messages=warning' })

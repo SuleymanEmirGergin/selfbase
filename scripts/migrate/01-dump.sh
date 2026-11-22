@@ -10,7 +10,7 @@
 # refuses to export one, 01 says so and goes on without (pause writes on the source during 01 anyway).
 # Env (or .env at the repo root): SUPABASE_DB_URL (session pooler URL). Values are never printed.
 # Optional: DUMP_DIR (default dump/), DOCKER_NETWORK (when the source is a local container).
-# pg_dump/psql 17 run from the postgres:17 image.
+# pg_dump/psql 17 run from the postgres:17.12 image.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -109,5 +109,5 @@ wait $holder || true
 INNER
 )"
 MSYS_NO_PATHCONV=1 docker run --rm -i "${net[@]}" "${docker_user[@]}" -e SUPABASE_DB_URL \
-  -e PLATFORM="$platform" -e EXCL_SQL="$excl_sql" -v "$out_m:/dump" postgres:17 bash -s <<< "$script" 2>&1 | redact
+  -e PLATFORM="$platform" -e EXCL_SQL="$excl_sql" -v "$out_m:/dump" postgres:17.12 bash -s <<< "$script" 2>&1 | redact
 echo "01: done -> $out"

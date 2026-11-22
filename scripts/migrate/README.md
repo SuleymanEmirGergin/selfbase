@@ -23,7 +23,7 @@ percent-encoded inside the URL variables.
 | `NOTIFY_DISPATCH_SECRET`, `RADAR_NEWS_CRON_SECRET` | 06 | Optional; the edge functions' values for the two vault secrets |
 | `STORAGE_DIR` | 04 | Host folder that becomes core's storage volume |
 
-`pg_dump`/`psql` 17 run from the `postgres:17` image. The container script goes in on stdin and
+`pg_dump`/`psql` 17 run from the `postgres:17.12` image. The container script goes in on stdin and
 turns the URL into `PG*` variables (password in `PGPASSWORD`), so no password appears in a command
 line, neither docker's nor psql's; 05 and 06 hand the URL to `pg` in-process. 01, 02 and the 03 pipe
 (`psql_target` from `lib.sh`) run in a container, so `TARGET_DB_URL` there must be reachable from a container: set `DOCKER_NETWORK` to the

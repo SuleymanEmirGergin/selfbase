@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs inside the compose `backup` service (postgres:17; PG* env points at db, the storage volume is
+# Runs inside the compose `backup` service (postgres:17.12; PG* env points at db, the storage volume is
 # mounted read-only at /data/storage, BACKUP_DIR or the backups volume at /backups).
 #   docker compose run --rm backup /scripts/backup.sh     one backup now
 #   backup.sh --daily                                     the service's command: one backup a day at 03:15 UTC
