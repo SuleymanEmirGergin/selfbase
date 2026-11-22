@@ -28,7 +28,7 @@ jobs:
       - run: docker compose -p sb-ci -f template/compose.test.yml up -d --build --wait db db-empty db-v1 && docker compose -p sb-ci -f template/compose.test.yml up -d rest
       - run: npm run typecheck --workspaces --if-present
       - run: npm test --workspaces --if-present
-      - run: node --test scripts/test/workspace.test.mjs scripts/test/compose-env.test.mjs
+      - run: node --test scripts/test/workspace.test.mjs scripts/test/compose-env.test.mjs scripts/test/template.test.mjs
 
   images:
     runs-on: ubuntu-latest

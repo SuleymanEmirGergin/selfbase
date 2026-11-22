@@ -1,7 +1,7 @@
 // The typed operations (spec 7.5, AC-11). Every container body comes from spec.ts; nothing here takes a
 // container spec from the caller. Objects are only ever addressed by sb-* names built in names.ts.
 import { assertRef, containerName, networkName, ProvisionError, REF_RE, volumeName } from './names.ts'
-import { buildJob, buildProject, type EnsureInput, type JobType, type Sizes } from './spec.ts'
+import { assertJobRef, buildJob, buildProject, type EnsureInput, type JobType, type Sizes } from './spec.ts'
 import { isObj, startOrder, type Template } from './template.ts'
 import type { NodeSettings } from './settings.ts'
 import { containerLogs, docker, ensureImage } from './docker.ts'
@@ -87,7 +87,12 @@ export async function ensure(ctx: Ctx, ref: string, body: unknown) {
   // before anything changes: an image Coolify's nightly prune removed is pulled again here
   for (const image of new Set(fresh.map((c) => c.body.Image as string))) await ensureImage(image)
 
-  if (!(await inspectNetwork(spec.network.name))) await docker('POST', '/networks/create', spec.network.body)
+  const existing = await inspectNetwork(spec.network.name)
+  if (!existing) await docker('POST', '/networks/create', spec.network.body)
+  // a network keeps its subnet; another one would mean two projects claim one /27 (control allocates them)
+  else if (existing.IPAM?.Config?.[0]?.Subnet !== (input as { subnet: string }).subnet) {
+    refuse(409, 'subnet_conflict', `${spec.network.name} exists with another subnet`)
+  }
   for (const v of spec.volumes) {
     if ((await docker('GET', `/volumes/${v}`, undefined, [404])).status === 404) {
       await docker('POST', '/volumes/create', { Name: v, Labels: { 'selfbase.managed': 'true', 'selfbase.project': ref } })
@@ -161,16 +166,14 @@ export async function attachProxy(ctx: Ctx, ref: string) {
   return projectState(ctx, ref)
 }
 
-// Jobs run for a project ref or for the control stack itself ('control').
-function jobRef(ref: string) {
-  if (ref !== 'control') assertRef(ref)
-}
-
+// Jobs run for a project ref or for the control stack itself ('control', backup only).
 export async function runJob(ctx: Ctx, ref: string, body: unknown) {
-  jobRef(ref)
+  assertJobRef(ref, isObj(body) ? body.type : undefined)
   if (!isObj(body)) refuse(400, 'invalid_body', 'body must be a JSON object')
   const b = body as Record<string, unknown>
   const spec = buildJob({ ref, type: b.type as JobType, args: (b.args ?? {}) as { dir?: string }, env: (b.env ?? {}) as Record<string, string> }, ctx.node)
+  // a deleted project gets no job (server.ts runs jobs under the ref's lock too, so a delete cannot overlap)
+  if (ref !== 'control' && !(await inspectNetwork(networkName(ref)))) refuse(404, 'project_not_found', `${ref} has no network; run ensure`)
   const running = await listContainers({ status: ['running'] }, false)
   if (running.some((c) => (c.Names as string[]).some((n) => JOB_NAME_RE.test(n)))) refuse(409, 'job_running', 'another job is running')
   // an earlier finished job of this type whose result was never read
@@ -182,11 +185,11 @@ export async function runJob(ctx: Ctx, ref: string, body: unknown) {
 }
 
 export async function jobStatus(ref: string, type: string) {
-  jobRef(ref)
+  assertJobRef(ref, type)
   if (!SERVICE_RE.test(type)) refuse(400, 'invalid_job_type')
   const name = containerName(ref, `job-${type}`)
   const c = (await inspect(name)) ?? refuse(404, 'job_not_found', `no ${type} job`)
-  const tail = await containerLogs(name, 50)
+  const tail = await containerLogs(name, 50, 'job_not_found')
   if (c.State.Running) return { status: 'running', exitCode: null, tail }
   await docker('DELETE', `/containers/${name}?force=true`, undefined, [404])
   // still 'created' means its start failed: it never ran
@@ -194,20 +197,22 @@ export async function jobStatus(ref: string, type: string) {
   return { status: exitCode === 0 ? 'succeeded' : 'failed', exitCode, tail }
 }
 
-function serviceName(ref: string, service: string) {
+// Template services only: never a job container or anything else that happens to be named sb-<ref>-*.
+function serviceName(ctx: Ctx, ref: string, service: string) {
   assertRef(ref)
-  if (!SERVICE_RE.test(service)) refuse(400, 'invalid_service')
+  if (!Object.hasOwn(ctx.tpl.services, service)) refuse(400, 'invalid_service', 'service must be a template service')
   return containerName(ref, service)
 }
 
-export async function serviceLogs(ref: string, service: string, tail: string | null) {
+export async function serviceLogs(ctx: Ctx, ref: string, service: string, tail: string | null) {
+  const name = serviceName(ctx, ref, service)
   const n = tail === null ? 200 : Number(tail)
   if (!Number.isInteger(n) || n < 1 || n > 5000) refuse(400, 'invalid_tail', 'tail must be 1..5000')
-  return containerLogs(serviceName(ref, service), n)
+  return containerLogs(name, n)
 }
 
-export async function serviceStats(ref: string, service: string) {
-  const r = await docker('GET', `/containers/${serviceName(ref, service)}/stats?stream=false`, undefined, [404])
+export async function serviceStats(ctx: Ctx, ref: string, service: string) {
+  const r = await docker('GET', `/containers/${serviceName(ctx, ref, service)}/stats?stream=false`, undefined, [404])
   if (r.status === 404) refuse(404, 'service_not_found')
   const { memory_stats: m = {}, cpu_stats: cpu = {}, precpu_stats: pre = {} } = r.data
   const cpuDelta = (cpu.cpu_usage?.total_usage ?? 0) - (pre.cpu_usage?.total_usage ?? 0)

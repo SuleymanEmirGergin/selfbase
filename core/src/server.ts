@@ -1,6 +1,7 @@
 import type { Server } from 'node:http'
 import { serve } from '@hono/node-server'
 import { adminApp, app } from './app.ts'
+import { peerAllowed } from './admin/auth.ts'
 import { config } from './config.ts'
 import { closeDb, pool } from './db.ts'
 import { logLine } from './log.ts'
@@ -24,6 +25,8 @@ const adminServer = config.adminToken.length >= 32
   ? serve({ fetch: adminApp.fetch, port: config.adminPort }, (info) => logLine('info', `core admin listening on :${info.port}`))
   : null
 if (!adminServer) logLine('warn', 'ADMIN_TOKEN is empty or shorter than 32 characters: admin API not started')
+// a bad PROJECT_SUBNET stops startup here rather than failing every admin request
+else if (peerAllowed(process.env.PROJECT_SUBNET, undefined)) logLine('warn', 'PROJECT_SUBNET is not set: admin API answers any peer')
 
 // Deploys send SIGTERM: stop taking requests, let the ones in flight (uploads) finish, then close everything.
 let stopping = false

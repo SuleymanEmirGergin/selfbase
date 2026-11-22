@@ -70,10 +70,11 @@ const routes: Route[] = [
     return ops.serial(ref, () => ops.remove(ctx, ref, v === 'true'))
   }],
   ['POST', new RegExp(`^/projects/${P}/attach-proxy$`), ([ref]) => ops.serial(ref, () => ops.attachProxy(ctx, ref))],
-  ['POST', new RegExp(`^/projects/${P}/jobs$`), ([ref], _, b) => ops.serial('jobs', () => ops.runJob(ctx, ref, b))],
+  // a job create also holds its ref's lock, so it cannot interleave with that project's delete (always ref, then jobs)
+  ['POST', new RegExp(`^/projects/${P}/jobs$`), ([ref], _, b) => ops.serial(ref, () => ops.serial('jobs', () => ops.runJob(ctx, ref, b)))],
   ['GET', new RegExp(`^/projects/${P}/jobs/${P}$`), ([ref, type]) => ops.serial('jobs', () => ops.jobStatus(ref, type))],
-  ['GET', new RegExp(`^/projects/${P}/services/${P}/logs$`), ([ref, s], q) => ops.serviceLogs(ref, s, q.get('tail'))],
-  ['GET', new RegExp(`^/projects/${P}/services/${P}/stats$`), ([ref, s]) => ops.serviceStats(ref, s)],
+  ['GET', new RegExp(`^/projects/${P}/services/${P}/logs$`), ([ref, s], q) => ops.serviceLogs(ctx, ref, s, q.get('tail'))],
+  ['GET', new RegExp(`^/projects/${P}/services/${P}/stats$`), ([ref, s]) => ops.serviceStats(ctx, ref, s)],
 ]
 
 createServer(async (req, res) => {

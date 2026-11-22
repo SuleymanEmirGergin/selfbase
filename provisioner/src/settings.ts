@@ -40,8 +40,18 @@ export function loadSettings(env: Record<string, string | undefined> = process.e
   if (!VERSION_RE.test(s.templateVersion)) fail('TEMPLATE_VERSION is not a version')
   // socket-proxy.env puts it into a regex unescaped
   if (!/^[A-Za-z0-9_-]+$/.test(s.proxyNetwork)) fail('PROXY_NETWORK must be a plain network name [A-Za-z0-9_-]+')
-  if (s.backupHostDir && (!/^(\/[A-Za-z0-9._-]+)+$/.test(s.backupHostDir) || /\/\.\.?(\/|$)/.test(s.backupHostDir))) {
-    fail('BACKUP_HOST_DIR must be an absolute path')
+  // these become NetworkMode and network names: never a host namespace or another container's (`container:x`)
+  for (const [k, v] of [['PROXY_NETWORK', s.proxyNetwork], ['CONTROL_NETWORK', s.controlNetwork], ['CONTROL_CONTAINER', s.controlContainer]]) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(v) || ['host', 'none', 'bridge', 'default'].includes(v)) fail(`${k} must be a plain user-defined name`)
+  }
+  // the only bind mount source (AC-11): under /opt/selfbase (shared-host rule), never a system path
+  if (s.backupHostDir && (!/^\/opt\/selfbase(\/[A-Za-z0-9._-]+)+$/.test(s.backupHostDir) || /\/\.\.?(\/|$)/.test(s.backupHostDir))) {
+    fail('BACKUP_HOST_DIR must be a directory under /opt/selfbase/')
+  }
+  if (s.cgroupParent && !/^[A-Za-z0-9_-]+\.slice$/.test(s.cgroupParent)) fail('CGROUP_PARENT must be a slice name like selfbase.slice')
+  if (s.logSyslogAddr && !/^(udp|tcp):\/\/[A-Za-z0-9.-]+:\d{1,5}$/.test(s.logSyslogAddr)) fail('LOG_SYSLOG_ADDR must be udp://host:port or tcp://host:port')
+  for (const [k, v] of [['PROXY_ENTRYPOINT_HTTP', s.entrypointHttp], ['PROXY_ENTRYPOINT_HTTPS', s.entrypointHttps], ['PROXY_CERTRESOLVER', s.certResolver]]) {
+    if (!/^[A-Za-z0-9_-]*$/.test(v)) fail(`${k} must be a plain Traefik name`)
   }
   parseCidr(s.subnetPool)
   return s

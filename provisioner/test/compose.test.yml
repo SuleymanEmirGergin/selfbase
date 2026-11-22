@@ -25,7 +25,7 @@ services:
       TEMPLATE_VERSION: test
       PROXY_NETWORK: selfbase-test-proxy
       CONTROL_CONTAINER: selfbase-test-control
-      BACKUP_HOST_DIR: /tmp/sb-test-backups
+      BACKUP_HOST_DIR: /opt/selfbase/sb-test-backups
       TEMPLATE_PATH: /fixtures/ops-template.json
       SIZES_PATH: /fixtures/ops-sizes.json
     volumes:
