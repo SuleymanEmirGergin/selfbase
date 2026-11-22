@@ -9,6 +9,9 @@ describe('decodeHash', () => {
     expect(decodeHash('')).toBe('')
     expect(decodeHash(undefined)).toBe('')
   })
+  it('undoes compose $$ escaping that was passed through literally', () => {
+    expect(decodeHash(hash.replaceAll('$', '$$'))).toBe(hash)
+  })
   it('decodes the b64: form to the exact hash', () => {
     expect(decodeHash('b64:' + Buffer.from(hash).toString('base64'))).toBe(hash)
   })

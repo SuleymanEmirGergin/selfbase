@@ -1067,8 +1067,10 @@ Remove-Item $env:TEMP\panel.env
 `Get-Content` hash'i gösterir (şifreyi değil). İki satırı sunucudaki `.env`'e (ya da Coolify'a, bölüm 5)
 yapıştır, core'u yeniden başlat. Dosya repo dışında (`$env:TEMP`) duruyor ki unutulursa git'e girmesin.
 
-**Coolify'da `$` sorunu:** Coolify, değerdeki `$`'ları (Literal işaretli olsa bile) bozar; core'a hash boş
-gelir. Coolify'a hash'i `$` içermeyen `b64:` biçiminde gir. Şu komut onu ekrana basmadan panoya koyar:
+**Coolify'da `$` sorunu:** Literal işaretli olmayan bir değerdeki `$`'ları Coolify bozar; core'a hash boş
+gelir. İki yol var: değişkeni **Literal** işaretleyip script'in yazdığı `$$`'lı değeri olduğu gibi yapıştır
+(core `$$`'ı kendisi `$` yapar), ya da hash'i `$` içermeyen `b64:` biçiminde gir. Şu komut b64 biçimini
+ekrana basmadan panoya koyar:
 
 ```powershell
 $l = Get-Content $env:TEMP\panel.env | Where-Object { $_ -like 'PANEL_ADMIN_PASSWORD_HASH=*' }; 'b64:' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($l.Substring(26).Replace('$$','$'))) | Set-Clipboard

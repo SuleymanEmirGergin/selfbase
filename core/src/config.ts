@@ -8,8 +8,10 @@ const bool = (v: string | undefined, dflt: boolean) => {
   return v === 'true'
 }
 const list = (v: string | undefined) => (v ?? '').split(',').map((s) => s.trim()).filter(Boolean)
-// "b64:<base64>" carries a bcrypt hash without any `$`: some deploy tools (Coolify) mangle `$` in env values
-export const decodeHash = (v: string | undefined) => (v?.startsWith('b64:') ? Buffer.from(v.slice(4), 'base64').toString('utf8') : v || '')
+// "b64:<base64>" carries a bcrypt hash without any `$`: some deploy tools (Coolify) mangle `$` in env values.
+// A compose-escaped value (`$$`) that reached us unescaped is undone too; a bcrypt hash never contains `$$`.
+export const decodeHash = (v: string | undefined) =>
+  v?.startsWith('b64:') ? Buffer.from(v.slice(4), 'base64').toString('utf8') : (v || '').replaceAll('$$', '$')
 
 export const config = {
   port: Number(env.PORT || 8080),
