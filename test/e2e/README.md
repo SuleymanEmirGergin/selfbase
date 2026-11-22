@@ -13,16 +13,21 @@ E2E_KEEP=1 node --test test/e2e/stack.test.mjs # leave the stack up (Task 18 run
 
 Settings (helpers.mjs `envFile`): `BASE_DOMAIN=localhost`, `PROXY_CERTRESOLVER=` (Traefik's default certificate,
 accepted for `*.localhost` only), `CERT_PROBE=off`, Traefik on `18080`/`18443`, `MAX_NEW_HOSTS_PER_WEEK=3`, syslog to
-`udp://127.0.0.1:5514`, projects in `10.218.0.0/16`, backups in `/opt/selfbase/sb-e2e-backups` (on Docker Desktop that
-path is inside its VM). `PROXY_NETWORK=sb-0-e2e-proxy` sorts before every `sb-<ref>` network, as `coolify` does on the
-server, so the test sees the Docker DNS order control has to cope with there. Requests go to `127.0.0.1` with SNI and
-`Host` set; no hosts-file entry is needed.
+`udp://127.0.0.1:5514`, projects in `10.218.0.0/16`. On the Docker host (on Docker Desktop: inside its VM) the run
+makes `/opt/selfbase/sb-e2e` with `backups/`, `secrets/` and a root-only copy of the env file, and goes through the
+install steps of `control/.env.example` as written there: `gen-keys.mjs --secrets`, then `install-check.mjs` in the
+control image as root. The test never sees a secret. `PROXY_NETWORK=sb-0-e2e-proxy` sorts before every `sb-<ref>`
+network, as `coolify` does on the server, so the test sees the Docker DNS order control has to cope with there.
+Requests go to `127.0.0.1` with SNI and `Host` set; no hosts-file entry is needed.
 
-It needs the fixed names of a real install: no `selfbase-control`, `selfbase-traefik` container and no `selfbase`
-network may exist (a local `selfbase start` stack, whose containers are `selfbase-local-*`, is fine), and ports
-18080, 18443 and 5514/udp must be free. Every container, network and volume it creates is named `sb-*` or `selfbase-*`;
-the last case removes them and checks that the host's list of everything else is unchanged. Built images stay
-(`selfbase.local/selfbase-*:e2e`).
+It refuses to start when any fixed name of a real install exists (the `selfbase-*` containers of control/compose.yml,
+the networks `selfbase`, `selfbase-docker`, `selfbase-traefik-docker`, `sb-0-e2e-proxy`, the volumes
+`selfbase-control-pgdata`, `selfbase-logs`, `selfbase-acme`, or `/opt/selfbase/sb-e2e`), so it never adopts one. A local
+`selfbase start` stack (`selfbase-local-*`) is fine. Ports 18080, 18443 and 5514/udp must be free. The teardown removes
+only what the run owns: the containers, networks and volumes of the project refs it created (also read from control-db),
+compose project `selfbase-t17` (`rm -sv`, then `down` without `-v`, then the volumes carrying its label), and the proxy
+network and host directory it made. `teardown.test.mjs` checks that a foreign `sb-*` network and volume are not on that
+list; case 11 that the host's lists are as before. Built images stay (`selfbase.local/selfbase-*:e2e`).
 
 ## Cases
 
@@ -32,7 +37,10 @@ the last case removes them and checks that the host's list of everything else is
    cores share that network); TCP to B's /27 (db:5432, core:8080/8081) times out; B's admin port on the proxy
    network answers 403 (core's /27 peer check); A's key on B's host is 401; different /27s in the pool.
 3. Every project container: `Memory == MemorySwap`, `PidsLimit`, `no-new-privileges`, no binds, no published port,
-   syslog logging. Control has no socket and is not on the socket proxy's network.
+   syslog logging. Control has no socket and is not on the socket proxy's network. The control stack's secrets are
+   files under `/run/secrets`, none in any `Config.Env`. Seven wrong sign-ins from A's core straight to
+   `selfbase-control:8080`, each with a new spoofed `X-Forwarded-For`: the sixth and seventh are 429 (the key is the
+   socket address, since only `TRUSTED_PROXY_HOSTS` may forward).
 4. Studio in Chromium: sign in, insert a row in the table editor, `select 1`, core log lines from VictoriaLogs.
 5. Control stack stopped: both projects answer `/health`, sign-up and `/rest/v1/`; a core restart comes back healthy
    with `logs` down (D-5); after the stack starts again reconcile changes nothing (no job, no recreated container).

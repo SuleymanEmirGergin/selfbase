@@ -9,8 +9,8 @@
 #   selfbase-docker  internal: provisioner and socket-proxy only. control is NOT on it, so a compromised control can
 #                    reach the Docker API only through the provisioner's typed operations (AC-11)
 #   proxy            ${PROXY_NETWORK}, external: Traefik reaches control (and each project's core) here
-# control reaches a project's core only as sb-<ref>-core.sb-<ref>, i.e. over that project's own network, which the
-# provisioner connects control to: core is on the proxy network too, and its admin port refuses peers from there.
+# control reaches a project's core only at its address on sb-<ref> as the provisioner reads it (never a DNS name),
+# over that project's own network: core is on the proxy network too, and its admin port refuses peers from there.
 # PROXY_NETWORK, REGISTRY and BACKUP_HOST_DIR feed the provisioner and the socket-proxy allow-list
 # (../provisioner/socket-proxy.env, interpolated from the same env file), so the two always agree.
 # Coolify's nightly cleanup deletes unused images; the provisioner re-pulls before every create. Never add a
@@ -31,11 +31,13 @@ services:
     memswap_limit: 384m
     pids_limit: 256
     cap_drop: [ALL]
+    group_add: ["${SECRETS_GID:-10001}"] # reads the secret files (0640 root:SECRETS_GID)
+    secrets: [master_key, control_db_password, control_jwt_secret, provisioner_token]
     environment:
-      SELFBASE_MASTER_KEY: ${SELFBASE_MASTER_KEY:?set SELFBASE_MASTER_KEY}
-      CONTROL_DB_PASSWORD: ${CONTROL_DB_PASSWORD:?set CONTROL_DB_PASSWORD}
-      CONTROL_JWT_SECRET: ${CONTROL_JWT_SECRET:?set CONTROL_JWT_SECRET}
-      PROVISIONER_TOKEN: ${PROVISIONER_TOKEN:?set PROVISIONER_TOKEN}
+      SELFBASE_MASTER_KEY_FILE: /run/secrets/master_key
+      CONTROL_DB_PASSWORD_FILE: /run/secrets/control_db_password
+      CONTROL_JWT_SECRET_FILE: /run/secrets/control_jwt_secret
+      PROVISIONER_TOKEN_FILE: /run/secrets/provisioner_token
       BASE_DOMAIN: ${BASE_DOMAIN:?set BASE_DOMAIN}
       PUBLIC_URL: ${PUBLIC_URL:-}
       NODE_NAME: ${NODE_NAME:-}
@@ -59,8 +61,11 @@ services:
       SMTP_PASS: ${SMTP_PASS:-}
       SMTP_FROM: ${SMTP_FROM:-}
       AUTH_RATE_LIMIT_SIGN_IN: ${AUTH_RATE_LIMIT_SIGN_IN:-}
-      # exactly one proxy appends X-Forwarded-For and control has no other way in: the rightmost entry is the client
+      # the rightmost X-Forwarded-For entry is the client, but only on a connection from TRUSTED_PROXY_HOSTS (default:
+      # the mode's Traefik, selfbase-traefik or coolify-proxy): other containers on the proxy and project networks
+      # reach :8080 directly and their forwarded headers are ignored
       TRUST_PROXY: "true"
+      TRUSTED_PROXY_HOSTS: ${TRUSTED_PROXY_HOSTS:-}
     volumes:
       # an import with a passphrase reads project.json of an export here
       - ${BACKUP_HOST_DIR:?set BACKUP_HOST_DIR}:/backups:ro
@@ -109,8 +114,10 @@ services:
     pids_limit: 256
     cap_drop: [NET_RAW]
     shm_size: 128m
+    secrets: [control_db_password]
     environment:
-      POSTGRES_PASSWORD: ${CONTROL_DB_PASSWORD}
+      # read by the entrypoint as root, before it drops to postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/control_db_password
     volumes:
       - selfbase-control-pgdata:/var/lib/postgresql/data
     networks: [selfbase]
@@ -128,8 +135,10 @@ services:
     memswap_limit: 128m
     pids_limit: 64
     cap_drop: [ALL]
+    group_add: ["${SECRETS_GID:-10001}"]
+    secrets: [provisioner_token]
     environment: # NodeSettings (provisioner/src/settings.ts); the same values reach socket-proxy.env
-      PROVISIONER_TOKEN: ${PROVISIONER_TOKEN}
+      PROVISIONER_TOKEN_FILE: /run/secrets/provisioner_token
       REGISTRY: ${REGISTRY}
       TEMPLATE_VERSION: ${TEMPLATE_VERSION}
       PROXY_NETWORK: ${PROXY_NETWORK:-coolify}
@@ -243,6 +252,19 @@ networks:
   proxy:
     external: true
     name: ${PROXY_NETWORK:-coolify}
+
+# Secret files, not env: a container's Config.Env is readable through Traefik's socket proxy (/containers/<id>/json).
+# Compose bind-mounts each file with its host owner and mode (it ignores uid/gid/mode for file secrets), hence
+# 0640 root:SECRETS_GID plus group_add above; scripts/gen-keys.mjs --secrets writes them.
+secrets:
+  master_key:
+    file: ${SECRETS_DIR:-/opt/selfbase/secrets}/master_key
+  control_db_password:
+    file: ${SECRETS_DIR:-/opt/selfbase/secrets}/control_db_password
+  control_jwt_secret:
+    file: ${SECRETS_DIR:-/opt/selfbase/secrets}/control_jwt_secret
+  provisioner_token:
+    file: ${SECRETS_DIR:-/opt/selfbase/secrets}/provisioner_token
 
 volumes:
   selfbase-control-pgdata:

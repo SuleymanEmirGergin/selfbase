@@ -73,15 +73,20 @@ job db "$P-storage" bash /scripts/backup.sh > /dev/null
 check 'retention deletes an old backup' in_backups '[ ! -e /backups/t/20200101-000000 ]'
 
 # ---- with MANIFEST_B64: project.json is written and listed ----
-JOB_ENV=(-e BACKUP_SUBDIR=export-t -e "MANIFEST_B64=$(printf '{"v":1}' | base64 | tr -d '\n')")
+JOB_ENV=(-e BACKUP_SUBDIR=export-t -e CONTROL_GID=1234 -e "MANIFEST_B64=$(printf '{"v":1}' | base64 | tr -d '\n')")
 last=$(job db "$P-storage" bash /scripts/backup.sh | tail -n1)
 check 'retention never prunes an export' in_backups '[ -d /backups/export-t/20200101-000000 ]'
 ets=${last#backup: wrote export-t/}
 check 'an export writes project.json and lists it in MANIFEST' in_backups "
   cd /backups/export-t/$ets && [ \"\$(cat project.json)\" = '{\"v\":1}' ] && grep -q '^project.json ' MANIFEST"
-# control (uid 1000, read-only mount) reads an export's project.json for an import; the dump stays owner-only
-check 'control can read project.json but not the dump' docker run --rm --user 1000 -v "$P-backups:/backups:ro" "$IMAGE" bash -c "
-  cat /backups/export-t/$ets/project.json > /dev/null && ! cat /backups/export-t/$ets/db.dump > /dev/null 2>&1 && ! ls /backups/export-t > /dev/null 2>&1"
+# control (CONTROL_GID's group, read-only mount) reads an export's project.json for an import; nobody else does, and
+# the dump stays owner-only
+check 'an export is 0750/0640 with group CONTROL_GID' in_backups "
+  [ \"\$(stat -c '%a %g' /backups/export-t /backups/export-t/$ets /backups/export-t/$ets/project.json | tr '\n' ' ')\" = '750 1234 750 1234 640 1234 ' ]"
+check 'control can read project.json but not the dump' docker run --rm --user 1000:1234 -v "$P-backups:/backups:ro" "$IMAGE" bash -c "
+  cat /backups/export-t/$ets/project.json > /dev/null && ! cat /backups/export-t/$ets/db.dump > /dev/null 2>&1"
+check 'another uid cannot read project.json' docker run --rm --user 1001:1001 -v "$P-backups:/backups:ro" "$IMAGE" bash -c "
+  ! cat /backups/export-t/$ets/project.json > /dev/null 2>&1"
 
 # ---- the control database: no storage mount, no storage archive ----
 JOB_ENV=(-e BACKUP_SUBDIR=control)

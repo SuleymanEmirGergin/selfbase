@@ -8,7 +8,9 @@ import { containerLogs, docker, ensureImage } from './docker.ts'
 
 export type Ctx = { tpl: Template; sizes: Sizes; node: NodeSettings }
 export type ServiceState = { service: string; exists: boolean; state: string | null; health: string | null
-  specHash: string | null; templateVersion: string | null; memLimitMb: number | null; proxyAttached: boolean }
+  specHash: string | null; templateVersion: string | null; memLimitMb: number | null; proxyAttached: boolean
+  /** the address on sb-<ref>: control connects to it, never to a name Docker's DNS may answer from another network */
+  projectIp: string | null }
 
 const MiB = 1024 * 1024
 const SERVICE_RE = /^[a-z][a-z0-9_-]*$/
@@ -51,12 +53,13 @@ export function serial<T>(key: string, fn: () => Promise<T>): Promise<T> {
   return next
 }
 
-function serviceState(service: string, c: any, node: NodeSettings): ServiceState {
-  if (!c) return { service, exists: false, state: null, health: null, specHash: null, templateVersion: null, memLimitMb: null, proxyAttached: false }
+function serviceState(service: string, c: any, node: NodeSettings, network: string): ServiceState {
+  if (!c) return { service, exists: false, state: null, health: null, specHash: null, templateVersion: null, memLimitMb: null, proxyAttached: false, projectIp: null }
   const l = c.Config?.Labels ?? {}
   return { service, exists: true, state: c.State.Status, health: c.State.Health?.Status ?? null, specHash: l['selfbase.spec'] ?? null,
     templateVersion: l['selfbase.template'] ?? null, memLimitMb: c.HostConfig.Memory / MiB,
-    proxyAttached: Object.hasOwn(c.NetworkSettings?.Networks ?? {}, node.proxyNetwork) }
+    proxyAttached: Object.hasOwn(c.NetworkSettings?.Networks ?? {}, node.proxyNetwork),
+    projectIp: c.NetworkSettings?.Networks?.[network]?.IPAddress || null }
 }
 
 export async function projectState(ctx: Ctx, ref: string) {
@@ -66,7 +69,7 @@ export async function projectState(ctx: Ctx, ref: string) {
     .filter((s): s is string => typeof s === 'string' && SERVICE_RE.test(s) && !s.startsWith('job-'))
   const services = [...new Set([...startOrder(ctx.tpl.services), ...labelled])]
   return { ref, network: !!net, controlAttached: attached(net, ctx.node.controlContainer),
-    services: await Promise.all(services.map(async (s) => serviceState(s, await inspect(containerName(ref, s)), ctx.node))) }
+    services: await Promise.all(services.map(async (s) => serviceState(s, await inspect(containerName(ref, s)), ctx.node, networkName(ref)))) }
 }
 
 export async function listProjects(ctx: Ctx) {

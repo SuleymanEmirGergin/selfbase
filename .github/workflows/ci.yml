@@ -52,6 +52,6 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx -w studio playwright install --with-deps chromium
-      - run: node --test scripts/test/install-check.test.mjs
+      - run: node --test scripts/test/install-check.test.mjs scripts/test/gen-keys.test.mjs
       - run: bash job/test/job.test.sh
-      - run: node --test test/e2e/stack.test.mjs
+      - run: node --test --test-concurrency=1 test/e2e/teardown.test.mjs test/e2e/stack.test.mjs

@@ -2,7 +2,7 @@
 // ones control/.env.example lists and the control stack's compose files interpolate.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
@@ -12,10 +12,6 @@ const script = join(root, 'scripts', 'install-check.mjs')
 const SECRET = 'do-not-print-this-secret-value-0123456789'
 
 const good = {
-  SELFBASE_MASTER_KEY: Buffer.alloc(32, 7).toString('base64'),
-  CONTROL_DB_PASSWORD: SECRET,
-  CONTROL_JWT_SECRET: 'j'.repeat(48),
-  PROVISIONER_TOKEN: 't'.repeat(40),
   BASE_DOMAIN: 'example.test',
   REGISTRY: 'ghcr.io/owner',
   TEMPLATE_VERSION: '2.1.0',
@@ -27,49 +23,80 @@ const good = {
   TEST_HOST: 'sb-test.example.test',
   PUBLIC_URL: 'https://selfbase.example.test',
 }
+const goodSecrets = {
+  master_key: Buffer.alloc(32, 7).toString('base64'),
+  control_db_password: SECRET,
+  control_jwt_secret: 'j'.repeat(48),
+  provisioner_token: 't'.repeat(40),
+}
 
-function run(env, { raw } = {}) {
+function run(env, { raw, secrets = goodSecrets, extraEnv = {} } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'sb-install-check-'))
   const file = join(dir, '.env')
   writeFileSync(file, raw ?? Object.entries(env).map(([k, v]) => `${k}=${v}`).join('\n') + '\n')
   chmodSync(file, 0o600)
-  const r = spawnSync(process.execPath, [script, file], { encoding: 'utf8' })
+  const sdir = join(dir, 'secrets')
+  mkdirSync(sdir)
+  for (const [name, value] of Object.entries(secrets)) {
+    writeFileSync(join(sdir, name), `${value}\n`)
+    chmodSync(join(sdir, name), 0o640)
+  }
+  const r = spawnSync(process.execPath, [script, file, sdir], { encoding: 'utf8', env: { ...process.env, ...extraEnv } })
   rmSync(dir, { recursive: true, force: true })
   return { status: r.status, out: r.stdout + r.stderr }
 }
 
-test('a complete env file passes', () => {
+test('a complete env file and secrets directory pass', () => {
   const r = run(good)
   assert.equal(r.status, 0, r.out)
 })
 
-test('comments, blank lines and quoted values are read like compose does', () => {
+test('comments, blank lines, quoted values and inline comments are read like compose does', () => {
   const raw = `# header\n\n${Object.entries(good).map(([k, v]) => `${k}="${v}"`).join('\n')}\n`
   assert.equal(run(null, { raw }).status, 0)
+  // an unquoted value ends before " #": otherwise TEST_HOST would not end with BASE_DOMAIN
+  const inline = `${Object.entries(good).map(([k, v]) => `${k}=${v}   # the ${k.toLowerCase()}`).join('\n')}\n`
+  const r = run(null, { raw: inline })
+  assert.equal(r.status, 0, r.out)
 })
 
 test('each problem is one line naming the key, never a value', () => {
-  const { SELFBASE_MASTER_KEY, ...rest } = good
-  const r = run({ ...rest, PROVISIONER_TOKEN: '', SURPRISE: SECRET, PROJECT_SUBNET_POOL: '10.207.0.0/24',
+  const r = run({ ...good, SURPRISE: SECRET, PROJECT_SUBNET_POOL: '10.207.0.0/24',
     TEST_HOST: 'sb-test.other.test', PUBLIC_URL: 'https://selfbase.other.test' })
   assert.equal(r.status, 1)
   const lines = r.out.trim().split('\n')
-  for (const key of ['SELFBASE_MASTER_KEY', 'PROVISIONER_TOKEN', 'SURPRISE', 'PROJECT_SUBNET_POOL', 'TEST_HOST', 'PUBLIC_URL']) {
+  for (const key of ['SURPRISE', 'PROJECT_SUBNET_POOL', 'TEST_HOST', 'PUBLIC_URL']) {
     assert.equal(lines.filter((l) => l.includes(key)).length, 1, `${key}: ${r.out}`)
   }
   assert.ok(!r.out.includes(SECRET))
 })
 
+test('the four secrets live in files, not in the env file', () => {
+  const r = run({ ...good, CONTROL_DB_PASSWORD: SECRET, PROVISIONER_TOKEN: SECRET })
+  assert.equal(r.status, 1)
+  assert.match(r.out, /CONTROL_DB_PASSWORD: .*control_db_password/)
+  assert.match(r.out, /PROVISIONER_TOKEN: .*provisioner_token/)
+  assert.ok(!r.out.includes(SECRET))
+  const { provisioner_token, ...three } = goodSecrets
+  const missing = run(good, { secrets: { ...three, control_db_password: '' } })
+  assert.equal(missing.status, 1)
+  assert.match(missing.out, /provisioner_token: missing/)
+  assert.match(missing.out, /control_db_password: empty/)
+  assert.equal(spawnSync(process.execPath, [script, join(root, 'control', '.env.example')], { encoding: 'utf8' }).status, 1)
+})
+
 test('the master key must decode to 32 bytes', () => {
   for (const k of [Buffer.alloc(31).toString('base64'), Buffer.alloc(33).toString('base64'), 'not base64 at all']) {
-    const r = run({ ...good, SELFBASE_MASTER_KEY: k })
+    const r = run(good, { secrets: { ...goodSecrets, master_key: k } })
     assert.equal(r.status, 1)
-    assert.match(r.out, /SELFBASE_MASTER_KEY/)
+    assert.match(r.out, /master_key/)
     assert.ok(!r.out.includes(k))
   }
 })
 
-test('the subnet pool is a /16 or larger network address', () => {
+test('the subnet pool is optional (default 10.207.0.0/16), else a /16 or larger network address', () => {
+  const { PROJECT_SUBNET_POOL, ...rest } = good
+  assert.equal(run(rest).status, 0)
   assert.equal(run({ ...good, PROJECT_SUBNET_POOL: '10.0.0.0/8' }).status, 0)
   for (const p of ['10.207.0.0/17', '10.207.1.0/16', '10.207.0.0', '300.1.0.0/16']) assert.equal(run({ ...good, PROJECT_SUBNET_POOL: p }).status, 1, p)
 })
@@ -84,21 +111,34 @@ test('settings that must agree with each other', () => {
   bad({ PROXY_CERTRESOLVER: '' }, 'PROXY_CERTRESOLVER') // coolify needs its resolver
   bad({ PROXY_MODE: 'own' }, 'COMPOSE_PROFILES') // own mode needs the proxy profile
   bad({ BACKUP_HOST_DIR: '/var/backups' }, 'BACKUP_HOST_DIR')
+  bad({ SECRETS_DIR: '/etc/selfbase' }, 'SECRETS_DIR')
+  bad({ SECRETS_GID: 'staff' }, 'SECRETS_GID')
   bad({ PROXY_TRAEFIK_MAJOR: '4' }, 'PROXY_TRAEFIK_MAJOR')
   bad({ PROXY_TRAEFIK_MAJOR: '2' }, 'COMPOSE_FILE')
   assert.equal(run({ ...good, PROXY_MODE: 'own', COMPOSE_PROFILES: 'proxy', PROXY_CERTRESOLVER: '' }).status, 0)
   assert.equal(run({ ...good, PROXY_TRAEFIK_MAJOR: '2', COMPOSE_FILE: 'compose.yml:compose.traefik-v2.yml' }).status, 0)
 })
 
-test('the env file must be 0600 on Linux', { skip: process.platform !== 'linux' }, () => {
+test("DOCKER_SOCKET_GID must be the socket's group when that is not 0", () => {
+  // inside the control image the socket is not mounted: the documented command passes its group as HOST_DOCKER_SOCKET_GID
+  const r = run(good, { extraEnv: { HOST_DOCKER_SOCKET_GID: '998' } })
+  assert.equal(r.status, 1)
+  assert.match(r.out, /DOCKER_SOCKET_GID: must be 998/)
+  assert.equal(run({ ...good, DOCKER_SOCKET_GID: '998' }, { extraEnv: { HOST_DOCKER_SOCKET_GID: '998' } }).status, 0)
+  assert.equal(run(good, { extraEnv: { HOST_DOCKER_SOCKET_GID: '0' } }).status, 0)
+})
+
+test('the env file must be 0600 and the secret files not world-readable on Linux', { skip: process.platform !== 'linux' }, () => {
   const dir = mkdtempSync(join(tmpdir(), 'sb-install-check-'))
   const file = join(dir, '.env')
   writeFileSync(file, Object.entries(good).map(([k, v]) => `${k}=${v}`).join('\n'))
   chmodSync(file, 0o644)
-  const r = spawnSync(process.execPath, [script, file], { encoding: 'utf8' })
+  for (const [name, value] of Object.entries(goodSecrets)) writeFileSync(join(dir, name), value, { mode: 0o644 })
+  const r = spawnSync(process.execPath, [script, file, dir], { encoding: 'utf8' })
   rmSync(dir, { recursive: true, force: true })
   assert.equal(r.status, 1)
   assert.match(r.stdout + r.stderr, /0600/)
+  assert.match(r.stdout + r.stderr, /master_key: mode/)
 })
 
 test('no file: exit 1 with usage', () => {

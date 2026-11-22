@@ -3,6 +3,7 @@
 import pg from 'pg'
 import { admit, AdmissionError, type Size } from '../admission.ts'
 import { config } from '../config.ts'
+import { forgetCoreIp } from '../core-addr.ts'
 import { ApiError } from '../errors.ts'
 import { allocateHost, hostsOf, releaseHost } from '../hosts.ts'
 import { newRef } from '../ids.ts'
@@ -146,13 +147,14 @@ async function warm(ctx: JobCtx) {
   let last = ''
   for (;;) {
     try {
-      const res = await fetch(`${ctx.coreUrl(p.ref)}/rest/v1/`, { headers: { apikey: key, authorization: `Bearer ${key}` },
+      const res = await fetch(`${await ctx.coreUrl(p.ref)}/rest/v1/`, { headers: { apikey: key, authorization: `Bearer ${key}` },
         signal: AbortSignal.timeout(Math.max(1000, Math.min(10_000, until - Date.now()))) })
       await res.body?.cancel()
       if (res.status === 200) return
       last = `status ${res.status}`
     } catch (e) {
       last = (e as Error).name
+      forgetCoreIp(p.ref) // recreated (or not up yet): read its address again
     }
     if (Date.now() >= until) return ctx.log('warm_failed', { last })
     await pause(ctx.waits.pollMs)

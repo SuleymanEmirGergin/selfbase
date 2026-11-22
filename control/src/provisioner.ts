@@ -4,7 +4,9 @@
 import { ApiError } from './errors.ts'
 
 export type ServiceState = { service: string; exists: boolean; state: string | null; health: string | null
-  specHash: string | null; templateVersion: string | null; memLimitMb: number | null; proxyAttached: boolean }
+  specHash: string | null; templateVersion: string | null; memLimitMb: number | null; proxyAttached: boolean
+  /** the container's address on sb-<ref> (core-addr.ts) */
+  projectIp: string | null }
 export type ProjectState = { ref: string; network: boolean; controlAttached: boolean; services: ServiceState[] }
 export type EnsureInput = { ref: string; templateVersion: string; size: string; subnet: string; hosts: string[]
   env: Record<string, string> }

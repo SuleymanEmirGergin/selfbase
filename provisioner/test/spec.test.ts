@@ -234,6 +234,8 @@ test('control job: control network, no volume', () => {
 
 test('job refusals', () => {
   assert.throws(() => buildJob(job({ env: { LD_PRELOAD: '/x.so' } }), NODE), code('invalid_env'))
+  // an export's group: control reads its project.json
+  assert.ok(buildJob(job({ env: { MANIFEST_B64: 'e30=', CONTROL_GID: '1000' } }), NODE).body.Env.includes('CONTROL_GID=1000'))
   assert.throws(() => buildJob(job({ env: { RESTORE_DIR: '../etc' } }), NODE), code('invalid_dir'))
   for (const dir of ['../etc', 'a/b/c', '.', 'a/..', '/abs', '', 'a b', 'import/a/b', 'import/a/..']) {
     assert.throws(() => buildJob(job({ args: { dir } }), NODE), code('invalid_dir'), dir)

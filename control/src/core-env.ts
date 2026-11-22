@@ -16,6 +16,7 @@ Object.assign(process.env, {
   SITE_URL: config.publicUrl,
   AUTH_REDIRECT_ALLOWLIST: resetPasswordUrl,
   AUTH_DISABLE_SIGNUP: 'true',
+  TRUSTED_PROXY_HOSTS: config.trustedProxyHosts,
 })
 // dashboard default, overridable: five sign-ins per IP per 5 minutes
 process.env.AUTH_RATE_LIMIT_SIGN_IN ||= '5'

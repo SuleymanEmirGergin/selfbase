@@ -1,7 +1,6 @@
 // Helpers for stack.test.mjs: docker and compose calls, HTTPS through the stack's Traefik, waiting, snapshots.
 import { spawnSync } from 'node:child_process'
 import { request } from 'node:https'
-import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import { statSync } from 'node:fs'
 
@@ -15,7 +14,12 @@ export const ORIGIN = `https://${CONTROL_HOST}:${HTTPS_PORT}`
 // sorts before every sb-<ref> network, as `coolify` does on the server: Docker's DNS then prefers this network's
 // address for a container on both, which is what control must never use to reach a core (carry 4)
 export const PROXY_NETWORK = 'sb-0-e2e-proxy'
-export const BACKUP_HOST_DIR = '/opt/selfbase/sb-e2e-backups'
+// on the Docker host (on Docker Desktop: inside its VM); the run refuses to start when it exists
+export const E2E_DIR = '/opt/selfbase/sb-e2e'
+export const BACKUP_HOST_DIR = `${E2E_DIR}/backups`
+export const SECRETS_DIR = `${E2E_DIR}/secrets`
+// root:docker on a Linux host (CI); Docker Desktop's socket is root:root
+export const SOCKET_GID = process.platform === 'linux' ? String(statSync('/var/run/docker.sock').gid) : '0'
 
 // Git Bash on Windows would rewrite container paths such as /backups; docker must see them as given
 const ENV = { ...process.env, MSYS_NO_PATHCONV: '1' }
@@ -30,13 +34,10 @@ export function run(cmd, args, { input, ok = [0], timeout = 600_000 } = {}) {
 export const docker = (...args) => run('docker', args)
 export const dockerOk = (...args) => run('docker', args, { ok: [0, 1] })
 
+/** The env file's settings; the secrets are files in SECRETS_DIR (gen-keys --secrets), never seen by the test. */
 export function envFile() {
-  const b = (n) => randomBytes(n).toString('base64url')
   return {
-    SELFBASE_MASTER_KEY: randomBytes(32).toString('base64'),
-    CONTROL_DB_PASSWORD: b(32),
-    CONTROL_JWT_SECRET: b(48),
-    PROVISIONER_TOKEN: b(32),
+    SECRETS_DIR,
     BASE_DOMAIN: BASE,
     PUBLIC_URL: ORIGIN,
     REGISTRY: 'selfbase.local',
@@ -53,8 +54,7 @@ export function envFile() {
     LOG_SYSLOG_ADDR: 'udp://127.0.0.1:5514',
     // explicit /27s from here; nothing else on a developer machine uses it
     PROJECT_SUBNET_POOL: '10.218.0.0/16',
-    // root:docker on a Linux host (CI); Docker Desktop's socket is root:root
-    DOCKER_SOCKET_GID: process.platform === 'linux' ? String(statSync('/var/run/docker.sock').gid) : '0',
+    DOCKER_SOCKET_GID: SOCKET_GID,
   }
 }
 
@@ -123,6 +123,30 @@ export function connectFrom(container, ip, port) {
   return run('docker', ['exec', container, 'node', '-e', `const s=require('net').connect({host:'${ip}',port:${port},timeout:3000});`
     + `s.on('connect',()=>{console.log('open');process.exit(0)});s.on('timeout',()=>{console.log('timeout');process.exit(0)});`
     + `s.on('error',(e)=>{console.log(e.code==='ECONNREFUSED'?'refused':e.code);process.exit(0)})`])
+}
+
+/**
+ * What a run created, by ownership rather than by "new since the start": the containers, networks and volumes of the
+ * project refs it created, the volumes compose labelled for PROJECT, and the proxy network when the run made it.
+ * (compose down removes PROJECT's containers and networks itself.)
+ */
+export function runResources(refs, { proxyNetwork = false } = {}) {
+  const lines = (...args) => docker(...args).split('\n').filter(Boolean)
+  const mine = (n) => [...refs].some((r) => n === `sb-${r}` || n.startsWith(`sb-${r}-`))
+  return {
+    containers: lines('ps', '-a', '--format', '{{.Names}}').filter(mine),
+    networks: [...lines('network', 'ls', '--format', '{{.Name}}').filter(mine), ...(proxyNetwork ? [PROXY_NETWORK] : [])],
+    volumes: [...lines('volume', 'ls', '--format', '{{.Name}}').filter(mine),
+      ...lines('volume', 'ls', '--format', '{{.Name}}', '--filter', `label=com.docker.compose.project=${PROJECT}`)],
+  }
+}
+
+/** The fixed names a real install uses: a run refuses to start when any exists, so it never adopts (or removes) one. */
+export const FIXED = {
+  containers: ['selfbase-control', 'selfbase-control-db', 'selfbase-provisioner', 'selfbase-socket-proxy', 'selfbase-logs',
+    'selfbase-traefik', 'selfbase-traefik-socket-proxy'],
+  networks: ['selfbase', 'selfbase-docker', 'selfbase-traefik-docker', PROXY_NETWORK],
+  volumes: ['selfbase-control-pgdata', 'selfbase-logs', 'selfbase-acme'],
 }
 
 export function resolveFrom(container, name) {

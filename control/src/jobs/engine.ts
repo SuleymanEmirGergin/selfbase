@@ -11,6 +11,7 @@
 import pg from 'pg'
 import type { Db } from '../db.ts'
 import { probeCertificate } from '../cert.ts'
+import { coreIp } from '../core-addr.ts'
 import { ApiError } from '../errors.ts'
 import { ProvisionerError, type Provisioner } from '../provisioner.ts'
 import { SECRET_ENV, THIRD_PARTY_SECRET_ENV } from '../project-env.ts'
@@ -24,7 +25,7 @@ export type Waits = { pollMs: number; healthyMs: number; certificateMs: number; 
 export type JobCtx = { db: pg.Pool; provisioner: Provisioner; job: Job; project: Project | null; step: string
   probe: (hostname: string) => Promise<'ok' | 'pending'>; waits: Waits
   /** core's URL on the project network (control is attached to sb-<ref>) */
-  coreUrl(ref: string): string
+  coreUrl(ref: string): string | Promise<string>
   log(event: string, fields?: Record<string, unknown>): Promise<void> }
 /** retry: false for a step that polls on its own budget; its first failure fails the job */
 export type Step = { name: string; retry?: boolean; run(ctx: JobCtx): Promise<void> }
@@ -91,8 +92,8 @@ const message = (e: unknown) => String((e as Error)?.message ?? e).slice(0, 1000
 export function startWorkers(deps: WorkerDeps): { stop(): Promise<void> } {
   let stopping = false
   const waits: Waits = { pollMs: 2000, healthyMs: 120_000, certificateMs: 600_000, warmMs: 60_000, ...deps.waits }
-  // over the project network only (forward.ts says why)
-  const coreUrl = deps.coreUrl ??((ref: string) => `http://sb-${ref}-core.sb-${ref}:8080`)
+  // by core's address on the project network (core-addr.ts says why)
+  const coreUrl = deps.coreUrl ?? (async (ref: string) => `http://${await coreIp(deps.provisioner, ref)}:8080`)
   const probe = deps.probe ?? probeCertificate
   const idleMs = deps.idleMs ?? 1000
   const backoffMs = deps.backoffMs ?? 2000

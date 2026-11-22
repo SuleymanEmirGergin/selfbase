@@ -10,8 +10,8 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
-import { BACKUP_HOST_DIR, CONTROL_HOST, ORIGIN, PROXY_NETWORK, compose, connectFrom, docker, dockerOk, envFile, https, inspect,
-  resolveFrom, root, run, snapshot, waitFor } from './helpers.mjs'
+import { CONTROL_HOST, E2E_DIR, FIXED, ORIGIN, PROXY_NETWORK, SECRETS_DIR, SOCKET_GID, compose, connectFrom, docker, dockerOk, envFile,
+  https, inspect, resolveFrom, root, run, runResources, snapshot, waitFor } from './helpers.mjs'
 
 process.chdir(root)
 const KEEP = process.env.E2E_KEEP === '1'
@@ -22,7 +22,10 @@ const PASSPHRASE = `e2e export ${randomBytes(6).toString('hex')}`
 
 let envPath, envDir, start, token
 let tornDown = false
+let madeProxyNetwork = false
+let madeE2EDir = false
 const P = {} // name -> { ref, host, anon }
+const refs = new Set() // every project ref this run created (teardown removes only these)
 
 const log = (msg) => console.log(`# ${msg}`)
 const psql = (sql) => docker('exec', 'selfbase-control-db', 'psql', '-U', 'postgres', '-XAtq', '-v', 'ON_ERROR_STOP=1', '-c', sql)
@@ -55,6 +58,7 @@ async function create(name) {
   const t0 = Date.now()
   const r = await ok('POST', '/projects', { organization_slug: 'default', name, size: 'micro' })
   const ref = r.project.ref
+  refs.add(ref)
   return { ref, jobId: r.job_id, t0 }
 }
 async function finish({ ref, jobId, t0 }, name) {
@@ -72,34 +76,56 @@ async function finish({ ref, jobId, t0 }, name) {
 function teardown() {
   if (tornDown) return
   tornDown = true
-  const before = new Set([...start.containers, ...start.networks, ...start.volumes])
-  const ours = (list) => list.filter((n) => /^sb-/.test(n) && !before.has(n))
-  const now = snapshot()
-  // projects first (control is attached to their networks), then the stack, then what the run made by hand
-  const cs = ours(now.containers)
-  if (cs.length) dockerOk('rm', '-f', ...cs)
-  try { compose(envPath, 'down', '-v', '--remove-orphans', '--timeout', '5') } catch (e) { log(`compose down: ${e.message}`) }
-  for (const n of ours(now.networks)) dockerOk('network', 'rm', n)
-  for (const v of ours(now.volumes)) dockerOk('volume', 'rm', '-f', v)
-  // the host backup directory (Docker created it on first bind)
-  // (an image without VOLUME: the job image's would leave an anonymous volume)
-  dockerOk('run', '--rm', '--user', '0', '-v', '/opt/selfbase:/o', 'selfbase.local/selfbase-control:e2e', 'rm', '-rf', `/o/${BACKUP_HOST_DIR.split('/').pop()}`)
+  // control-db knows every project, also one whose create call the test never saw answered
+  try { for (const r of psql('select ref from control.projects').split('\n').filter(Boolean)) refs.add(r) } catch {}
+  // projects first (control is attached to their networks), then the stack (its anonymous volumes with it; the named
+  // ones below, by compose's label: never `down -v`), then what the run made by hand
+  const mine = runResources(refs, { proxyNetwork: madeProxyNetwork })
+  if (mine.containers.length) dockerOk('rm', '-f', '-v', ...mine.containers)
+  try {
+    compose(envPath, 'rm', '-f', '-s', '-v')
+    compose(envPath, 'down', '--remove-orphans', '--timeout', '5')
+  } catch (e) { log(`compose down: ${e.message}`) }
+  for (const n of mine.networks) dockerOk('network', 'rm', n)
+  for (const v of mine.volumes) dockerOk('volume', 'rm', '-f', v)
+  // the run's host directory (backups, secrets, the env file's copy), only when this run made it
+  if (madeE2EDir) dockerOk('run', '--rm', '--user', '0', '--network', 'none', '-v', '/opt/selfbase:/o', IMAGE, 'rm', '-rf', `/o/${E2E_DIR.split('/').pop()}`)
   rmSync(envDir, { recursive: true, force: true })
 }
 
+// as root, no network, like the documented install commands (control/.env.example); an image without VOLUME (the job
+// image's would leave an anonymous volume behind)
+const IMAGE = 'selfbase.local/selfbase-control:e2e'
+const asRoot = (args, opts) => run('docker', ['run', '--rm', '-i', '--user', '0', '--network', 'none', ...args], opts)
+
 before(async () => {
-  start = snapshot()
-  for (const n of [...CONTROL_STACK, 'selfbase-traefik']) assert.ok(!start.containers.includes(n), `${n} exists already: another selfbase stack runs here`)
-  for (const n of ['selfbase', PROXY_NETWORK]) assert.ok(!start.networks.includes(n), `network ${n} exists already`)
+  const now = snapshot()
+  // never adopt a real install's (or a kept run's) resources: compose would use them and the teardown remove them
+  for (const kind of ['containers', 'networks', 'volumes']) {
+    const there = FIXED[kind].filter((n) => now[kind].includes(n))
+    assert.equal(there.length, 0, `${kind} ${there.join(', ')} exist already: another selfbase stack (or a kept run) is here; remove it first`)
+  }
+  start = now // only now may after() tear down
   envDir = mkdtempSync(join(tmpdir(), 'sb-e2e-'))
   envPath = join(envDir, '.env')
-  writeFileSync(envPath, Object.entries(envFile()).map(([k, v]) => `${k}=${v}`).join('\n') + '\n')
+  const envText = Object.entries(envFile()).map(([k, v]) => `${k}=${v}`).join('\n') + '\n'
+  writeFileSync(envPath, envText)
   chmodSync(envPath, 0o600)
-  assert.equal(run(process.execPath, ['scripts/install-check.mjs', envPath]), 'install-check: ok')
-  docker('network', 'create', PROXY_NETWORK)
   let t = Date.now()
   compose(envPath, '--profile', 'images', 'build')
   log(`images built in ${((Date.now() - t) / 1000).toFixed(0)} s`)
+  const dir = E2E_DIR.split('/').pop()
+  assert.equal(asRoot(['-v', '/opt/selfbase:/o', IMAGE, 'sh', '-c', `test -e /o/${dir} && echo exists || true`]), '',
+    `${E2E_DIR} exists already (a kept or failed run): remove it first`)
+  asRoot(['-v', '/opt/selfbase:/o', IMAGE, 'sh', '-c', `mkdir -m 0700 /o/${dir} /o/${dir}/secrets`])
+  madeE2EDir = true
+  // the install steps of control/.env.example, as written there: secret files, a root-only env file, the check
+  asRoot(['-v', `${SECRETS_DIR}:/secrets`, IMAGE, 'node', '/app/scripts/gen-keys.mjs', '--secrets', '/secrets', '10001'])
+  asRoot(['-v', `${E2E_DIR}:/o`, IMAGE, 'sh', '-c', 'umask 077; cat > /o/.env'], { input: envText })
+  assert.equal(asRoot(['-e', `HOST_DOCKER_SOCKET_GID=${SOCKET_GID}`, '-v', `${E2E_DIR}/.env:/env:ro`, '-v', `${SECRETS_DIR}:/secrets:ro`, IMAGE,
+    'node', '/app/scripts/install-check.mjs', '/env', '/secrets']), 'install-check: ok')
+  docker('network', 'create', PROXY_NETWORK)
+  madeProxyNetwork = true
   t = Date.now()
   compose(envPath, 'up', '-d', '--wait')
   // Traefik routes a container once its health check passes, a moment after compose's --wait returns
@@ -170,7 +196,13 @@ test('3: every project container is capped and hardened; control has no Docker s
   }
   const mounts = inspect('selfbase-control').Mounts
   assert.ok(!mounts.some((m) => /docker\.sock/.test(m.Source + m.Destination)), 'socket in control')
-  assert.deepEqual(mounts.map((m) => [m.Destination, m.RW]), [['/backups', false]])
+  assert.deepEqual(mounts.map((m) => [m.Destination, m.RW]).sort(), [['/backups', false], ...['control_db_password', 'control_jwt_secret',
+    'master_key', 'provisioner_token'].map((s) => [`/run/secrets/${s}`, false])])
+  // the secrets are files: nothing a socket proxy's inspect shows (Config.Env) holds one
+  for (const n of CONTROL_STACK) {
+    const env = inspect(n).Config.Env.map((e) => e.split('=')[0])
+    for (const k of ['SELFBASE_MASTER_KEY', 'CONTROL_DB_PASSWORD', 'CONTROL_JWT_SECRET', 'PROVISIONER_TOKEN', 'POSTGRES_PASSWORD']) assert.ok(!env.includes(k), `${n}: ${k}`)
+  }
   // only the two socket proxies mount the socket
   for (const n of [...CONTROL_STACK, 'selfbase-traefik']) {
     const sock = inspect(n).Mounts.some((m) => m.Source === '/var/run/docker.sock')
@@ -178,6 +210,16 @@ test('3: every project container is capped and hardened; control has no Docker s
   }
   // control cannot reach the Docker API: it is not on the socket proxy's network
   assert.match(resolveFrom('selfbase-control', 'selfbase-socket-proxy'), /ENOTFOUND|EAI_AGAIN/)
+  // a project container reaches control:8080 without Traefik; its X-Forwarded-For is ignored, so a fresh spoofed
+  // address per try does not escape the sign-in limit (5 per IP)
+  const tries = run('docker', ['exec', `sb-${P.a.ref}-core`, 'node', '-e', `const http=require('http'),out=[];let n=0
+const go=()=>{const body=JSON.stringify({email:'nobody@e2e.test',password:'wrong-password-1'})
+const r=http.request({host:'selfbase-control',port:8080,path:'/platform/login',method:'POST',headers:{host:'${CONTROL_HOST}',
+'content-type':'application/json','content-length':Buffer.byteLength(body),origin:'${ORIGIN}','x-forwarded-for':'198.51.100.'+(++n)}},
+(res)=>{res.resume();out.push(res.statusCode);if(n<7)go();else console.log(out.join(' '))});r.on('error',(e)=>console.log(e.code));r.end(body)}
+go()`]).split(' ')
+  assert.equal(tries.length, 7, tries.join(' '))
+  assert.ok(tries.slice(0, 5).every((s) => s !== '429') && tries.slice(5).every((s) => s === '429'), tries.join(' '))
 })
 
 test('4: Studio against the real stack: table editor, SQL, logs', async () => {
@@ -336,6 +378,7 @@ test('10: export A, import it as D on the freed host with A’s keys; a wrong pa
   const started = await importWith(PASSPHRASE)
   assert.equal(started.status, 202, started.text)
   const d = started.json.project.ref
+  refs.add(d)
   const j = await job(started.json.job_id, 300_000)
   assert.equal(j.status, 'succeeded', j.error)
   await healthyProject(d)

@@ -58,6 +58,9 @@ test('ensure creates network, volumes and labelled containers', async () => {
   assert.equal(r.body.controlAttached, true)
   assert.deepEqual(r.body.services.map((s: any) => [s.service, s.exists, s.state, s.memLimitMb]), [['db', true, 'running', 32], ['core', true, 'running', 32]])
   assert.deepEqual(r.body.services.map((s: any) => s.proxyAttached), [false, true])
+  // control connects to this address, never to a name Docker's DNS may answer from another network
+  for (const s of r.body.services) assert.equal(s.projectIp, docker('inspect', '-f', `{{(index .NetworkSettings.Networks "sb-${REF}").IPAddress}}`, `sb-${REF}-${s.service}`))
+  assert.match(r.body.services[1].projectIp, /^10\.207\.250\.\d+$/)
   assert.equal(docker('network', 'inspect', '-f', '{{(index .IPAM.Config 0).Subnet}} {{index .Labels "selfbase.project"}}', `sb-${REF}`), `10.207.250.0/27 ${REF}`)
   for (const v of ['pgdata', 'storage']) assert.equal(docker('volume', 'inspect', '-f', '{{index .Labels "selfbase.managed"}}', `sb-${REF}-${v}`), 'true')
   for (const s of ['db', 'core']) {
