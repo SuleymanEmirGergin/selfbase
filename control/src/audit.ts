@@ -16,10 +16,13 @@ const limit = bodyLimit({
   maxSize: BODY_LIMIT,
   onError: (c) => c.json({ error: 'payload_too_large', message: 'request body larger than 256 KiB' }, 413),
 })
-/** Caps every request body before audit or a handler parses it, except on the routes in largeBodyRoutes. */
+/**
+ * Caps every request body before audit or a handler parses it, except non-JSON bodies on the routes in
+ * largeBodyRoutes (audit parses every JSON body, so JSON is always capped).
+ */
 export const bodyCap = createMiddleware((c, next) => {
   const route = apiRoute(c)
-  return route && largeBodyRoutes.has(route) ? next() : limit(c, next)
+  return route && largeBodyRoutes.has(route) && !isJson(c) ? next() : limit(c, next)
 })
 
 export const audit = createMiddleware<Env>(async (c, next) => {

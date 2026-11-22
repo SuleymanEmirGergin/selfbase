@@ -4,7 +4,7 @@ import { config } from './config.ts'
 import { closeDb, migrate, pool } from './db.ts'
 import { app } from './app.ts'
 import { startWorkers } from './jobs/index.ts'
-import { httpProvisioner } from './provisioner.ts'
+import { httpProvisioner, setProvisioner } from './provisioner.ts'
 import { startReconcile } from './reconcile.ts'
 
 // Schema first; a failure names the migration file only (never SQL or secrets)
@@ -14,6 +14,7 @@ await migrate().catch((e: Error) => {
 })
 // jobs left running by the previous process resume at their recorded step
 const provisioner = httpProvisioner(config.provisionerUrl, config.provisionerToken)
+setProvisioner(provisioner)
 startWorkers({ db: pool, provisioner })
 startReconcile({ db: pool, provisioner })
 const server = serve({ fetch: app.fetch, port: config.port }, (info) => console.log(`selfbase-control listening on :${info.port}`))

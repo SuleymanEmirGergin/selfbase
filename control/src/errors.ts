@@ -14,7 +14,9 @@ export class ApiError extends Error {
 }
 
 export function onError(err: Error, c: Context) {
-  if (err instanceof ApiError) return c.json({ error: err.code, message: err.message }, err.status)
+  // a refusal's numbers (admission: neededMb, freeMb; host cap: cap, retryAfter) travel with it
+  const details = (err as { details?: Record<string, unknown> }).details
+  if (err instanceof ApiError) return c.json({ error: err.code, message: err.message, ...(details ? { details } : {}) }, err.status)
   if (err instanceof HTTPException) return c.json({ error: 'http_error', message: err.message || 'request failed' }, err.status)
   // unexpected: the details stay in the log (name and message only), the client gets nothing it could leak
   console.error(`control: ${err.name}: ${err.message}`)

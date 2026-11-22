@@ -25,6 +25,14 @@ export interface Provisioner {
   stats(ref: string, service: string): Promise<{ mem_usage_mb: number; mem_limit_mb: number; cpu_percent: number }>
 }
 
+let current: Provisioner | undefined
+/** The provisioner the HTTP routes use: server.ts sets the real one, tests a fake. */
+export const setProvisioner = (p: Provisioner) => { current = p }
+export const provisioner = (): Provisioner => {
+  if (!current) throw new Error('provisioner: not set')
+  return current
+}
+
 /** Always 502 to control's callers: the provisioner's own status (409 job_running, 404, ...) is in `upstream`. */
 export class ProvisionerError extends ApiError {
   upstream: number

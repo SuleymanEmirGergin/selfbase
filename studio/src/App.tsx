@@ -20,13 +20,16 @@ const TABS = [
 ] as const
 const OUTSIDE_TABS = { new: NewProject, import: ImportProject } as const
 
-/** Only same-origin targets are followed after sign-in (`/\evil.com` and the like resolve elsewhere and are dropped). */
+/**
+ * Only same-origin targets are followed after sign-in (`/\evil.com` and the like resolve elsewhere and are dropped).
+ * No backslash at all, and no path that starts `//` once resolved (`/.//evil.com`): history would read it as another host.
+ */
 const nextPath = () => {
   const n = new URLSearchParams(location.search).get('next')
-  if (!n) return ''
+  if (!n || n.includes('\\')) return ''
   let u: URL
   try { u = new URL(n, location.origin) } catch { return '' } // `http://`, `//` and the like do not parse
-  return u.origin === location.origin ? u.pathname + u.search + u.hash : ''
+  return u.origin === location.origin && !u.pathname.startsWith('//') ? u.pathname + u.search + u.hash : ''
 }
 const homeOf = (me: Me) => (me.organizations[0] ? `/org/${me.organizations[0].slug}` : '/org')
 

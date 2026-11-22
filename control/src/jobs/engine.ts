@@ -43,6 +43,9 @@ const MAX_VALUE = 2048
 // a project should be running: reconcile acts on these, project.apply only touches these
 export const DESIRED_RUNNING = ['ACTIVE_HEALTHY', 'ACTIVE_UNHEALTHY', 'COMING_UP']
 
+/** The step names of a job type, in order (Studio shows them). */
+export const stepsOf = (type: string): string[] => defs.get(type)?.steps.map((s) => s.name) ?? []
+
 export function defineJob(type: string, lane: Lane, steps: Step[], opts: { onFail?: Def['onFail'] } = {}): void {
   defs.set(type, { type, lane, steps, onFail: opts.onFail })
 }
