@@ -121,12 +121,15 @@ export default function App() {
     reload()
   }, [reload])
 
+  // Every way out of a session (sign-out, a 401 that survived refresh, a failed /me) ends here: the next user on this
+  // browser must not see this one's SQL query and rows.
+  useEffect(() => { if (me === null) clearProjectMemory() }, [me])
+
   const signOut = useCallback(async () => {
     await platform.logout().catch(() => {})
     // An explicit sign-out keeps no `next`: the next account must not land on this one's page. Replacing the URL
     // without emitting keeps the redirect effect from adding it back; the render below reads the new path.
     history.replaceState(null, '', '/sign-in')
-    clearProjectMemory() // the next user on this browser must not see this one's SQL query and rows
     setMe(null)
   }, [])
 

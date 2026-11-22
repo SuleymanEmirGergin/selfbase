@@ -96,7 +96,7 @@ function Domains() {
       {manage && (
         <form className="form-row" onSubmit={add}>
           <label className="field grow"><span>Alan adı</span>
-            <input className="mono" required placeholder="api.ornek.com" value={hostname} onChange={(e) => setHostname(e.target.value)} />
+            <input className="mono" required placeholder="api.ornek.com" value={hostname} onChange={(e) => { setHostname(e.target.value); setHostErr('') }} />
           </label>
           <label className="field"><span>Tür</span>
             <select value={kind} onChange={(e) => setKind(e.target.value as 'legacy' | 'custom')}>

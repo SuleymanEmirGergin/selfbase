@@ -285,6 +285,36 @@ test('sign-out clears the SQL memory, so the next user does not see the last que
   await expect(page.getByRole('columnheader', { name: 'one' })).toHaveCount(0)
 })
 
+test('a 401 sign-out also clears the SQL memory', async ({ page }) => {
+  let session = true
+  const r = routes()
+  r['GET /me'] = () => (session ? { body: fx('me') } : { status: 401, body: fx('unauthorized') })
+  r['POST /refresh'] = { status: 401, body: fx('unauthorized') }
+  r['POST /login'] = () => { session = true; return { body: fx('login') } }
+  const users = r[`GET ${A}/users`]
+  r[`GET ${A}/users`] = (req) => (session ? (typeof users === 'function' ? users(req) : users) : { status: 401, body: fx('unauthorized') })
+  const api = await mockApi(page, r)
+  await page.goto(`/project/${REF}/sql`)
+  await page.getByRole('textbox', { name: 'SQL sorgusu' }).click()
+  await page.keyboard.press('Control+A')
+  await page.keyboard.type('select secret_column')
+  await page.keyboard.press('Control+Enter')
+  await expect(page.getByRole('columnheader', { name: 'one' })).toBeVisible()
+
+  session = false // the session expires; the next call gets a 401 and the refresh fails too
+  await nav(page, 'Kullanıcılar')
+  await expect(page.getByRole('button', { name: 'Giriş yap' })).toBeVisible()
+  expect(api.count('POST /refresh')).toBeGreaterThanOrEqual(1)
+  await page.getByLabel('E-posta').fill('other@example.test')
+  await page.getByLabel('Parola').fill('correct horse battery')
+  await page.getByRole('button', { name: 'Giriş yap' }).click()
+  // `next` brings the user back in-app (no reload, so module memory would survive if it were not cleared)
+  await expect(page.getByText('ada@example.test')).toBeVisible()
+  await nav(page, 'SQL')
+  await expect(page.getByRole('textbox', { name: 'SQL sorgusu' })).toHaveText('select now();')
+  await expect(page.getByRole('columnheader', { name: 'one' })).toHaveCount(0)
+})
+
 test('settings: a custom domain is checked and confirmed; backup status is in Turkish', async ({ page }) => {
   const r = routes()
   r[`POST ${P}/domains`] = { status: 202, body: fx('project-job') }
@@ -297,6 +327,7 @@ test('settings: a custom domain is checked and confirmed; backup status is in Tu
   await page.getByRole('button', { name: 'Ekle', exact: true }).click()
   await expect(page.getByText('Geçerli bir alan adı yazın')).toBeVisible()
   await host.fill('API.Example.com')
+  await expect(page.getByText('Geçerli bir alan adı yazın')).toHaveCount(0) // editing clears the error
   await page.getByRole('button', { name: 'Ekle', exact: true }).click()
   const dialog = page.locator('dialog.confirm')
   await expect(dialog).toContainText('sertifika')
