@@ -1,0 +1,23 @@
+# Throwaway control-db for control's tests. Values here are test-only, never real secrets.
+#   docker compose -f control/compose.test.yml up -d --build --wait
+# Parallel checkouts: add -p <name> and set TEST_CONTROL_DB_PORT.
+# The db image has no schema of its own: control's test global setup applies core's platform migrations and
+# control/migrations, the way control does at start.
+name: selfbase-control-test
+
+services:
+  control-db:
+    build:
+      context: ..
+      dockerfile: db/Dockerfile
+    environment:
+      POSTGRES_PASSWORD: test-control-db-password
+    tmpfs:
+      - /var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${TEST_CONTROL_DB_PORT:-54340}:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-h", "localhost"]
+      interval: 2s
+      timeout: 3s
+      retries: 30

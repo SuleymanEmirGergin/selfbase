@@ -1,0 +1,53 @@
+import { afterAll, expect, test } from 'vitest'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+// STUDIO_DIR is read once with the config, so it is set before app.ts is first imported in this file
+const dir = mkdtempSync(join(tmpdir(), 'studio-'))
+mkdirSync(join(dir, 'assets'))
+writeFileSync(join(dir, 'index.html'), '<!doctype html><title>studio</title>')
+writeFileSync(join(dir, 'assets', 'app.js'), 'console.log(1)')
+process.env.STUDIO_DIR = dir
+const { app } = await import('../src/app.ts')
+afterAll(() => rmSync(dir, { recursive: true, force: true }))
+
+test('GET /health', async () => {
+  const res = await app.request('/health')
+  expect(res.status).toBe(200)
+  expect(await res.json()).toEqual({ ok: true })
+})
+
+test('Studio files and the index.html fallback for client routes', async () => {
+  expect(await (await app.request('/')).text()).toContain('<title>studio</title>')
+  const js = await app.request('/assets/app.js')
+  expect(js.headers.get('content-type')).toMatch(/javascript/)
+  expect(await js.text()).toBe('console.log(1)')
+  const route = await app.request('/org/abc/projects')
+  expect(route.status).toBe(200)
+  expect(await route.text()).toContain('<title>studio</title>')
+})
+
+test('/platform, /v1 and /health are never answered with index.html', async () => {
+  for (const path of ['/platform', '/platform/nope', '/v1', '/v1/projects/nope', '/health/x']) {
+    const res = await app.request(path)
+    expect(res.status, path).toBe(404)
+    expect(res.headers.get('content-type'), path).toMatch(/application\/json/)
+    expect(await res.json(), path).toEqual({ error: 'not_found', message: expect.any(String) })
+  }
+})
+
+test('errors have the shape {error, message}', async () => {
+  const { ApiError } = await import('../src/errors.ts')
+  const { Hono } = await import('hono')
+  const { onError } = await import('../src/errors.ts')
+  const h = new Hono().onError(onError)
+  h.get('/a', () => { throw new ApiError(409, 'conflict', 'already there') })
+  h.get('/b', () => { throw new Error('secret detail') })
+  const a = await h.request('/a')
+  expect(a.status).toBe(409)
+  expect(await a.json()).toEqual({ error: 'conflict', message: 'already there' })
+  const b = await h.request('/b')
+  expect(b.status).toBe(500)
+  expect(await b.json()).toEqual({ error: 'internal', message: 'internal error' })
+})
