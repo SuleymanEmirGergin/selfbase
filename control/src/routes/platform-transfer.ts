@@ -9,7 +9,8 @@ import { pool } from '../db.ts'
 import { configSections, EnvFileError, parseV1Env } from '../envfile.ts'
 import { ApiError } from '../errors.ts'
 import { createProject } from '../jobs/index.ts'
-import { ManifestError, openManifest, sealManifest } from '../manifest.ts'
+import { backupDirOf } from '../jobs/transfer.ts'
+import { ManifestError, MIN_PASSPHRASE, openManifest, sealManifest } from '../manifest.ts'
 import { getSecrets } from '../secrets.ts'
 import type { Env } from '../session.ts'
 import { bad, body, lifecycle, orgFor, platformProject, projectFor, projectName, projectSize, type ProjectRow } from './platform-projects.ts'
@@ -17,8 +18,6 @@ import { bad, body, lifecycle, orgFor, platformProject, projectFor, projectName,
 export const platformTransfer = new Hono<Env>()
 
 const ENV_FILE_MAX = 64 * 1024
-// the provisioner's rule for a job's dir (provisioner/src/spec.ts): one or two plain segments under /backups
-const DIR_RE = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)?$/
 // what an export carries and an import takes over; POSTGRES_PASSWORD and the rest are generated for the new project
 const CARRIED = ['JWT_SECRET', 'ANON_KEY', 'SERVICE_ROLE_KEY', 'SMTP_PASS', 'GOOGLE_CLIENT_SECRET', 'AUTH_SMS_HOOK_SECRET']
 const SECTIONS = ['auth', 'postgrest', 'storage', 'realtime', 'database', 'pooler', 'functions']
@@ -45,6 +44,14 @@ platformTransfer.post('/projects/:ref/backups', async (c) => {
 platformTransfer.post('/projects/:ref/export', async (c) => {
   const p = await projectFor(c, 'project.manage')
   const { passphrase } = await body(c)
+  // the cheap refusals before scrypt (lifecycle checks the same again when it enqueues)
+  if (!CAN_BACKUP(p.status)) throw new ApiError(409, 'invalid_status', `this cannot be done while the project is ${p.status}`)
+  if ((await pool.query(`select 1 from control.jobs where project_id = $1 and status in ('pending', 'running')`, [p.id])).rowCount) {
+    throw new ApiError(409, 'project_busy', 'another operation is running on this project; try again when it ends')
+  }
+  if (typeof passphrase !== 'string' || passphrase.length < MIN_PASSPHRASE) {
+    throw new ApiError(400, 'weak_passphrase', `the passphrase must be at least ${MIN_PASSPHRASE} characters`)
+  }
   const secrets = await getSecrets(pool, p)
   const rows = (await pool.query('select section, data from control.project_config where project_id = $1 order by section', [p.id])).rows
   const sealed = await sealManifest({ config: Object.fromEntries(rows.map((r) => [r.section, r.data])),
@@ -63,9 +70,13 @@ platformTransfer.post('/projects/import', async (c) => {
   const name = projectName(field('name'))
   const size = projectSize(field('size'))
   const dir = field('backup_dir') ?? ''
-  if (!DIR_RE.test(dir) || dir.split('/').some((s) => s === '.' || s === '..')) {
-    throw bad('backup_dir must be one or two plain path segments inside the backup directory')
+  const allowed = await backupDirOf(pool, org, dir)
+  if (allowed === 'invalid') {
+    throw new ApiError(400, 'invalid_backup_dir', 'backup_dir must be <ref>/<YYYYMMDD-HHMMSS> or export-<ref>/<YYYYMMDD-HHMMSS> of one of '
+      + "this organization's projects, or import/<organization slug>/<name>")
   }
+  // another organization's backup and one that does not exist look the same
+  if (allowed === 'foreign') throw new ApiError(404, 'not_found', 'backup not found')
   const envFile = form.get('env_file')
   const passphrase = field('passphrase')
   if ((envFile !== null) === (passphrase !== undefined)) throw bad('give exactly one of env_file and passphrase')

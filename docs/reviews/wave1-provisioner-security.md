@@ -31,7 +31,7 @@ refused (409 `subnet_conflict`), because Docker would keep the old one.
 | `DELETE ?volumes=true` | Removes that ref's containers, network and template volumes (data loss, within control's authority). |
 | `attach-proxy` | Connects `sb-<ref>-core` to the proxy network. |
 | `JobInput.type` | Fixed enum; `backup` and `restore` run, the rest are 501. `Cmd` is fixed per type. |
-| `JobInput.args.dir` / `BACKUP_SUBDIR` / `RESTORE_DIR` | One or two plain segments, no `.`/`..`; relative to `/backups` inside the job. |
+| `JobInput.args.dir` / `BACKUP_SUBDIR` / `RESTORE_DIR` | One or two plain segments, no `.`/`..`; relative to `/backups` inside the job. `RESTORE_DIR` may also be `import/<a>/<b>` (the operator's drop area; control checks that `<a>` is the importing organization). |
 | `JobInput.env` | Eight allowed names (no `LD_PRELOAD`, no `PATH`), same value limits as above. `PGHOST` can point the job anywhere the `sb-<ref>` network reaches. |
 | `GET .../jobs/:type` | Status and the last 50 log lines of `sb-<ref>-job-<type>`, then removes a finished one. |
 | `GET .../services/:service/logs|stats` | Template services only (`job-*` and anything else named `sb-<ref>-*` is 400 `invalid_service`). Logs can hold whatever the service logs. |
@@ -65,7 +65,7 @@ refused (409 `subnet_conflict`), because Docker would keep the old one.
   images, entrypoints read env as data; the pooler writes `POSTGRES_PASSWORD` into its userlist, where a newline
   could add a userlist line (finding R-4).
 - **Path outside `backupHostDir`?** No. The bind source is `BACKUP_HOST_DIR` exactly; `dir` is relative, one or two
-  plain segments. (A job can create a symlink inside the backup dir; it resolves in the job's own mount namespace.
+  plain segments (or `import/<a>/<b>` for a restore). (A job can create a symlink inside the backup dir; it resolves in the job's own mount namespace.
   A host-side tool that follows links under `/opt/selfbase/backups` as root would need care; there is none today.)
 - **Log line with a secret?** No. One line per request: method, path (ref, service, job type), status, error code.
   No body, no query. Docker's error text is dropped for `/containers/create` (it can echo `Env`); other calls

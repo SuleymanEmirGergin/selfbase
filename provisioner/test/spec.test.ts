@@ -235,8 +235,13 @@ test('control job: control network, no volume', () => {
 test('job refusals', () => {
   assert.throws(() => buildJob(job({ env: { LD_PRELOAD: '/x.so' } }), NODE), code('invalid_env'))
   assert.throws(() => buildJob(job({ env: { RESTORE_DIR: '../etc' } }), NODE), code('invalid_dir'))
-  for (const dir of ['../etc', 'a/b/c', '.', 'a/..', '/abs', '', 'a b']) {
+  for (const dir of ['../etc', 'a/b/c', '.', 'a/..', '/abs', '', 'a b', 'import/a/b', 'import/a/..']) {
     assert.throws(() => buildJob(job({ args: { dir } }), NODE), code('invalid_dir'), dir)
+  }
+  // a restore may read import/<org slug>/<name>; a backup never writes there
+  assert.doesNotThrow(() => buildJob(job({ type: 'restore', args: { dir: 'import/acme/v1' } }), NODE))
+  for (const dir of ['import/a/b/c', 'import/a/..', 'other/a/b']) {
+    assert.throws(() => buildJob(job({ type: 'restore', args: { dir } }), NODE), code('invalid_dir'), dir)
   }
   assert.throws(() => buildJob(job({ args: { dir: 'x', cmd: 'sh' } as any }), NODE), code('invalid_args'))
   assert.throws(() => buildJob(job(), { ...NODE, backupHostDir: '' }), code('backup_dir_unset'))

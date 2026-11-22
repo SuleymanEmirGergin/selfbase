@@ -2,10 +2,13 @@
 // and an import whose restore job exits 10 run with stdout and stderr captured; then no secret, passphrase or env file
 // value may occur in jobs, job_events, audit_log, an HTTP response of the run, or the captured output.
 import { afterAll, beforeAll, expect, test, vi } from 'vitest'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join as joinPath } from 'node:path'
 import { app } from '../src/app.ts'
 import { config } from '../src/config.ts'
 import { pool } from '../src/db.ts'
-import { startWorkers } from '../src/jobs/index.ts'
+import { enqueue, startWorkers } from '../src/jobs/index.ts'
 import { setProvisioner } from '../src/provisioner.ts'
 import { getSecrets } from '../src/secrets.ts'
 import { FakeProvisioner } from './fake-provisioner.ts'
@@ -16,7 +19,9 @@ const PASS = 'leak test passphrase value'
 const captured: string[] = []
 const bodies: string[] = []
 const cap = config.maxNewHostsPerWeek
+const backupDir = config.backupDir
 let token: string
+let dir: string
 
 const request = async (method: string, path: string, body?: unknown) => {
   const init: RequestInit = { method, headers: { authorization: `Bearer ${token}` } }
@@ -40,7 +45,10 @@ const finished = async (id: string) => {
 
 beforeAll(async () => {
   config.maxNewHostsPerWeek = 1000
+  dir = mkdtempSync(joinPath(tmpdir(), 'sb-leak-'))
+  config.backupDir = dir
   await resetDashboard()
+  await pool.query('delete from control.jobs where project_id is null')
   setProvisioner(fake)
   const acme = await org('acme')
   const u = await user('leak@example.test')
@@ -53,6 +61,8 @@ beforeAll(async () => {
 })
 afterAll(() => {
   config.maxNewHostsPerWeek = cap
+  config.backupDir = backupDir
+  rmSync(dir, { recursive: true, force: true })
   vi.restoreAllMocks()
 })
 
@@ -75,19 +85,32 @@ test('no secret value reaches jobs, events, audit rows, responses or logs', { ti
     expect(exp.status).toBe(202)
     expect(await finished(exp.json.job_id)).toBe('succeeded')
     await request('GET', `/platform/jobs/${exp.json.job_id}`)
+    // what the backup job would have written: project.json from the sealed manifest
+    const manifest = (await pool.query('select payload from control.jobs where id = $1', [exp.json.job_id])).rows[0].payload.manifest.join('')
+    mkdirSync(joinPath(dir, `export-${ref}`, '20261122-031500'), { recursive: true })
+    writeFileSync(joinPath(dir, `export-${ref}`, '20261122-031500', 'project.json'), Buffer.from(manifest, 'base64'))
+
+    // a backup, and the control database's backup (its password goes to the provisioner call only)
+    fake.jobResult = (r) => ({ status: 'succeeded', exitCode: 0, tail: `backup: size 1 bytes\nbackup: wrote ${r}/20261122-031600` })
+    const bak = await request('POST', `/platform/projects/${ref}/backups`)
+    expect(bak.status).toBe(202)
+    expect(await finished(bak.json.job_id)).toBe('succeeded')
+    const ctl = await enqueue(pool, { type: 'control.backup', payload: {}, createdBy: null })
+    expect(await finished(ctl)).toBe('succeeded')
+    await request('GET', `/platform/jobs/${bak.json.job_id}`)
     await request('GET', `/platform/projects/${ref}/backups`)
     // a refused export and a refused import carry no value either
     await request('POST', `/platform/projects/${ref}/export`, { passphrase: 'short' })
     const { text, vals } = v1Env()
     const refused = new FormData()
-    for (const [k, v] of Object.entries({ organization_slug: 'acme', name: 'refused', size: 'micro', backup_dir: 'v1/x' })) refused.set(k, v)
+    for (const [k, v] of Object.entries({ organization_slug: 'acme', name: 'refused', size: 'micro', backup_dir: 'import/acme/x' })) refused.set(k, v)
     refused.set('env_file', new Blob([`${text}JWT_SECRET=${vals.JWT_SECRET}\n`]))
     expect((await request('POST', '/platform/projects/import', refused)).status).toBe(400)
 
     // import whose restore exits 10
     fake.jobResult = () => ({ status: 'failed', exitCode: 10, tail: 'restore: FAILED: the database restore rolled back' })
     const f = new FormData()
-    for (const [k, v] of Object.entries({ organization_slug: 'acme', name: 'leak-import', size: 'micro', backup_dir: 'v1/20261121-031500' })) f.set(k, v)
+    for (const [k, v] of Object.entries({ organization_slug: 'acme', name: 'leak-import', size: 'micro', backup_dir: 'import/acme/corteqs-v1' })) f.set(k, v)
     f.set('env_file', new Blob([text]))
     const imp = await request('POST', '/platform/projects/import', f)
     expect(imp.status).toBe(202)
@@ -95,9 +118,23 @@ test('no secret value reaches jobs, events, audit rows, responses or logs', { ti
     await request('GET', `/platform/jobs/${imp.json.job_id}`)
     await request('GET', `/platform/projects/${imp.json.project.ref}`)
 
-    const projects = (await pool.query('select id, ref from control.projects where ref = any($1)', [[ref, imp.json.project.ref]])).rows
-    expect(projects).toHaveLength(2)
-    const values = new Set<string>([PASS, ...Object.values(vals)])
+    // import of the export with its passphrase (a wrong one first), whose restore exits 10 as well
+    const pf = (passphrase: string) => {
+      const g = new FormData()
+      for (const [k, v] of Object.entries({ organization_slug: 'acme', name: 'leak-export', size: 'micro',
+        backup_dir: `export-${ref}/20261122-031500`, passphrase })) g.set(k, v)
+      return g
+    }
+    expect((await request('POST', '/platform/projects/import', pf('wrong leak passphrase'))).status).toBe(400)
+    const pimp = await request('POST', '/platform/projects/import', pf(PASS))
+    expect(pimp.status).toBe(202)
+    expect(await finished(pimp.json.job_id)).toBe('failed')
+    await request('GET', `/platform/jobs/${pimp.json.job_id}`)
+
+    const refs = [ref, imp.json.project.ref, pimp.json.project.ref]
+    const projects = (await pool.query('select id, ref from control.projects where ref = any($1)', [refs])).rows
+    expect(projects).toHaveLength(3)
+    const values = new Set<string>([PASS, config.dbPassword, ...Object.values(vals)])
     for (const p of projects) for (const v of Object.values(await getSecrets(pool, p))) values.add(v)
     expect(values.size).toBeGreaterThan(50)
 

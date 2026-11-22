@@ -7,7 +7,7 @@ import { join as joinPath } from 'node:path'
 import { app } from '../src/app.ts'
 import { config } from '../src/config.ts'
 import { pool } from '../src/db.ts'
-import { enqueue, startWorkers } from '../src/jobs/index.ts'
+import { createProject, enqueue, startWorkers } from '../src/jobs/index.ts'
 import { openManifest, sealManifest } from '../src/manifest.ts'
 import { ProvisionerError, setProvisioner } from '../src/provisioner.ts'
 import { enqueueDailyBackups, msUntilNext } from '../src/schedule.ts'
@@ -52,7 +52,7 @@ const postForm = (token: string, f: FormData | ReadableStream, headers: Record<s
     ...(f instanceof ReadableStream ? { duplex: 'half' } : {}) } as RequestInit)
 const envBlob = (text: string) => new Blob([text], { type: 'text/plain' })
 const importFields = (over: Record<string, string | Blob> = {}) =>
-  ({ organization_slug: 'acme', name: 'imported', size: 'micro', backup_dir: 'corteqs/20261121-031500', ...over })
+  ({ organization_slug: 'acme', name: 'imported', size: 'micro', backup_dir: 'import/acme/corteqs-v1', ...over })
 // helpers' project() has a default domain but no host slot; ensure needs one
 const slotted = async (o: Parameters<typeof project>[1]) => {
   const p = await project(acme.id, o)
@@ -108,7 +108,7 @@ describe('import', () => {
     expect(out.ignored).toEqual(expect.arrayContaining(['POSTGRES_PASSWORD', 'PANEL_ADMIN_PASSWORD_HASH']))
     const p = (await pool.query('select * from control.projects where ref = $1', [out.project.ref])).rows[0]
     expect((await pool.query('select type, payload from control.jobs where id = $1', [out.job_id])).rows[0])
-      .toEqual({ type: 'project.import', payload: { backup_dir: 'corteqs/20261121-031500' } })
+      .toEqual({ type: 'project.import', payload: { backup_dir: 'import/acme/corteqs-v1' } })
 
     workers()
     expect((await finished(out.job_id)).status).toBe('succeeded')
@@ -117,7 +117,7 @@ describe('import', () => {
     expect(fake.callsOf('stop')[0].args).toEqual([p.ref, FOUR])
     expect(fake.callsOf('start')[0].args).toEqual([p.ref, FOUR])
     const [ref, type, args, env] = fake.callsOf('runJob')[0].args
-    expect([ref, type, args]).toEqual([p.ref, 'restore', { dir: 'corteqs/20261121-031500' }])
+    expect([ref, type, args]).toEqual([p.ref, 'restore', { dir: 'import/acme/corteqs-v1' }])
     const s = await getSecrets(pool, p)
     expect(env).toEqual({ PGHOST: 'db', PGPASSWORD: s.POSTGRES_PASSWORD })
     expect((await row(p.id)).status).toBe('ACTIVE_HEALTHY')
@@ -142,7 +142,7 @@ describe('import', () => {
 
   test('bad forms: backup_dir, both or neither source, a bad env file, a developer', async () => {
     const env = envBlob(v1Env().text)
-    for (const d of ['../x', 'a/b/c', '/abs', 'a/..', '']) {
+    for (const d of ['../x', 'a/b/c', '/abs', 'a/..', '', 'import/acme/..', 'import/acme/a/b']) {
       expect((await postForm(owner.token, form({ ...importFields({ backup_dir: d }), env_file: env }))).status).toBe(400)
     }
     expect((await postForm(owner.token, form({ ...importFields(), env_file: env, passphrase: 'correct horse battery' }))).status).toBe(400)
@@ -167,6 +167,13 @@ describe('import', () => {
     expect(await res.json()).toMatchObject({ error: 'payload_too_large' })
   })
 
+  test('a restore that exits 3 tells the operator to delete the project and import again', async () => {
+    fake.jobResult = () => ({ status: 'failed', exitCode: 3, tail: 'restore: FAILED in the storage step' })
+    const out = await (await postForm(owner.token, form({ ...importFields({ name: 'half' }), env_file: envBlob(v1Env().text) }))).json()
+    workers()
+    expect((await finished(out.job_id)).error).toMatch(/delete this project, then import again/)
+  })
+
   test('a restore that exits 10 fails the job with "the database was not changed"', async () => {
     fake.jobResult = () => ({ status: 'failed', exitCode: 10, tail: 'restore: FAILED: the database restore rolled back' })
     const res = await postForm(owner.token, form({ ...importFields({ name: 'fails' }), env_file: envBlob(v1Env().text) }))
@@ -181,14 +188,15 @@ describe('import', () => {
 
   test('a project.json sealed by an export: the passphrase opens it', async () => {
     const secrets = { JWT_SECRET: 'exported-jwt-secret-value-0123456789', ANON_KEY: 'exported-anon', SERVICE_ROLE_KEY: 'exported-service' }
-    mkdirSync(joinPath(dir, 'export-x', '20261122-031500'), { recursive: true })
+    const own = await project(acme.id, { name: 'exported' })
+    mkdirSync(joinPath(dir, `export-${own.ref}`, '20261122-031500'), { recursive: true })
     const sealed = await sealManifest({ config: { auth: { SITE_URL: 'https://exported.example' } }, secrets }, 'correct horse battery')
-    writeFileSync(joinPath(dir, 'export-x', '20261122-031500', 'project.json'), Buffer.from(sealed, 'base64'))
-    const fields = importFields({ name: 'from-export', backup_dir: 'export-x/20261122-031500' })
+    writeFileSync(joinPath(dir, `export-${own.ref}`, '20261122-031500', 'project.json'), Buffer.from(sealed, 'base64'))
+    const fields = importFields({ name: 'from-export', backup_dir: `export-${own.ref}/20261122-031500` })
     const wrong = await postForm(owner.token, form({ ...fields, passphrase: 'wrong horse battery' }))
     expect(wrong.status).toBe(400)
     expect(await wrong.json()).toMatchObject({ error: 'bad_passphrase' })
-    const none = await postForm(owner.token, form({ ...fields, backup_dir: 'export-x/none', passphrase: 'correct horse battery' }))
+    const none = await postForm(owner.token, form({ ...fields, backup_dir: `export-${own.ref}/20261122-031501`, passphrase: 'correct horse battery' }))
     expect(none.status).toBe(400)
     const res = await postForm(owner.token, form({ ...fields, passphrase: 'correct horse battery' }))
     expect(res.status).toBe(202)
@@ -198,6 +206,51 @@ describe('import', () => {
     expect(await getSecrets(pool, p)).toMatchObject(secrets)
     expect((await pool.query(`select data from control.project_config where project_id = $1 and section = 'auth'`, [p.id])).rows[0].data)
       .toEqual({ SITE_URL: 'https://exported.example' })
+  })
+})
+
+describe('backup_dir belongs to the caller', () => {
+  test("another organization's backups are the same 404 as an unknown one; bare or odd shapes are 400", async () => {
+    const other = await org('other')
+    const theirs = await project(other.id, { name: 'theirs' })
+    const mine = await project(acme.id, { name: 'mine' })
+    const gone = await project(acme.id, { name: 'gone', status: 'REMOVED' })
+    const env = envBlob(v1Env().text)
+    const status = async (d: string) => {
+      const res = await postForm(owner.token, form({ ...importFields({ name: 'own-check' }), backup_dir: d, env_file: env }))
+      return { status: res.status, body: await res.json() }
+    }
+    const unknownRef = 'zzzzzzzzzzzzzzzzzzzz'
+    const refused404 = [`${theirs.ref}/20261121-031500`, `export-${theirs.ref}/20261121-031500`, 'import/other/corteqs-v1',
+      `${unknownRef}/20261121-031500`, `export-${unknownRef}/20261121-031500`, 'import/nope/x']
+    const bodies = []
+    for (const d of refused404) {
+      const r = await status(d)
+      expect(r.status, d).toBe(404)
+      bodies.push(JSON.stringify(r.body))
+    }
+    // no oracle: a foreign backup and an unknown one answer alike
+    expect(new Set(bodies).size).toBe(1)
+    for (const d of ['20261121-031500', 'v1/20261121-031500', 'import/acme', `${mine.ref}/latest`, `export-${mine.ref}`, 'export-x/20261121-031500']) {
+      const r = await status(d)
+      expect(r.status, d).toBe(400)
+      expect(r.body.error).toBe('invalid_backup_dir')
+    }
+    for (const d of [`${mine.ref}/20261121-031500`, `export-${mine.ref}/20261121-031500`, `${gone.ref}/20261121-031500`, 'import/acme/corteqs-v1']) {
+      expect((await status(d)).status, d).toBe(202)
+    }
+  })
+
+  test('the import job checks backup_dir again: a foreign one fails before any restore', async () => {
+    const other = (await pool.query(`select id from control.organizations where slug = 'other'`)).rows[0]
+      ?? await org('other')
+    const theirs = await project(other.id, { name: 'theirs-2' })
+    const { jobId } = await createProject(pool, { orgId: acme.id, name: 'forged', size: 'micro', pool: 'project', createdBy: null,
+      job: { type: 'project.import', status: 'RESTORING', payload: { backup_dir: `${theirs.ref}/20261121-031500` } } })
+    workers()
+    const job = await finished(jobId)
+    expect(job.status).toBe('failed')
+    expect(fake.callsOf('runJob')).toEqual([])
   })
 })
 
@@ -219,9 +272,20 @@ describe('backup and export', () => {
       location: `${p.ref}/20261122-031500`, started_at: expect.any(String), finished_at: expect.any(String) })])
   })
 
-  test('a paused project cannot be backed up', async () => {
+  test('a paused project cannot be backed up or exported', async () => {
     const p = await project(acme.id, { name: 'paused', status: 'INACTIVE' })
     expect((await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/backups`)).status).toBe(409)
+    expect((await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/export`, { passphrase: 'correct horse battery' })).status).toBe(409)
+  })
+
+  test('a start that answers 409 job_running is taken as started and the wait follows the job', async () => {
+    const p = await project(acme.id, { name: 'resumed' })
+    fake.runJob = async () => { throw new ProvisionerError('job_running', 'another job is running', 409) }
+    fake.jobResult = (ref) => ({ status: 'succeeded', exitCode: 0, tail: `backup: size 7 bytes\nbackup: wrote ${ref}/20261122-031500` })
+    const { job_id } = await (await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/backups`)).json()
+    workers()
+    expect((await finished(job_id)).status).toBe('succeeded')
+    expect((await pool.query('select location from control.backups where project_id = $1', [p.id])).rows).toEqual([{ location: `${p.ref}/20261122-031500` }])
   })
 
   test('export: the payload holds the sealed manifest and not the passphrase; the job writes it as project.json', async () => {
@@ -296,6 +360,8 @@ describe('schedule', () => {
     const paused = await project(acme.id, { name: 'sp', status: 'INACTIVE' })
     const busy = await project(acme.id, { name: 'sbusy' })
     await enqueue(pool, { type: 'project.pause', projectId: busy.id, payload: {}, createdBy: null })
+    await enqueueDailyBackups(pool)
+    // the next night while tonight's are still queued: nothing twice
     await enqueueDailyBackups(pool)
     const jobs = (await pool.query(`select type, project_id from control.jobs where type in ('project.backup', 'control.backup')`)).rows
     const of = (id: string) => jobs.filter((j) => j.project_id === id).length

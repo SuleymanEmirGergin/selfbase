@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 // Imports a v1 install as a new project (spec section 10), over SSH or anywhere control is reachable:
 //   SELFBASE_ACCESS_TOKEN=sbp_... node scripts/import-project.mjs --url https://selfbase.<BASE> --org <slug> \
-//     --name <name> --size micro|small|medium --backup-dir <dir under the host backup directory> --env-file <v1 .env>
+//     --name <name> --size micro|small|medium --backup-dir import/<org slug>/<name> --env-file <v1 .env>
+// --backup-dir is relative to the host backup directory: a v1 or foreign dump goes in the drop area
+// import/<org slug>/<name> (a v1 backup directory moved there whole); <ref>/<ts> and export-<ref>/<ts> name backups
+// of the organization's own projects. Control refuses anything else.
 // Posts the env file to POST /platform/projects/import (control encrypts its secrets and does not keep the file), then
 // follows the import job until it ends. Prints the project ref, the job's steps and the names of the env file's keys
 // that were ignored or not recognised; never a value from the env file or the token. Exit 0 when the import succeeded.

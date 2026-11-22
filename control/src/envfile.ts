@@ -42,8 +42,9 @@ export function parseV1Env(text: string): V1Env {
     const [, key, rawValue] = m
     if (seen.has(key)) throw new EnvFileError(`env file line ${i + 1}: ${key} is set twice`)
     seen.add(key)
-    // compose's env files allow one pair of quotes around a value
-    const value = /^(["']).*\1$/.test(rawValue) && rawValue.length >= 2 ? rawValue.slice(1, -1) : rawValue
+    // as compose reads env files: one pair of quotes keeps everything inside (a # too); unquoted, ` #` starts a comment
+    const quoted = /^(["'])(.*)\1\s*(?:#.*)?$/.exec(rawValue)
+    const value = quoted ? quoted[2] : rawValue.replace(/\s+#.*$/, '')
     if (SECRETS.has(key)) { if (value) out.secrets[key] = value }
     else if (CONFIG.has(key)) { if (value) out.config[key] = value }
     else if (IGNORED.has(key) || IGNORED_PREFIX.test(key)) out.ignored.push(key)

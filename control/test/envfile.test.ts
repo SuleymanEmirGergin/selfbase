@@ -27,6 +27,11 @@ describe('parseV1Env', () => {
     expect(r.config).toEqual({ SITE_URL: 'https://app.example', AUTH_MIN_PASSWORD: '8' })
   })
 
+  test('an inline comment after an unquoted value is dropped; inside quotes it stays', () => {
+    const r = parseV1Env('SITE_URL=https://a.example # the app\nSMTP_HOST="mail#1.example" # quoted\nSMTP_USER=a#b\nSMTP_FROM=\'x # y\'\n')
+    expect(r.config).toEqual({ SITE_URL: 'https://a.example', SMTP_HOST: 'mail#1.example', SMTP_USER: 'a#b', SMTP_FROM: 'x # y' })
+  })
+
   test('a duplicate key names the line, never the value', () => {
     const err = (() => { try { parseV1Env('JWT_SECRET=first-secret-value\n\nJWT_SECRET=second-secret-value\n') } catch (e) { return e } })()
     expect(err).toBeInstanceOf(EnvFileError)

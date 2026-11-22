@@ -10,8 +10,8 @@
 # MANIFEST (file, size, sha256)}. BACKUP_SUBDIR=control backs up the control database: no storage archive.
 # It is built in a .tmp-<ts> directory next to it and renamed when complete, so a directory with a timestamp name
 # is always a whole backup. Backups in that subdirectory older than BACKUP_RETENTION_DAYS are deleted, never the
-# one just written. The last stdout line is `backup: wrote <subdir>/<ts>` (control reads it, and the size line
-# before it). Any failure: non-zero exit and a "backup: FAILED" line. Never prints a value from the environment.
+# one just written; exports are never pruned. The last stdout line is `backup: wrote <subdir>/<ts>` (control reads
+# it, and the size line before it). Any failure: non-zero exit and a "backup: FAILED" line. Never prints a value from the environment.
 # shortcut: backups live on the same server, add off-site copy before production
 set -euo pipefail
 umask 077 # the dump holds every row and the auth password hashes: owner-only files and directories
@@ -56,9 +56,11 @@ for f in $files; do
 done > "$tmp/MANIFEST"
 mv "$tmp" "$backups/$ts"
 
-# Retention by the name's timestamp; the backup just written (the newest) always stays.
+# Retention by the name's timestamp; the backup just written (the newest) always stays. Exports (export-<ref>) are
+# kept until an operator deletes them: an export is taken to be moved or imported, not rotated.
 cutoff=$(date -u -d "-$keep days" +%Y%m%d-%H%M%S)
-for d in $(ls "$backups" | grep -E '^[0-9]{8}-[0-9]{6}$' || true); do
+[[ $sub == export-* ]] && old='' || old=$(ls "$backups" | grep -E '^[0-9]{8}-[0-9]{6}$' || true)
+for d in $old; do
   if [ "$d" != "$ts" ] && [[ $d < $cutoff ]]; then
     rm -rf "${backups:?}/$d"
     echo "backup: deleted $sub/$d (older than $keep days)"

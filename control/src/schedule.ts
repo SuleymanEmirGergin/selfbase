@@ -10,9 +10,11 @@ export function msUntilNext(now: Date): number {
   return next.getTime() - now.getTime()
 }
 
-/** A project with a pending or running job (a pause, an upgrade) is skipped tonight. */
+/** A project with a pending or running job (a pause, an upgrade, last night's backup) is skipped tonight. */
 export async function enqueueDailyBackups(db: Db): Promise<void> {
-  await enqueue(db, { type: 'control.backup', payload: {}, createdBy: null })
+  // one control.backup at a time: a night whose backup is still queued or running gets no second one
+  const queued = await db.query(`select 1 from control.jobs where type = 'control.backup' and status in ('pending', 'running')`)
+  if (!queued.rowCount) await enqueue(db, { type: 'control.backup', payload: {}, createdBy: null })
   const { rows } = await db.query(`select id from control.projects where status = 'ACTIVE_HEALTHY' order by created_at`)
   for (const r of rows) await enqueueIfIdle(db, { type: 'project.backup', projectId: r.id, payload: {}, createdBy: null })
 }

@@ -4,7 +4,8 @@
 # this in a one-off container on the project's network with
 #   /backups        the host backup directory (BACKUP_HOST_DIR)
 #   /data/storage   the project's storage volume, read-write
-#   PGHOST, PGPASSWORD (PGUSER, PGDATABASE default to postgres), RESTORE_DIR (one or two path segments under /backups)
+#   PGHOST, PGPASSWORD (PGUSER, PGDATABASE default to postgres), RESTORE_DIR (under /backups: <ref>/<ts>,
+#                   export-<ref>/<ts>, or import/<org slug>/<name> for a v1 or foreign dump an operator placed there)
 # Sequence:
 #   1. verifies the backup's MANIFEST (sizes and sha256); a missing or unlisted file or any mismatch is refused
 #      before anything changes (exit 1)
@@ -25,8 +26,8 @@
 set -euo pipefail
 
 rel=${RESTORE_DIR:?RESTORE_DIR is required}
-[[ $rel =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)?$ ]] && [[ ! /$rel/ =~ /\.\.?/ ]] ||
-  { echo "restore: RESTORE_DIR must be one or two plain path segments" >&2; exit 2; }
+[[ $rel =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)?$ || $rel =~ ^import/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] && [[ ! /$rel/ =~ /\.\.?/ ]] ||
+  { echo "restore: RESTORE_DIR must be one or two plain path segments, or import/<a>/<b>" >&2; exit 2; }
 dir=/backups/$rel
 storage=/data/storage
 
@@ -90,9 +91,13 @@ if [ "$v1" = 1 ] && [ "$(q -c "select to_regclass('selfbase.platform_migrations'
 fi
 pg_restore --clean --if-exists --single-transaction --exit-on-error -d "${PGDATABASE:-postgres}" "$dir/db.dump" || exit 10
 if [ "$v1" = 1 ]; then
-  q -c "drop schema if exists $HOLD cascade"
+  # the v1 restore is committed: from here the old ledger must never go back over it
   held=0
-  echo "restore: a v1 database: the platform ledger is dropped, core adopts it at its next start"
+  if q -c "drop schema if exists $HOLD cascade"; then
+    echo "restore: a v1 database: the platform ledger is dropped, core adopts it at its next start"
+  else
+    echo "restore: WARNING: the old platform ledger is left in schema $HOLD; the restore itself succeeded and core adopts"       "the database at its next start; drop it by hand: drop schema $HOLD cascade" >&2
+  fi
 fi
 db_done=1
 echo "restore: database restored (cron jobs as in the backup)"
