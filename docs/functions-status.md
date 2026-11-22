@@ -1,10 +1,17 @@
 # Edge function status on the selfbase function host
 
-Checked 2026-11-22 against `D:\Dev\corteqsemir\supabase\functions` (mounted read-only, no function edited).
+Checked 2026-11-22 against `D:\Dev\corteqsemir\supabase` (mounted read-only at `/supabase`, no function edited).
 The folder holds **24** functions (plus `_shared`), not 25.
 
-How: `fn` image (`denoland/deno:alpine-2.1.4`), client stub at `/client`, one `OPTIONS /<name>` per function
-(`Origin: http://localhost:5173`). No real secrets: `SUPABASE_URL=http://core:8080` (unresolvable in the check),
+Setup: in `.env`, `SUPABASE_DIR` = host path of the app's `supabase/` folder (it holds `functions/` and `config.toml`).
+compose mounts it read-only at `/supabase`; the host reads `/supabase/functions` and `/supabase/config.toml` only.
+Unset, an empty placeholder (`fn/empty`) is mounted and every name answers 404.
+
+verify_jwt: from `[functions.<name>]` in config.toml, default true. A request with `OPTIONS` and an
+`Access-Control-Request-Method` header (a real CORS preflight) skips the check; any other OPTIONS needs a valid JWT like other methods.
+
+How: `fn` image (`denoland/deno:alpine-2.1.4`), client stub at `/client`, one CORS preflight per function
+(`OPTIONS /<name>`, `Origin: http://localhost:5173`, `Access-Control-Request-Method: POST`). No real secrets: `SUPABASE_URL=http://core:8080` (unresolvable in the check),
 throwaway values for `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_DB_URL`, nothing from `fn.env`.
 No request other than OPTIONS was sent. Remote modules (esm.sh zod and generative-ai, npm fast-xml-parser) downloaded fine.
 

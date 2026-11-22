@@ -1,8 +1,11 @@
 import { dirname, join } from 'node:path'
 
-export const functionsDir = Deno.env.get('FUNCTIONS_DIR') || '/functions'
+export const functionsDir = Deno.env.get('FUNCTIONS_DIR') || '/supabase/functions'
 export const port = Number(Deno.env.get('PORT') || 8000)
+export const importTimeoutMs = Number(Deno.env.get('FN_IMPORT_TIMEOUT_MS') || 30_000)
 export const jwtSecret = Deno.env.get('JWT_SECRET') ?? ''
+// Functions and their third-party imports share this process env; they must not see the signing secret.
+Deno.env.delete('JWT_SECRET')
 // Supabase layout: supabase/config.toml sits next to supabase/functions.
 export const configToml = join(dirname(functionsDir), 'config.toml')
 

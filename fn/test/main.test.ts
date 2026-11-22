@@ -1,8 +1,8 @@
 // Run in a container with FUNCTIONS_DIR pointing at test/fixtures/supabase/functions,
-// JWT_SECRET set and the client stub mounted at /client (see docs/functions-status.md).
-import { handle } from '../main.ts'
-
+// JWT_SECRET set, FN_IMPORT_TIMEOUT_MS=500 and the client stub mounted at /client (see fn/test/run.sh).
 const secret = Deno.env.get('JWT_SECRET')!
+// Imported after reading the secret: the host removes JWT_SECRET from the env when it loads.
+const { handle } = await import('../main.ts')
 
 function eq(actual: unknown, expected: unknown) {
   if (actual !== expected) throw new Error(`expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`)
@@ -59,13 +59,21 @@ Deno.test('verify_jwt=true rejects bad signature, missing exp, expired, foreign 
     await sign({ role: 'anon' }),
     await sign({ role: 'anon', exp: Math.floor(Date.now() / 1000) - 10 }),
     await sign({ role: 'postgres', exp: exp() }),
+    await sign({ role: 'anon', exp: exp(), nbf: exp() }),
     'not.a.jwt',
   ]
   for (const t of bad) eq((await call('/private', { headers: { Authorization: `Bearer ${t}` } })).status, 401)
+  const nbfPast = await sign({ role: 'anon', exp: exp(), nbf: Math.floor(Date.now() / 1000) - 10 })
+  eq((await call('/private', { headers: { Authorization: `Bearer ${nbfPast}` } })).status, 200)
 })
 
-Deno.test('verify_jwt=true still lets CORS preflight through', async () => {
-  eq((await call('/private', { method: 'OPTIONS' })).status, 200)
+Deno.test('verify_jwt=true lets only a real CORS preflight through', async () => {
+  eq((await call('/private', { method: 'OPTIONS', headers: { 'Access-Control-Request-Method': 'POST' } })).status, 200)
+  eq((await call('/private', { method: 'OPTIONS' })).status, 401)
+})
+
+Deno.test('JWT_SECRET is removed from the env functions can read', () => {
+  eq(Deno.env.get('JWT_SECRET'), undefined)
 })
 
 Deno.test('verify_jwt=false: no token 200', async () => {
@@ -89,6 +97,61 @@ Deno.test('function that throws at import gives 500 {error}, others keep working
   eq((await call('/hello')).status, 200)
 })
 
+/** Silences and records the host's error log for the duration of fn. */
+async function quiet<T>(fn: () => Promise<T>): Promise<{ result: T; logged: string }> {
+  const log = console.error
+  const lines: string[] = []
+  console.error = (...a: unknown[]) => lines.push(a.map((x) => (x instanceof Error ? `${x.message}\n${x.stack}` : String(x))).join(' '))
+  try {
+    return { result: await fn(), logged: lines.join('\n') }
+  } finally {
+    console.error = log
+  }
+}
+
+Deno.test({ name: 'import that never settles times out with 500, the queue is released', sanitizeOps: false, sanitizeResources: false }, async () => {
+  const { result } = await quiet(() => call('/hang'))
+  eq(result.status, 500)
+  eq((await call('/hello')).status, 200)
+})
+
+Deno.test({
+  name: 'a Deno.serve that arrives after the timeout throws instead of being filed under another function',
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const { result } = await quiet(async () => {
+      const late = await call('/late') // times out at 500 ms; its Deno.serve fires at 700 ms
+      const slow = await call('/slow-ok') // loading from ~500 ms to ~900 ms
+      await new Promise((r) => setTimeout(r, 100))
+      return { late, slow, again: await call('/late') }
+    })
+    eq(result.late.status, 500)
+    eq(result.slow.text, 'slow ok')
+    eq(result.again.status, 500)
+  },
+})
+
+Deno.test('runtime error gives a generic 500 and the log has no query string', async () => {
+  const { result, logged } = await quiet(() => call('/runtime-throw'))
+  eq(result.status, 500)
+  eq(JSON.parse(result.text).error, 'function failed')
+  eq(logged.includes('upstream failed'), true)
+  eq(logged.includes('leaked-key'), false)
+  eq((await call('/hello')).status, 200)
+})
+
+Deno.test('an unhandled rejection inside a function leaves the host up', async () => {
+  const { result, logged } = await quiet(async () => {
+    const r = await call('/rejects')
+    await new Promise((res) => setTimeout(res, 50))
+    return r
+  })
+  eq(result.text, 'rejects ok')
+  eq(logged.includes('background failure'), true)
+  eq((await call('/hello')).status, 200)
+})
+
 Deno.test('supabase-js import resolves to the selfbase client', async () => {
   const r = await call('/uses-client')
   eq(r.status, 200)
@@ -97,6 +160,7 @@ Deno.test('supabase-js import resolves to the selfbase client', async () => {
 
 Deno.test('unknown or invalid names are 404', async () => {
   eq((await call('/nope')).status, 404)
+  eq((await call('/HELLO')).status, 404)
   eq((await call('/_shared')).status, 404)
   eq((await call('/..%2Fetc')).status, 404)
   eq((await call('/')).status, 404)

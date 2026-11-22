@@ -14,3 +14,18 @@ verify_jwt = false
 
 [functions.uses-client]
 verify_jwt = false
+
+[functions.hang]
+verify_jwt = false
+
+[functions.late]
+verify_jwt = false
+
+[functions.slow-ok]
+verify_jwt = false
+
+[functions.runtime-throw]
+verify_jwt = false
+
+[functions.rejects]
+verify_jwt = false
