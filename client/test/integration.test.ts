@@ -144,8 +144,11 @@ describe.skipIf(!enabled)('integration against a running selfbase', () => {
     const events: AuthChangeEvent[] = []
     sb.auth.onAuthStateChange((e) => void events.push(e))
     const s = (await sb.auth.getSession()).data.session!
-    // rotate the refresh token elsewhere, so this client's copy is spent
-    expect((await createClient(URL_, ANON, opts).auth.refreshSession({ refresh_token: s.refresh_token })).error).toBeNull()
+    // rotate the refresh token elsewhere twice, so this client's copy is two generations old: spent even inside the
+    // server's reuse interval (AUTH_REFRESH_REUSE_INTERVAL)
+    const once = await createClient(URL_, ANON, opts).auth.refreshSession({ refresh_token: s.refresh_token })
+    expect(once.error).toBeNull()
+    expect((await createClient(URL_, ANON, opts).auth.refreshSession({ refresh_token: once.data.session!.refresh_token })).error).toBeNull()
     const r = await sb.auth.refreshSession()
     expect(r.error?.status).toBe(400)
     await waitFor(() => events.includes('SIGNED_OUT'))
@@ -236,17 +239,24 @@ describe.skipIf(!enabled)('integration against a running selfbase', () => {
     expect((await fresh.signInWithPassword({ email, password: 'newsecret456' })).error).toBeNull()
   })
 
-  it('refreshSession rotates the refresh token; reusing the old one is rejected and ends the session', async () => {
+  it('refreshSession rotates the refresh token; a retry inside the reuse interval gets the same one; older reuse ends the session', async () => {
     const sb = await newUser()
     const old = (await sb.auth.getSession()).data.session!
     const r = await sb.auth.refreshSession()
     expect(r.error).toBeNull()
     expect(r.data.session!.refresh_token).not.toBe(old.refresh_token)
+    // a retry right after (lost response, second tab) is answered with the same new session
+    const retry = await createClient(URL_, ANON, opts).auth.refreshSession({ refresh_token: old.refresh_token })
+    expect(retry.error).toBeNull()
+    expect(retry.data.session!.refresh_token).toBe(r.data.session!.refresh_token)
+    const r2 = await createClient(URL_, ANON, opts).auth.refreshSession({ refresh_token: r.data.session!.refresh_token })
+    expect(r2.error).toBeNull()
+    // the first token is now two generations old: reuse is rejected
     const reuse = await createClient(URL_, ANON, opts).auth.refreshSession({ refresh_token: old.refresh_token })
     expect(reuse.error?.status).toBe(400)
     expect(reuse.error?.code).toBe('refresh_token_already_used')
-    // reuse looks like theft: the newer token of that session is revoked too
-    const next = await createClient(URL_, ANON, opts).auth.refreshSession({ refresh_token: r.data.session!.refresh_token })
+    // reuse looks like theft: the newest token of that session is revoked too
+    const next = await createClient(URL_, ANON, opts).auth.refreshSession({ refresh_token: r2.data.session!.refresh_token })
     expect(next.error?.status).toBe(400)
   })
 
