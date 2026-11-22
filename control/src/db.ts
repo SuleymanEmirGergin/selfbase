@@ -35,7 +35,10 @@ export async function migrate(): Promise<void> {
   await applyMigrations(pool, { dir: config.controlMigrationsDir, ledger: 'control.migrations', lockKey: 7213015 })
   await pool.query(
     `insert into control.nodes (name, docker_endpoint, proxy_mode, proxy_network, memory_budget_mb)
-     values ($1, $2, $3, $4, $5) on conflict (name) do nothing`,
+     values ($1, $2, $3, $4, $5)
+     -- config wins: admission reads memory_budget_mb from this row
+     on conflict (name) do update set docker_endpoint = excluded.docker_endpoint, proxy_mode = excluded.proxy_mode,
+       proxy_network = excluded.proxy_network, memory_budget_mb = excluded.memory_budget_mb`,
     [config.nodeName, config.provisionerUrl, config.proxyMode, config.proxyNetwork, config.memoryBudgetMb],
   )
   await pool.query(`insert into control.settings (key, value) values ('current_template_version', $1) on conflict (key) do nothing`, [
