@@ -1,4 +1,4 @@
-# selfbase stack. Values come from .env (see .env.example). Only core is published.
+# selfbase stack. Values come from .env (see .env.example). Only core is published, on loopback by default (CORE_BIND).
 services:
   db:
     build: ./db
@@ -40,7 +40,7 @@ services:
     init: true
     restart: unless-stopped
     ports:
-      - "${CORE_PORT:-8080}:8080"
+      - "${CORE_BIND:-127.0.0.1}:${CORE_PORT:-8080}:8080"
     environment:
       DB_HOST: db
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}

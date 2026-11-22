@@ -353,7 +353,8 @@ Tek istisna `PANEL_ADMIN_PASSWORD_HASH`: onu script yazar ve içindeki `$`'ları
 | Değişken | Ne | Varsayılan |
 |---|---|---|
 | `COMPOSE_PROJECT_NAME` | Docker proje adı (bölüm 3, adım 4). Aynı makinede iki kurulum için şart. | klasör adı |
-| `CORE_PORT` | core'un makinede açıldığı port. `8090` gibi bir sayı her arayüzde açar; `127.0.0.1:8090` sadece makinenin içinden erişilir (proxy arkasında bunu kullan). | `8080` |
+| `CORE_PORT` | core'un makinede açıldığı port. Sadece port numarası yaz (`8090`); adres `CORE_BIND` ile verilir. | `8080` |
+| `CORE_BIND` | core'un hangi adreste açıldığı. Varsayılan `127.0.0.1`: sadece makinenin içinden erişilir (reverse proxy aynı makinedeyse doğrusu bu). `0.0.0.0` core'u ağdaki herkese açar; sadece aynı makinede proxy yoksa yaz. | `127.0.0.1` |
 | `LOCAL_DB_PORT` | `compose.local.yml` ile veritabanının `127.0.0.1`'de açıldığı port | `55432` |
 | `BACKUP_DIR`, `BACKUP_RETENTION_DAYS` | Yedeklerin yeri (volume adı ya da sunucudaki klasör) ve kaç gün saklanacağı (bölüm 11) | `backups` volume'ü, `7` |
 
@@ -432,10 +433,10 @@ Variables** sekmesinde listeler. Bölüm 4'teki tabloya göre doldur:
 - `PUBLIC_URL=https://selfbase.ornek.com`, `SITE_URL=` uygulamanın adresi,
   `AUTH_REDIRECT_ALLOWLIST=` uygulamanın adresleri.
 - `TRUST_PROXY=true` (Traefik `X-Forwarded-For` ekler).
-- `CORE_PORT=127.0.0.1:18080`. Neden: `compose.yml` core'un portunu makinede de açar. Coolify'da
-  buna gerek yok (trafik proxy'den gelir), ama açık kalırsa core HTTPS'siz olarak internete açılır ve
-  sunucudaki başka bir 8080 ile çakışabilir. `127.0.0.1:` öneki onu sadece sunucunun içine kapatır.
-  Sunucuda 18080 kullanılıyorsa başka bir port seç. **(doğrulanacak: Coolify'ın `ports` satırını
+- `CORE_PORT=18080`. Neden: `compose.yml` core'un portunu makinede de açar. Coolify'da buna gerek
+  yok (trafik proxy'den gelir), ama sunucudaki başka bir 8080 ile çakışabilir. `CORE_BIND` varsayılan
+  olarak `127.0.0.1` olduğu için core zaten sadece sunucunun içinden erişilir, HTTPS'siz internete
+  açılmaz; `CORE_BIND`'e dokunma. Sunucuda 18080 kullanılıyorsa başka bir port seç. **(doğrulanacak: Coolify'ın `ports` satırını
   olduğu gibi kullandığı)**
 - `SUPABASE_DIR=/opt/apps/corteqsemir/supabase` (1. adım).
 - SMTP ve Google bilgileri geldiyse onlar.
@@ -534,10 +535,10 @@ PUBLIC_URL=https://selfbase.ornek.com
 SITE_URL=https://app.ornek.com
 TRUST_PROXY=true
 COMPOSE_PROJECT_NAME=selfbase-corteqs
-CORE_PORT=127.0.0.1:8080
 ```
 
-`CORE_PORT=127.0.0.1:8080`: core sadece sunucunun içinden erişilir. Dışarıdan tek yol Caddy (HTTPS).
+`CORE_BIND` ve `CORE_PORT` yazmana gerek yok: `CORE_BIND` varsayılan olarak `127.0.0.1` olduğu için core
+sadece sunucunun içinden erişilir (`127.0.0.1:8080`). Dışarıdan tek yol Caddy (HTTPS).
 `TRUST_PROXY=true` çünkü önünde Caddy var. Fonksiyonlar için uygulama reposunu da sunucuya al ve
 `SUPABASE_DIR`'i yaz (bölüm 5, adım 1'deki gibi), sırlar için `fn.env` (bölüm 4). Nano'da kaydet:
 `Ctrl+O`, `Enter`, çık: `Ctrl+X`.
@@ -551,7 +552,7 @@ curl -s http://127.0.0.1:8080/health
 ```
 
 Beklenen: dört servis `Up ... (healthy)`, sonra `{"ok":true}`. Dışarıdan `http://<sunucu-ip>:8080`
-**açılmamalı**; açılıyorsa `CORE_PORT`'u `127.0.0.1:` ile yazmamışsındır.
+**açılmamalı**; açılıyorsa `.env`'de `CORE_BIND=0.0.0.0` yazmışsındır, sil.
 
 ```bash
 docker compose port core 8080
@@ -621,7 +622,7 @@ sudo ufw allow 80,443/tcp
 sudo ufw enable
 ```
 
-Not: Docker'ın açtığı portlar ufw kurallarını atlar. Bu yüzden 5. adımdaki `127.0.0.1:` öneki önemli;
+Not: Docker'ın açtığı portlar ufw kurallarını atlar. Bu yüzden `CORE_BIND`'in varsayılanı (`127.0.0.1`) önemli;
 ufw'ye güvenme.
 
 **8. Yeniden başlatma.** Ayrı bir servis dosyası gerekmez: compose'daki `restart: unless-stopped`
@@ -1084,7 +1085,7 @@ Yeni bir uygulamayı canlıya koyarken sırayla:
 - [ ] **Ad:** `COMPOSE_PROJECT_NAME=selfbase-<uygulama>` (Coolify'da proje adı yeter).
 - [ ] **Anahtar üret:** `gen-keys.mjs` + veritabanı şifresi. Her kurulumda yeni; asla kopyalama.
 - [ ] **Adresler:** `PUBLIC_URL` (selfbase'in kendi alan adı), `SITE_URL`, `AUTH_REDIRECT_ALLOWLIST`.
-- [ ] **Port:** düz Docker'da `CORE_PORT=127.0.0.1:<boş port>`, proxy bu porta gider.
+- [ ] **Port:** `CORE_PORT=<boş port>`, proxy bu porta gider. `CORE_BIND` varsayılanı `127.0.0.1`, core dışarıdan açılmaz.
 - [ ] **`TRUST_PROXY=true`** (proxy arkasında).
 - [ ] **Fonksiyonlar:** uygulama reposunu sunucuya al, `SUPABASE_DIR`; sırlar için `fn.env`.
 - [ ] **SMTP:** `SMTP_*`. Yoksa e-postalar gitmez (`selfbase.mail_log`).
