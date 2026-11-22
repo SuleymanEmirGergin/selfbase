@@ -13,7 +13,7 @@ beforeAll(async () => {
 })
 afterAll(() => fake.close())
 beforeEach(() => {
-  Object.assign(fake.settings, { confirmEmail: false, expiresIn: 3600, failRefresh: false })
+  Object.assign(fake.settings, { confirmEmail: false, expiresIn: 3600, failRefresh: false, refreshErrors: [], phoneEnabled: false })
   fake.requests.length = 0
 })
 
@@ -93,7 +93,7 @@ describe('auto refresh (fake time)', () => {
     browser.uninstall()
   })
 
-  it('refreshes 60 s before expiry and emits TOKEN_REFRESHED', async () => {
+  it('refreshes 50-60 s before expiry (0-10 s jitter) and emits TOKEN_REFRESHED', async () => {
     fake.settings.expiresIn = 120
     const sb = createClient(fake.url, ANON_KEY)
     const events = recorder(sb)
@@ -101,7 +101,7 @@ describe('auto refresh (fake time)', () => {
     const first = data.session!.access_token
     await vi.advanceTimersByTimeAsync(59_000)
     expect(events).not.toContain('TOKEN_REFRESHED')
-    await vi.advanceTimersByTimeAsync(2_000)
+    await vi.advanceTimersByTimeAsync(11_000)
     await waitFor(() => events.includes('TOKEN_REFRESHED'))
     const stored = JSON.parse(browser.store.get('sb-127-auth-token')!) as Session
     expect(stored.access_token).not.toBe(first)
@@ -114,10 +114,26 @@ describe('auto refresh (fake time)', () => {
     const events = recorder(sb)
     await sb.auth.signUp({ email: email(), password: 'secret123' })
     fake.settings.failRefresh = true
-    await vi.advanceTimersByTimeAsync(61_000)
+    await vi.advanceTimersByTimeAsync(71_000)
     await waitFor(() => events.includes('SIGNED_OUT'))
     expect(browser.store.has('sb-127-auth-token')).toBe(false)
     expect((await sb.auth.getSession()).data.session).toBeNull()
+  })
+
+  it('a 500 from refresh keeps the session and retries; the retry succeeds', async () => {
+    fake.settings.expiresIn = 120
+    const sb = createClient(fake.url, ANON_KEY)
+    const events = recorder(sb)
+    await sb.auth.signUp({ email: email(), password: 'secret123' })
+    fake.settings.refreshErrors = [500]
+    await vi.advanceTimersByTimeAsync(71_000)
+    await waitFor(() => fake.settings.refreshErrors.length === 0)
+    await new Promise((r) => setImmediate(r))
+    expect(events).not.toContain('SIGNED_OUT')
+    expect(browser.store.has('sb-127-auth-token')).toBe(true)
+    await vi.advanceTimersByTimeAsync(11_000)
+    await waitFor(() => events.includes('TOKEN_REFRESHED'))
+    expect(events).not.toContain('SIGNED_OUT')
   })
 
   it('getSession refreshes an expired stored session first', async () => {
@@ -132,6 +148,26 @@ describe('auto refresh (fake time)', () => {
 
 describe('session in URL', () => {
   afterEach(() => (globalThis as any).window && delete (globalThis as any).window)
+
+  it.each([
+    ['signup', 'SIGNED_IN'],
+    // a contested unconfirmed account has no password: its confirmation link carries type=recovery
+    ['recovery', 'PASSWORD_RECOVERY'],
+  ] as const)('a signup confirmation link with type=%s emits %s', async (type, expected) => {
+    fake.settings.confirmEmail = true
+    const seed = createClient(fake.url, ANON_KEY, noBrowser)
+    const { data } = await seed.auth.signUp({ email: email(), password: 'secret123' })
+    const user = fake.users.get(data.user!.id)!
+    user.confirmed = true // what GET /verify does before redirecting
+    const s = (await seed.auth.signInWithPassword({ email: user.email, password: 'secret123' })).data.session!
+    const browser = installBrowser(`http://localhost:5173/#access_token=${s.access_token}&refresh_token=${s.refresh_token}&expires_in=3600&token_type=bearer&type=${type}`)
+    const sb = createClient(fake.url, ANON_KEY)
+    const events = recorder(sb)
+    await waitFor(() => events.includes(expected))
+    expect(events).not.toContain(expected === 'SIGNED_IN' ? 'PASSWORD_RECOVERY' : 'SIGNED_IN')
+    expect(browser.location.hash).toBe('')
+    browser.uninstall()
+  })
 
   it('parses #access_token, clears the hash and emits PASSWORD_RECOVERY for type=recovery', async () => {
     const seed = createClient(fake.url, ANON_KEY, noBrowser)
@@ -289,10 +325,16 @@ describe('auth methods without a browser', () => {
     const anon = createClient(fake.url, ANON_KEY, noBrowser)
     expect((await anon.auth.admin.deleteUser(data.user!.id)).error?.status).toBe(403)
     const admin = createClient(fake.url, SERVICE_KEY, noBrowser)
-    const list = await admin.auth.admin.listUsers()
+    const list = await admin.auth.admin.listUsers({ perPage: 1000 })
     expect(list.data.users.some((u) => u.id === data.user!.id)).toBe(true)
+    const total = fake.users.size
+    expect(list.data).toMatchObject({ total, lastPage: 1, nextPage: null })
+    const paged = await admin.auth.admin.listUsers({ page: 1, perPage: 1 })
+    expect(paged.data).toMatchObject({ total, lastPage: total, nextPage: total > 1 ? 2 : null })
+    expect(paged.data.users).toHaveLength(1)
     const del = await admin.auth.admin.deleteUser(data.user!.id)
-    expect(del.error).toBeNull()
+    expect(del).toEqual({ data: { user: null }, error: null })
+    expect(fake.requests.at(-1)!.body).toBe('')
     expect(fake.users.has(data.user!.id)).toBe(false)
     expect(fake.requests.at(-1)!.headers.authorization).toBe(`Bearer ${SERVICE_KEY}`)
   })
@@ -312,5 +354,64 @@ describe('auth methods without a browser', () => {
     const r = await sb.auth.setSession({ access_token: expired, refresh_token: data.session!.refresh_token })
     expect(r.error).toBeNull()
     expect(r.data.session?.access_token).not.toBe(expired)
+  })
+
+  it('verifyOtp phone_change sends the session token; without a session it fails without calling the server', async () => {
+    fake.settings.phoneEnabled = true
+    const sb = createClient(fake.url, ANON_KEY, noBrowser)
+    const before = fake.requests.length
+    const none = await sb.auth.verifyOtp({ type: 'phone_change', token: '123456', phone: '+900000000000' })
+    expect(none.error).toBeInstanceOf(AuthSessionMissingError)
+    expect(fake.requests.length).toBe(before)
+    const { data } = await sb.auth.signUp({ email: email(), password: 'secret123' })
+    const r = await sb.auth.verifyOtp({ type: 'phone_change', token: '123456', phone: '+900000000000' })
+    expect(r.error).toMatchObject({ status: 403, code: 'otp_expired' })
+    const req = fake.requests.at(-1)!
+    expect(req.path).toBe('/auth/v1/verify')
+    expect(req.headers.authorization).toBe(`Bearer ${data.session!.access_token}`)
+  })
+
+  it('signOut refreshes an expiring token first so the server sees a valid one', async () => {
+    fake.settings.expiresIn = 30
+    const sb = createClient(fake.url, ANON_KEY, { auth: { persistSession: false, autoRefreshToken: false } })
+    const { data } = await sb.auth.signUp({ email: email(), password: 'secret123' })
+    expect((await sb.auth.signOut()).error).toBeNull()
+    const paths = fake.requests.slice(-2).map((r) => r.path)
+    expect(paths).toEqual(['/auth/v1/token?grant_type=refresh_token', '/auth/v1/logout?scope=global'])
+    expect(fake.requests.at(-1)!.headers.authorization).not.toBe(`Bearer ${data.session!.access_token}`)
+  })
+
+  it('a refresh still in flight when signOut runs is discarded', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    let refreshStarted = false
+    const slowFetch: typeof fetch = async (input, init) => {
+      if (String(input).includes('grant_type=refresh_token')) {
+        refreshStarted = true
+        await gate
+      }
+      return fetch(input, init)
+    }
+    const sb = createClient(fake.url, ANON_KEY, { auth: { persistSession: false, autoRefreshToken: false }, global: { fetch: slowFetch } })
+    const events = recorder(sb)
+    await sb.auth.signUp({ email: email(), password: 'secret123' })
+    const pending = sb.auth.refreshSession()
+    await waitFor(() => refreshStarted)
+    await sb.auth.signOut()
+    release()
+    const r = await pending
+    expect(r.data.session).toBeNull()
+    expect(r.error).toBeInstanceOf(AuthSessionMissingError)
+    expect((await sb.auth.getSession()).data.session).toBeNull()
+    expect(events.slice(events.indexOf('SIGNED_OUT'))).toEqual(['SIGNED_OUT'])
+  })
+
+  it('a body stream error on a 2xx becomes {data: null, error}, not a throw', async () => {
+    const broken: typeof fetch = async () =>
+      new Response(new ReadableStream({ start: (c) => c.error(new Error('stream broke')) }), { status: 200 })
+    const sb = createClient(fake.url, ANON_KEY, { ...noBrowser, global: { fetch: broken } })
+    const { data, error } = await sb.auth.getUser('some.jwt.token')
+    expect(data.user).toBeNull()
+    expect(error).toBeInstanceOf(AuthError)
   })
 })

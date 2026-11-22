@@ -94,4 +94,39 @@ describe('realtime', () => {
     await waitFor(() => fake.rt.conns.some((c) => c !== conn && c.subs.size === 1), 5000)
     await sb.removeAllChannels()
   })
+
+  it('a channel that TIMED_OUT does not report SUBSCRIBED on a late ack; a new subscribe() does', async () => {
+    fake.settings.ack = false
+    const sb = createClient(fake.url, ANON_KEY, opts)
+    const statuses: string[] = []
+    const ch = sb
+      .channel('slow')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'slow' }, () => {})
+      .subscribe((s) => void statuses.push(s), 200)
+    await waitFor(() => statuses.includes('TIMED_OUT'))
+    fake.rt.flushAcks()
+    await new Promise((r) => setTimeout(r, 200))
+    expect(statuses).toEqual(['TIMED_OUT'])
+    fake.settings.ack = true
+    ch.subscribe((s) => void statuses.push(s))
+    await waitFor(() => statuses.includes('SUBSCRIBED'))
+    expect(statuses).toEqual(['TIMED_OUT', 'SUBSCRIBED'])
+    await sb.removeAllChannels()
+  })
+
+  it('close code 1013 (try again later) waits the longest backoff step before reconnecting', async () => {
+    const sb = createClient(fake.url, ANON_KEY, opts)
+    let ok = false
+    sb.channel('busy')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'busy' }, () => {})
+      .subscribe((s) => (ok ||= s === 'SUBSCRIBED'))
+    await waitFor(() => ok)
+    const first = fake.rt.conns.at(-1)!
+    fake.rt.dropAll(1013)
+    await waitFor(() => !fake.rt.conns.includes(first))
+    // a normal drop reconnects after 1-1.3 s; 1013 jumps to the 10 s step
+    await new Promise((r) => setTimeout(r, 3000))
+    expect(fake.rt.conns).toHaveLength(0)
+    await sb.removeAllChannels()
+  })
 })

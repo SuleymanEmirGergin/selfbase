@@ -25,10 +25,15 @@ interface RtConn {
 export interface FakeServer {
   url: string
   requests: { method: string; path: string; headers: IncomingMessage['headers']; body: string }[]
-  settings: { confirmEmail: boolean; expiresIn: number; failRefresh: boolean; phoneEnabled: boolean; pong: boolean }
+  settings: { confirmEmail: boolean; expiresIn: number; failRefresh: boolean; refreshErrors: number[]; phoneEnabled: boolean; pong: boolean; ack: boolean }
   users: Map<string, FakeUser>
   objects: Map<string, { body: Buffer; contentType: string }>
-  rt: { conns: RtConn[]; emit(table: string, eventType: string, row: Record<string, unknown>): void; dropAll(): void }
+  rt: {
+    conns: RtConn[]
+    emit(table: string, eventType: string, row: Record<string, unknown>): void
+    dropAll(code?: number): void
+    flushAcks(): void
+  }
   close(): Promise<void>
 }
 
@@ -58,7 +63,7 @@ const claimsOf = (header?: string) => {
 }
 
 export async function startFakeServer(): Promise<FakeServer> {
-  const settings = { confirmEmail: false, expiresIn: 3600, failRefresh: false, phoneEnabled: false, pong: true }
+  const settings = { confirmEmail: false, expiresIn: 3600, failRefresh: false, refreshErrors: [] as number[], phoneEnabled: false, pong: true, ack: true }
   const users = new Map<string, FakeUser>()
   const refreshTokens = new Map<string, { userId: string; used: boolean }>()
   const objects = new Map<string, { body: Buffer; contentType: string }>()
@@ -123,6 +128,8 @@ export async function startFakeServer(): Promise<FakeServer> {
         return json(res, 200, issueSession(u))
       }
       if (grant === 'refresh_token') {
+        const status = settings.refreshErrors.shift()
+        if (status) return authErr(res, status, 'unexpected_failure', 'transient failure')
         const rt = refreshTokens.get(body.refresh_token)
         if (settings.failRefresh || !rt || rt.used) return authErr(res, 400, 'refresh_token_already_used', 'Invalid Refresh Token: Already Used')
         rt.used = true
@@ -147,7 +154,10 @@ export async function startFakeServer(): Promise<FakeServer> {
     }
     if (m === 'POST' && ['/otp', '/recover', '/resend'].includes(path)) return json(res, 200, {})
     if (m === 'POST' && path === '/verify') {
-      if (body.type === 'phone_change' && !settings.phoneEnabled) return authErr(res, 422, 'phone_provider_disabled', 'Phone provider is disabled')
+      // core: email links use GET /verify; phone_change needs the signed-in owner
+      if (body.type !== 'phone_change') return authErr(res, 400, 'validation_failed', 'Only type phone_change is supported')
+      if (!settings.phoneEnabled) return authErr(res, 422, 'phone_provider_disabled', 'Phone provider is disabled')
+      if (!userFromAuth(req)) return authErr(res, 401, 'no_authorization', 'This endpoint requires a signed-in user')
       return authErr(res, 403, 'otp_expired', 'Token has expired or is invalid')
     }
     if (m === 'GET' && path === '/authorize') {
@@ -156,13 +166,18 @@ export async function startFakeServer(): Promise<FakeServer> {
     }
     if (path.startsWith('/admin/users')) {
       if (claimsOf(req.headers.authorization)?.role !== 'service_role') return authErr(res, 403, 'not_admin', 'User not allowed')
-      if (m === 'GET') return json(res, 200, { users: [...users.values()].map(userJson), aud: 'authenticated' })
+      if (m === 'GET') {
+        const page = Math.max(1, Number(url.searchParams.get('page')) || 1)
+        const perPage = Math.max(1, Number(url.searchParams.get('per_page')) || 50)
+        const all = [...users.values()]
+        return json(res, 200, { users: all.slice((page - 1) * perPage, page * perPage).map(userJson), aud: 'authenticated' }, { 'x-total-count': String(all.length) })
+      }
       const id = path.split('/')[3]
       const u = users.get(id)
       if (m === 'DELETE') {
         if (!u) return authErr(res, 404, 'user_not_found', 'User not found')
         users.delete(id)
-        return json(res, 200, userJson(u))
+        return json(res, 200, {})
       }
     }
     return authErr(res, 404, 'not_found', `no route ${m} ${path}`)
@@ -175,7 +190,8 @@ export async function startFakeServer(): Promise<FakeServer> {
     if (m === 'POST' && (match = path.match(/^\/object\/sign\/([^/]+)\/(.+)$/))) {
       const key = `${match[1]}/${match[2]}`
       if (!objects.has(key)) return storageErr(res, 400, 'not_found', 'Object not found')
-      return json(res, 200, { signedURL: `/object/sign/${key}?token=${signJwt({ url: key }, body().expiresIn)}` })
+      const encoded = [match[1], ...match[2].split('/')].map(encodeURIComponent).join('/')
+      return json(res, 200, { signedURL: `/object/sign/${encoded}?token=${signJwt({ url: key }, body().expiresIn)}` })
     }
     if (m === 'GET' && (match = path.match(/^\/object\/sign\/([^/]+)\/(.+)$/))) {
       const obj = objects.get(`${match[1]}/${match[2]}`)
@@ -245,7 +261,7 @@ export async function startFakeServer(): Promise<FakeServer> {
         }
         return await auth(req, res, p.slice(8), url, body)
       }
-      if (p.startsWith('/storage/v1')) return await storage(req, res, decodeURI(p.slice(11)), url, raw)
+      if (p.startsWith('/storage/v1')) return await storage(req, res, p.slice(11).split('/').map(decodeURIComponent).join('/'), url, raw)
       if (p.startsWith('/functions/v1')) return functions(req, res, p.slice(13), raw)
       if (p.startsWith('/rest/v1')) return await proxyRest(req, res, p.slice(8) + url.search, raw)
       json(res, 404, { error: 'not found' })
@@ -255,6 +271,7 @@ export async function startFakeServer(): Promise<FakeServer> {
   })
 
   const conns: RtConn[] = []
+  const pendingAcks: (() => void)[] = []
   const wss = new WebSocketServer({ noServer: true })
   server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url!, 'http://fake')
@@ -267,7 +284,8 @@ export async function startFakeServer(): Promise<FakeServer> {
         conn.received.push(msg)
         if (msg.type === 'subscribe') {
           conn.subs.set(msg.ref, { table: msg.table, event: msg.event, filter: msg.filter })
-          ws.send(JSON.stringify({ type: 'subscribed', ref: msg.ref }))
+          if (settings.ack) ws.send(JSON.stringify({ type: 'subscribed', ref: msg.ref }))
+          else pendingAcks.push(() => ws.send(JSON.stringify({ type: 'subscribed', ref: msg.ref })))
         } else if (msg.type === 'unsubscribe') conn.subs.delete(msg.ref)
         else if (msg.type === 'auth') conn.token = msg.token
         else if (msg.type === 'ping' && settings.pong) ws.send(JSON.stringify({ type: 'pong' }))
@@ -289,8 +307,12 @@ export async function startFakeServer(): Promise<FakeServer> {
           c.ws.send(JSON.stringify({ type: 'change', ref, eventType, schema: 'public', table, new: row, old: {}, commit_timestamp: new Date().toISOString() }))
         }
     },
-    dropAll() {
-      for (const c of [...conns]) c.ws.terminate()
+    /** Without a code the socket is killed (network drop); with one it is closed cleanly with that code. */
+    dropAll(code?: number) {
+      for (const c of [...conns]) code ? c.ws.close(code, 'test') : c.ws.terminate()
+    },
+    flushAcks() {
+      for (const send of pendingAcks.splice(0)) send()
     },
   }
 

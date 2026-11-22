@@ -14,6 +14,8 @@ import type {
 /** Refresh this long before `expires_at`. */
 const EXPIRY_MARGIN_MS = 60_000
 const RETRY_REFRESH_MS = 10_000
+/** Spreads tabs' refresh timers so they rarely post the same single-use refresh token at once. */
+const REFRESH_JITTER_MS = 10_000
 
 export class AuthError extends Error {
   status: number | undefined
@@ -70,7 +72,9 @@ export class AuthImplicitGrantRedirectError extends AuthError {
 export const isAuthError = (error: unknown): error is AuthError =>
   typeof error === 'object' && error !== null && '__isAuthError' in error
 
-const isRetryable = (error: AuthError) => error instanceof AuthRetryableFetchError
+const isRetryable = (error: AuthError): boolean => error instanceof AuthRetryableFetchError
+/** Refresh keeps the session on network errors and any 5xx (core answers 500 while Postgres restarts); only a 4xx drops it. */
+const refreshRetryable = (error: AuthError) => isRetryable(error) || (error.status ?? 0) >= 500
 
 /** supabase-js result shape: on failure every data field is null. */
 export type Result<T> = { data: T; error: null } | { data: { [K in keyof T]: null }; error: AuthError }
@@ -161,7 +165,11 @@ class AuthHttp {
     readonly fetch: Fetch,
   ) {}
 
-  async request(method: string, path: string, opts: RequestOptions = {}): Promise<{ data: any; error: AuthError | null }> {
+  async request(
+    method: string,
+    path: string,
+    opts: RequestOptions = {},
+  ): Promise<{ data: any; error: AuthError | null; headers?: Headers }> {
     const url = new URL(this.url + path)
     if (opts.redirectTo) url.searchParams.set('redirect_to', opts.redirectTo)
     for (const [k, v] of Object.entries(opts.query ?? {})) if (v !== undefined) url.searchParams.set(k, v)
@@ -179,11 +187,16 @@ class AuthHttp {
       return { data: null, error: new AuthRetryableFetchError(e instanceof Error ? e.message : String(e), 0) }
     }
     if (!res.ok) return { data: null, error: await toAuthError(res) }
-    const text = await res.text()
+    let text: string
     try {
-      return { data: text ? JSON.parse(text) : {}, error: null }
+      text = await res.text()
+    } catch (e) {
+      return { data: null, error: new AuthRetryableFetchError(e instanceof Error ? e.message : String(e), 0) }
+    }
+    try {
+      return { data: text ? JSON.parse(text) : {}, error: null, headers: res.headers }
     } catch {
-      return { data: {}, error: null }
+      return { data: {}, error: null, headers: res.headers }
     }
   }
 }
@@ -191,24 +204,30 @@ class AuthHttp {
 export class AuthAdminApi {
   constructor(private http: AuthHttp) {}
 
-  async deleteUser(id: string, shouldSoftDelete = false): Promise<Result<{ user: User | null }>> {
-    const { data, error } = await this.http.request('DELETE', `/admin/users/${encodeURIComponent(id)}`, {
-      body: { should_soft_delete: shouldSoftDelete },
-    })
-    return error ? { data: { user: null }, error } : { data: { user: userFrom(data) }, error: null }
+  /** The server answers `{}`, so `user` is always null. Soft delete is not supported; the flag is accepted for signature parity. */
+  async deleteUser(id: string, _shouldSoftDelete = false): Promise<Result<{ user: null }>> {
+    const { error } = await this.http.request('DELETE', `/admin/users/${encodeURIComponent(id)}`)
+    return error ? { data: { user: null }, error } : { data: { user: null }, error: null }
   }
 
-  // shortcut: pagination metadata is derived from the page itself, not from link/x-total-count headers; read headers if a caller pages through users
   async listUsers(params: { page?: number; perPage?: number } = {}): Promise<
     | { data: { users: User[]; aud: string; nextPage: number | null; lastPage: number; total: number }; error: null }
     | { data: { users: [] }; error: AuthError }
   > {
-    const { data, error } = await this.http.request('GET', '/admin/users', {
+    const page = params.page ?? 1
+    const perPage = params.perPage ?? 50 // server default
+    const { data, error, headers } = await this.http.request('GET', '/admin/users', {
       query: { page: params.page?.toString(), per_page: params.perPage?.toString() },
     })
     if (error) return { data: { users: [] }, error }
     const users: User[] = data.users ?? []
-    return { data: { users, aud: data.aud ?? 'authenticated', nextPage: null, lastPage: 0, total: users.length }, error: null }
+    const header = Number(headers?.get('x-total-count'))
+    const total = Number.isFinite(header) && headers?.has('x-total-count') ? header : users.length
+    const lastPage = Math.max(1, Math.ceil(total / perPage))
+    return {
+      data: { users, aud: data.aud ?? 'authenticated', nextPage: page < lastPage ? page + 1 : null, lastPage, total },
+      error: null,
+    }
   }
 }
 
@@ -227,6 +246,8 @@ export class SelfbaseAuthClient {
   protected initError: AuthError | null = null
   protected refreshTimer: ReturnType<typeof setTimeout> | undefined
   protected refreshing: Promise<{ session: Session | null; error: AuthError | null }> | null = null
+  /** Bumped on every session removal so a refresh that was in flight cannot bring the session back. */
+  protected epoch = 0
 
   constructor(options: AuthClientOptions) {
     this.http = new AuthHttp(options.url, options.headers, resolveFetch(options.fetch))
@@ -320,6 +341,7 @@ export class SelfbaseAuthClient {
   }
 
   protected async removeSession() {
+    this.epoch++
     this.session = null
     clearTimeout(this.refreshTimer)
     await this.storage.removeItem(this.storageKey)
@@ -328,11 +350,11 @@ export class SelfbaseAuthClient {
   protected scheduleRefresh(session: Session, delay?: number) {
     clearTimeout(this.refreshTimer)
     if (!this.autoRefreshToken) return
-    const ms = delay ?? Math.max(0, (session.expires_at ?? 0) * 1000 - EXPIRY_MARGIN_MS - Date.now())
+    const ms = delay ?? Math.max(0, (session.expires_at ?? 0) * 1000 - EXPIRY_MARGIN_MS - Date.now()) + Math.random() * REFRESH_JITTER_MS
     this.refreshTimer = setTimeout(async () => {
       if (this.session !== session) return
       const { error } = await this.callRefresh(session.refresh_token)
-      if (error && isRetryable(error) && this.session === session) this.scheduleRefresh(session, RETRY_REFRESH_MS)
+      if (error && refreshRetryable(error) && this.session === session) this.scheduleRefresh(session, RETRY_REFRESH_MS)
     }, ms)
     unref(this.refreshTimer)
   }
@@ -340,9 +362,10 @@ export class SelfbaseAuthClient {
   /** One refresh at a time, across tabs too (Web Locks), so a rotated refresh token is never reused. */
   protected callRefresh(refreshToken: string) {
     if (this.refreshing) return this.refreshing
-    const run = async () => {
+    const run = async (): Promise<{ session: Session | null; error: AuthError | null }> => {
+      const epoch = this.epoch
       if (this.persistSession) {
-        // another tab may have refreshed while we waited for the lock
+        // re-read right before the POST, with or without Web Locks: another tab may have rotated the token already
         const raw = await this.storage.getItem(this.storageKey)
         const stored = parseSession(raw)
         if (stored && stored.refresh_token !== refreshToken && !this.expiresSoon(stored)) {
@@ -355,8 +378,10 @@ export class SelfbaseAuthClient {
         query: { grant_type: 'refresh_token' },
         body: { refresh_token: refreshToken },
       })
+      // signed out while the request was in flight: discard the result
+      if (epoch !== this.epoch) return { session: null, error: new AuthSessionMissingError() }
       if (error) {
-        if (!isRetryable(error)) {
+        if (!refreshRetryable(error)) {
           const hadSession = this.session !== null
           await this.removeSession()
           if (hadSession) await this.notify('SIGNED_OUT', null)
@@ -515,7 +540,15 @@ export class SelfbaseAuthClient {
   async verifyOtp(params: VerifyOtpParams): Promise<Result<{ user: User | null; session: Session | null }>> {
     await this.initializePromise
     const { options, ...body } = params
-    const { data, error } = await this.http.request('POST', '/verify', { body, redirectTo: options?.redirectTo })
+    let jwt: string | undefined
+    if (params.type === 'phone_change') {
+      // the server only lets the signed-in owner spend a phone_change code
+      const { data: sessionData, error: sessionError } = await this.getSession()
+      if (sessionError) return { data: { user: null, session: null }, error: sessionError }
+      jwt = sessionData.session?.access_token
+      if (!jwt) return { data: { user: null, session: null }, error: new AuthSessionMissingError() }
+    }
+    const { data, error } = await this.http.request('POST', '/verify', { body, jwt, redirectTo: options?.redirectTo })
     if (error) return { data: { user: null, session: null }, error }
     return this.sessionResult(data, params.type === 'recovery' ? 'PASSWORD_RECOVERY' : 'SIGNED_IN')
   }
@@ -603,7 +636,10 @@ export class SelfbaseAuthClient {
   async signOut(options: { scope?: 'global' | 'local' | 'others' } = {}): Promise<{ error: AuthError | null }> {
     await this.initializePromise
     const scope = options.scope ?? 'global'
-    const token = this.session?.access_token
+    const hadSession = this.session !== null
+    // a fresh token, so a global sign-out really reaches the server; if that fails we sign out locally only
+    const token = (await this.getSession()).data.session?.access_token
+    if (hadSession && this.session === null) return { error: null } // the refresh was refused: already signed out and notified
     if (token) {
       const { error } = await this.http.request('POST', '/logout', { jwt: token, query: { scope } })
       // supabase-js parity: an already-gone session still signs out locally

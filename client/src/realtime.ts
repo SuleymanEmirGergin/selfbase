@@ -82,11 +82,15 @@ export class RealtimeChannel {
   }
 
   subscribe(callback?: SubscribeCallback, timeout = 10_000): RealtimeChannel {
-    if (this.state !== 'closed') return this
+    if (this.state === 'joining' || this.state === 'joined') return this
     this.statusCallback = callback
     this.state = 'joining'
+    for (const b of this.bindings) b.subscribed = false
     this.timeoutTimer = setTimeout(() => {
-      if (this.state === 'joining') this.statusCallback?.('TIMED_OUT')
+      if (this.state !== 'joining') return
+      // a timed-out channel stays errored: a late ack must not report SUBSCRIBED without a new subscribe()
+      this.state = 'errored'
+      this.statusCallback?.('TIMED_OUT')
     }, timeout)
     this.socket.join(this)
     return this
@@ -104,7 +108,7 @@ export class RealtimeChannel {
 
   /** @internal */
   _resubscribeAll() {
-    if (this.state === 'closed') return
+    if (this.state !== 'joining' && this.state !== 'joined') return
     for (const b of this.bindings) this.socket.sendSubscribe(this, b)
     if (!this.bindings.length) this._markJoined()
   }
@@ -117,7 +121,7 @@ export class RealtimeChannel {
   }
 
   protected _markJoined() {
-    if (this.state === 'joined') return
+    if (this.state !== 'joining') return
     this.state = 'joined'
     clearTimeout(this.timeoutTimer)
     this.statusCallback?.('SUBSCRIBED')
@@ -132,9 +136,8 @@ export class RealtimeChannel {
 
   /** @internal */
   _onDisconnected() {
-    if (this.state === 'closed') return
     for (const b of this.bindings) b.subscribed = false
-    this.state = 'joining'
+    if (this.state === 'joined') this.state = 'joining'
   }
 
   /** @internal */
@@ -162,6 +165,10 @@ export interface RealtimeClientOptions {
 }
 
 const BACKOFF_MS = [1000, 2000, 5000, 10_000]
+/** The attempt counter resets only once a connection has stayed open this long. */
+const STABLE_MS = 30_000
+/** Server close code for "try again later" (overloaded). */
+const CLOSE_TRY_AGAIN_LATER = 1013
 
 export class RealtimeClient {
   channels: RealtimeChannel[] = []
@@ -173,6 +180,7 @@ export class RealtimeClient {
   protected tries = 0
   protected reconnectTimer: ReturnType<typeof setTimeout> | undefined
   protected heartbeatTimer: ReturnType<typeof setInterval> | undefined
+  protected stableTimer: ReturnType<typeof setTimeout> | undefined
   protected pendingPong = false
 
   constructor(
@@ -260,16 +268,19 @@ export class RealtimeClient {
     const ws = new Transport(`${this.endPoint}?token=${encodeURIComponent(token)}`)
     this.ws = ws
     ws.onopen = () => {
-      this.tries = 0
+      clearTimeout(this.stableTimer)
+      this.stableTimer = setTimeout(() => (this.tries = 0), STABLE_MS)
       this.startHeartbeat()
       for (const c of this.channels) c._resubscribeAll()
     }
     ws.onmessage = (ev) => this.onMessage(ev.data)
     ws.onerror = () => {} // a close event always follows
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       if (this.ws !== ws) return
       this.ws = null
       clearInterval(this.heartbeatTimer)
+      clearTimeout(this.stableTimer)
+      if (ev?.code === CLOSE_TRY_AGAIN_LATER) this.tries = Math.max(this.tries, BACKOFF_MS.length - 1)
       for (const c of this.channels) c._onDisconnected()
       if (this.channels.some((c) => c.state !== 'closed')) this.scheduleReconnect()
     }
@@ -277,6 +288,7 @@ export class RealtimeClient {
 
   disconnect(): void {
     clearTimeout(this.reconnectTimer)
+    clearTimeout(this.stableTimer)
     clearInterval(this.heartbeatTimer)
     const ws = this.ws
     this.ws = null
@@ -284,7 +296,9 @@ export class RealtimeClient {
   }
 
   protected scheduleReconnect() {
-    const delay = this.options.reconnectAfterMs?.(this.tries) ?? BACKOFF_MS[Math.min(this.tries, BACKOFF_MS.length - 1)]
+    const base = BACKOFF_MS[Math.min(this.tries, BACKOFF_MS.length - 1)]
+    // up to +30 % jitter so clients dropped together do not reconnect in lockstep
+    const delay = this.options.reconnectAfterMs?.(this.tries) ?? base + Math.random() * base * 0.3
     this.tries++
     clearTimeout(this.reconnectTimer)
     this.reconnectTimer = setTimeout(() => void this.connect(), delay)

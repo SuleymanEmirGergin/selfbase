@@ -19,11 +19,15 @@ export function signJwt(claims: Record<string, unknown>, expiresInSec = 3600): s
 export const ANON_KEY = signJwt({ role: 'anon', iss: 'selfbase' }, 365 * 24 * 3600)
 export const SERVICE_KEY = signJwt({ role: 'service_role', iss: 'selfbase' }, 365 * 24 * 3600)
 
-/** Runs SQL in the test stack's db container as postgres. */
-export function psql(sql: string): string {
+/**
+ * Runs SQL in the test stack's db container as postgres. Pass values as `vars` and reference them as
+ * :'name' (literal) or :"name" (identifier) so psql quotes them; never splice values into `sql`.
+ */
+export function psql(sql: string, vars: Record<string, string> = {}): string {
+  const varArgs = Object.entries(vars).flatMap(([k, v]) => ['-v', `${k}=${v}`])
   return execFileSync(
     'docker',
-    ['compose', '-p', COMPOSE_PROJECT, '-f', process.env.TEST_COMPOSE_FILE ?? '../compose.test.yml', 'exec', '-T', 'db', 'psql', '-U', 'postgres', '-v', 'ON_ERROR_STOP=1', '-qAt'],
+    ['compose', '-p', COMPOSE_PROJECT, '-f', process.env.TEST_COMPOSE_FILE ?? '../compose.test.yml', 'exec', '-T', 'db', 'psql', '-U', 'postgres', '-v', 'ON_ERROR_STOP=1', ...varArgs, '-qAt'],
     { input: `set client_min_messages to warning;\n${sql}`, encoding: 'utf8' },
   )
 }

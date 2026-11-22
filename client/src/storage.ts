@@ -160,7 +160,9 @@ export class StorageFileApi {
     const { res, error } = await this.request('POST', `/object/sign/${finalPath(this.bucketId, path)}`, { json: { expiresIn } })
     if (error) return { data: null, error }
     const { signedURL } = await res.json()
-    return { data: { signedUrl: encodeURI(`${this.url}${signedURL}${downloadQuery(options.download, signedURL.includes('?') ? '&' : '?')}`) }, error: null }
+    // signedURL is already percent-encoded by the server: use it as is
+    const download = options.download ? `&download=${options.download === true ? '' : encodeURIComponent(options.download)}` : ''
+    return { data: { signedUrl: `${this.url}${signedURL}${download}` }, error: null }
   }
 
   getPublicUrl(path: string, options: { download?: string | boolean } = {}): { data: { publicUrl: string } } {

@@ -59,6 +59,20 @@ describe('storage', () => {
     expect((await fetch(data!.signedUrl)).status).toBe(200)
   })
 
+  it('createSignedUrl keeps a key with a space and Turkish characters intact (no double encoding)', async () => {
+    const { sb } = await signedIn()
+    const key = 'belgeler/öğrenci kartı & ş.pdf'
+    expect((await sb.storage.from('docs').upload(key, new Blob(['tr'], { type: 'application/pdf' }))).error).toBeNull()
+    expect(fake.objects.has(`docs/${key}`)).toBe(true)
+    const { data, error } = await sb.storage.from('docs').createSignedUrl(key, 60)
+    expect(error).toBeNull()
+    expect(data!.signedUrl).toContain('/object/sign/docs/belgeler/%C3%B6%C4%9Frenci%20kart%C4%B1%20%26%20%C5%9F.pdf?token=')
+    expect(data!.signedUrl).not.toContain('%25')
+    const res = await fetch(data!.signedUrl)
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('tr')
+  })
+
   it('list and remove', async () => {
     const { sb } = await signedIn()
     const api = sb.storage.from('lst')

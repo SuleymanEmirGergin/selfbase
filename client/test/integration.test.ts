@@ -1,7 +1,14 @@
-// Brief Step 2 scenarios against a running selfbase (core + db + rest [+ fn]). Skipped unless configured:
-//   SELFBASE_URL, SELFBASE_ANON_KEY, SELFBASE_SERVICE_KEY  - the stack under test
-//   TEST_COMPOSE_PROJECT (+ optional TEST_COMPOSE_FILE)    - compose project whose `db` service receives setup SQL via psql
-//   SELFBASE_FAILING_FUNCTION                              - optional: a deployed function that answers 500
+// Brief Step 2 scenarios against a running selfbase (core + db + rest [+ fn]). The whole file is skipped unless
+// ALL four required variables are set (see client/README.md):
+//   SELFBASE_URL          required  public origin of core, e.g. http://localhost:8080
+//   SELFBASE_ANON_KEY     required  the stack's ANON_KEY
+//   SELFBASE_SERVICE_KEY  required  the stack's SERVICE_ROLE_KEY (only used to wait for the schema reload)
+//   TEST_COMPOSE_PROJECT  required  compose project (`docker compose -p`) whose `db` service gets the setup SQL via psql:
+//                                   an RLS table with realtime, a public bucket with policies, e-mail confirmation.
+//                                   DDL and policies have no public API, so this cannot be done over HTTP.
+//   TEST_COMPOSE_FILE     optional  compose file for that project (default ../compose.test.yml, relative to client/)
+//   SELFBASE_FAILING_FUNCTION optional  name of a deployed function that answers 500 (enables the functions case)
+// SQL values travel as psql variables (:'x' / :"x"), never spliced into the SQL text.
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { FunctionsHttpError, createClient, type AuthChangeEvent, type SupabaseClient } from '../src/index.ts'
 import { psql, waitFor } from './helpers.ts'
@@ -14,6 +21,7 @@ const opts = { auth: { persistSession: false } }
 const run = Date.now().toString(36)
 const table = `t8_it_${run}`
 const bucket = `t8-it-${run}`
+const vars = { tbl: table, tbl_reg: `public.${table}`, bucket, pol_ins: `t8 ${run} insert`, pol_sel: `t8 ${run} select` }
 
 /** Signs up (confirming the e-mail via SQL when AUTH_CONFIRM_EMAIL is on) and signs in. */
 async function newUser(sb: SupabaseClient = createClient(URL_, ANON, opts)) {
@@ -21,7 +29,7 @@ async function newUser(sb: SupabaseClient = createClient(URL_, ANON, opts)) {
   const up = await sb.auth.signUp({ email, password: 'secret123' })
   expect(up.error).toBeNull()
   if (!up.data.session) {
-    psql(`update auth.users set email_confirmed_at = now() where email = '${email}';`)
+    psql(`update auth.users set email_confirmed_at = now() where email = :'email';`, { email })
     const r = await sb.auth.signInWithPassword({ email, password: 'secret123' })
     expect(r.error).toBeNull()
   }
@@ -30,27 +38,33 @@ async function newUser(sb: SupabaseClient = createClient(URL_, ANON, opts)) {
 
 describe.skipIf(!enabled)('integration against a running selfbase', () => {
   beforeAll(async () => {
-    psql(`
-      create table public.${table} (id uuid primary key default gen_random_uuid(), owner uuid not null default auth.uid(), body text);
-      alter table public.${table} enable row level security;
-      create policy own on public.${table} for all to authenticated using (owner = auth.uid()) with check (owner = auth.uid());
-      select selfbase.enable_realtime('public.${table}');
-      insert into storage.buckets (id, name, public) values ('${bucket}', '${bucket}', true);
-      create policy "t8 ${run} insert" on storage.objects for insert to authenticated with check (bucket_id = '${bucket}');
-      create policy "t8 ${run} select" on storage.objects for select to authenticated using (bucket_id = '${bucket}');
+    psql(
+      `
+      create table public.:"tbl" (id uuid primary key default gen_random_uuid(), owner uuid not null default auth.uid(), body text);
+      alter table public.:"tbl" enable row level security;
+      create policy own on public.:"tbl" for all to authenticated using (owner = auth.uid()) with check (owner = auth.uid());
+      select selfbase.enable_realtime(:'tbl_reg'::regclass);
+      insert into storage.buckets (id, name, public) values (:'bucket', :'bucket', true);
+      create policy :"pol_ins" on storage.objects for insert to authenticated with check (bucket_id = :'bucket');
+      create policy :"pol_sel" on storage.objects for select to authenticated using (bucket_id = :'bucket');
       notify pgrst, 'reload schema';
-    `)
+    `,
+      vars,
+    )
     const svc = createClient(URL_, SERVICE, opts)
     await waitFor(async () => !(await svc.from(table as never).select('id').limit(1)).error, 15_000)
   })
   afterAll(() => {
-    psql(`
-      drop table if exists public.${table};
-      drop policy if exists "t8 ${run} insert" on storage.objects;
-      drop policy if exists "t8 ${run} select" on storage.objects;
-      delete from storage.objects where bucket_id = '${bucket}';
-      delete from storage.buckets where id = '${bucket}';
-    `)
+    psql(
+      `
+      drop table if exists public.:"tbl";
+      drop policy if exists :"pol_ins" on storage.objects;
+      drop policy if exists :"pol_sel" on storage.objects;
+      delete from storage.objects where bucket_id = :'bucket';
+      delete from storage.buckets where id = :'bucket';
+    `,
+      vars,
+    )
   })
   afterEach(() => vi.useRealTimers())
 
@@ -100,7 +114,7 @@ describe.skipIf(!enabled)('integration against a running selfbase', () => {
 
   it('storage upload → getPublicUrl answers 200 with the bytes', async () => {
     const sb = await newUser()
-    const path = `p/${run}.txt`
+    const path = `p/öğrenci kartı ${run}.txt` // space + Turkish characters: signed URLs must not double-encode
     const up = await sb.storage.from(bucket).upload(path, new Blob(['hello'], { type: 'text/plain' }))
     expect(up.error).toBeNull()
     const res = await fetch(sb.storage.from(bucket).getPublicUrl(path).data.publicUrl)
