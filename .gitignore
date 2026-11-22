@@ -1,0 +1,7 @@
+.env
+fn.env
+dump/
+data/
+node_modules/
+dist/
+.superpowers/
