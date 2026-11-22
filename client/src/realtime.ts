@@ -45,6 +45,9 @@ export class RealtimeChannel {
   bindings: Binding[] = []
   protected statusCallback: SubscribeCallback | undefined
   protected timeoutTimer: ReturnType<typeof setTimeout> | undefined
+  protected rejoinTimer: ReturnType<typeof setTimeout> | undefined
+  protected rejoinTries = 0
+  protected joinTimeout = 10_000
 
   constructor(
     public subTopic: string,
@@ -84,19 +87,39 @@ export class RealtimeChannel {
   subscribe(callback?: SubscribeCallback, timeout = 10_000): RealtimeChannel {
     if (this.state === 'joining' || this.state === 'joined') return this
     this.statusCallback = callback
+    this.joinTimeout = timeout
+    this.rejoinTries = 0
+    this._join()
+    return this
+  }
+
+  /** @internal (re)joins: subscribes every binding; an errored channel comes back here on socket open or its rejoin timer. */
+  _join() {
+    clearTimeout(this.rejoinTimer)
+    clearTimeout(this.timeoutTimer)
     this.state = 'joining'
     for (const b of this.bindings) b.subscribed = false
     this.timeoutTimer = setTimeout(() => {
       if (this.state !== 'joining') return
-      // a timed-out channel stays errored: a late ack must not report SUBSCRIBED without a new subscribe()
+      // a timed-out channel stays errored until its rejoin: a late ack must not report SUBSCRIBED meanwhile
       this.state = 'errored'
       this.statusCallback?.('TIMED_OUT')
-    }, timeout)
+      this.scheduleRejoin()
+    }, this.joinTimeout)
     this.socket.join(this)
-    return this
+  }
+
+  /** Rejoin with backoff (up to 60 s), so a permanent error (unknown table, subscription cap) never retries in a tight loop. */
+  protected scheduleRejoin() {
+    clearTimeout(this.rejoinTimer)
+    this.rejoinTimer = setTimeout(() => {
+      // while the socket is down, the next socket open rejoins instead
+      if (this.state === 'errored' && this.socket.isConnected()) this._join()
+    }, this.socket.rejoinDelay(this.rejoinTries++))
   }
 
   async unsubscribe(): Promise<RealtimeChannelSendResponse> {
+    clearTimeout(this.rejoinTimer)
     if (this.state === 'closed') return 'ok'
     clearTimeout(this.timeoutTimer)
     for (const b of this.bindings) this.socket.send({ type: 'unsubscribe', ref: b.ref })
@@ -123,15 +146,19 @@ export class RealtimeChannel {
   protected _markJoined() {
     if (this.state !== 'joining') return
     this.state = 'joined'
+    this.rejoinTries = 0
     clearTimeout(this.timeoutTimer)
     this.statusCallback?.('SUBSCRIBED')
   }
 
   /** @internal */
   _onError(message: string) {
+    if (this.state === 'closed') return
+    const already = this.state === 'errored'
     this.state = 'errored'
     clearTimeout(this.timeoutTimer)
     this.statusCallback?.('CHANNEL_ERROR', new Error(message))
+    if (!already) this.scheduleRejoin()
   }
 
   /** @internal */
@@ -162,9 +189,12 @@ export interface RealtimeClientOptions {
   transport?: typeof WebSocket
   heartbeatIntervalMs?: number
   reconnectAfterMs?: (tries: number) => number
+  /** Delay before an errored channel (TIMED_OUT / CHANNEL_ERROR) rejoins while the socket is open. */
+  rejoinAfterMs?: (tries: number) => number
 }
 
 const BACKOFF_MS = [1000, 2000, 5000, 10_000]
+const REJOIN_MS = [1000, 2000, 5000, 10_000, 30_000, 60_000]
 /** The attempt counter resets only once a connection has stayed open this long. */
 const STABLE_MS = 30_000
 /** Server close code for "try again later" (overloaded). */
@@ -190,6 +220,11 @@ export class RealtimeClient {
 
   makeRef(): string {
     return String(++this.refCounter)
+  }
+
+  /** @internal */
+  rejoinDelay(tries: number): number {
+    return this.options.rejoinAfterMs?.(tries) ?? REJOIN_MS[Math.min(tries, REJOIN_MS.length - 1)]
   }
 
   channel(name: string, _opts?: unknown): RealtimeChannel {
@@ -271,7 +306,7 @@ export class RealtimeClient {
       clearTimeout(this.stableTimer)
       this.stableTimer = setTimeout(() => (this.tries = 0), STABLE_MS)
       this.startHeartbeat()
-      for (const c of this.channels) c._resubscribeAll()
+      for (const c of this.channels) c.state === 'errored' ? c._join() : c._resubscribeAll()
     }
     ws.onmessage = (ev) => this.onMessage(ev.data)
     ws.onerror = () => {} // a close event always follows

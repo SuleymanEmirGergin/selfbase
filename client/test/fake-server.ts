@@ -1,5 +1,5 @@
-// In-process stand-in for selfbase core, implementing the auth (Task 2/3), storage (Task 4), realtime (Task 5)
-// and functions (Task 9) contracts as their briefs state them. /rest/v1 is proxied to the real test PostgREST.
+// In-process stand-in for selfbase core: the auth, storage, realtime and function host contracts as core and fn
+// implement them. /rest/v1 is proxied to the real test PostgREST.
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomBytes, randomUUID } from 'node:crypto'
 import type { AddressInfo } from 'node:net'
@@ -25,7 +25,7 @@ interface RtConn {
 export interface FakeServer {
   url: string
   requests: { method: string; path: string; headers: IncomingMessage['headers']; body: string }[]
-  settings: { confirmEmail: boolean; expiresIn: number; failRefresh: boolean; refreshErrors: number[]; phoneEnabled: boolean; pong: boolean; ack: boolean }
+  settings: { confirmEmail: boolean; expiresIn: number; failRefresh: boolean; refreshErrors: number[]; phoneEnabled: boolean; pong: boolean; ack: boolean; subscribeError: string }
   users: Map<string, FakeUser>
   objects: Map<string, { body: Buffer; contentType: string }>
   rt: {
@@ -63,7 +63,7 @@ const claimsOf = (header?: string) => {
 }
 
 export async function startFakeServer(): Promise<FakeServer> {
-  const settings = { confirmEmail: false, expiresIn: 3600, failRefresh: false, refreshErrors: [] as number[], phoneEnabled: false, pong: true, ack: true }
+  const settings = { confirmEmail: false, expiresIn: 3600, failRefresh: false, refreshErrors: [] as number[], phoneEnabled: false, pong: true, ack: true, subscribeError: '' }
   const users = new Map<string, FakeUser>()
   const refreshTokens = new Map<string, { userId: string; used: boolean }>()
   const objects = new Map<string, { body: Buffer; contentType: string }>()
@@ -282,7 +282,9 @@ export async function startFakeServer(): Promise<FakeServer> {
       ws.on('message', (data) => {
         const msg = JSON.parse(String(data))
         conn.received.push(msg)
-        if (msg.type === 'subscribe') {
+        if (msg.type === 'subscribe' && settings.subscribeError) {
+          ws.send(JSON.stringify({ type: 'error', ref: msg.ref, message: settings.subscribeError }))
+        } else if (msg.type === 'subscribe') {
           conn.subs.set(msg.ref, { table: msg.table, event: msg.event, filter: msg.filter })
           if (settings.ack) ws.send(JSON.stringify({ type: 'subscribed', ref: msg.ref }))
           else pendingAcks.push(() => ws.send(JSON.stringify({ type: 'subscribed', ref: msg.ref })))
