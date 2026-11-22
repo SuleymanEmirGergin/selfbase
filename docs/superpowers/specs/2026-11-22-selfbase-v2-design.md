@@ -225,10 +225,10 @@ compose work.
 
   ```
   traefik.enable=true
-  traefik.docker.network=<PROXY_NETWORK>                       # "coolify" (verify)
+  traefik.docker.network=<PROXY_NETWORK>                       # "coolify" (measured, section 15)
   traefik.http.routers.sb-<ref>.rule=Host(`<ref>.<BASE>`) [|| Host(`<custom>`)]
-  traefik.http.routers.sb-<ref>.entrypoints=<PROXY_ENTRYPOINT_HTTPS>   # "https" (verify)
-  traefik.http.routers.sb-<ref>.tls.certresolver=<PROXY_CERTRESOLVER>  # "letsencrypt" (verify)
+  traefik.http.routers.sb-<ref>.entrypoints=<PROXY_ENTRYPOINT_HTTPS>   # "https" (measured, section 15)
+  traefik.http.routers.sb-<ref>.tls.certresolver=<PROXY_CERTRESOLVER>  # "letsencrypt" (measured, section 15)
   traefik.http.services.sb-<ref>.loadbalancer.server.port=8080
   + an http router with a redirect-to-https middleware named sb-<ref>-redirect
   ```
@@ -250,8 +250,8 @@ compose work.
 - **Certificates on sslip.io.** `sslip.io` is **not on the Public Suffix List** (checked against
   publicsuffix.org on 2026-11-22). For Let's Encrypt the registered domain is therefore `sslip.io`
   itself, and the "new certificates per registered domain per week" limit (50 by default; whether
-  sslip.io has a raised limit is unknown *(verify in the server-facts task: issue nothing, read
-  Traefik's ACME log and crt.sh)*) is shared with every sslip.io user in the world — including the
+  sslip.io has a raised limit is unknown; measured 2026-11-22, section 15: no rate-limit error in
+  Traefik's log since 2026-07-05, two certificates for `*.<ip>.sslip.io` in the last 7 days) is shared with every sslip.io user in the world — including the
   other teams' Coolify apps on this IP, whose new deployments draw on the same quota and the same ACME
   account in `coolify-proxy`. Issuance can fail for reasons outside our control, and every certificate
   we request is one another team cannot get that week. Design consequences (**AC-33**, reason: keep
@@ -369,7 +369,7 @@ Studio-only endpoints at `/platform/*`.
   every container has `mem_limit` (= `memory.max`), `memswap_limit` equal to it, `cpus`, `pids_limit`.
   Second wall: all selfbase containers are created with `cgroup-parent=selfbase.slice`, and a builder
   runs `systemctl set-property selfbase.slice MemoryMax=16G` once over SSH **after the owner's OK**
-  (shared-host rule, section 5). It needs the systemd cgroup driver *(verify in server facts)*; if the
+  (shared-host rule, section 5). It needs the systemd cgroup driver (measured: systemd, cgroup v2, section 15); if the
   host uses another driver the slice is skipped and the guide says so.
 - **Budget and capacity (16 GB):**
 
@@ -893,7 +893,7 @@ last because it observes everything else.
 |---|---|
 | Provisioner bug = host root on a shared server | Typed operations only, no bind mounts or privileges, socket proxy allow-list beneath it, small dependency-free code, dedicated security review, tests that assert refusal. |
 | Coolify's Traefik names/versions differ from assumed defaults; a Coolify upgrade changes them | Names are settings discovered by read-only inspect; reconcile re-labels by recreating our containers; guide section "after a Coolify upgrade". |
-| Coolify cleanup jobs prune our images or stopped containers | Registry images (re-pullable); paused projects are stopped containers with our labels — if a prune removes them, reconcile recreates them from desired state (volumes are never pruned by container prune) *(verify Coolify's prune filters)*. |
+| Coolify cleanup jobs prune our images or stopped containers | Registry images (re-pullable); paused projects are stopped containers with our labels — if a prune removes them, reconcile recreates them from desired state (volumes are never pruned by container prune). Measured (Coolify 4.7.6, section 15): its container prune touches only `coolify.managed=true` containers, so ours are never removed; its image cleanup runs `docker rmi` (no `-f`) on every tagged image without `coolify.managed=true`, so an image no container uses (pulled ahead of a release, job images after their container is gone) is deleted, while one used by a stopped container stays. |
 | Let's Encrypt limits on sslip.io are shared worldwide and with the other teams on this IP (sslip.io is not on the Public Suffix List); a new project can wait for a certificate, and our issuance uses quota others need | Hostname reuse, weekly new-host cap, fixed branch host pool, `certificate pending` status (7.3); path-based routing as fallback; the real domain removes the problem by configuration. |
 | Builders with root on a shared host | Shared-host rule (section 5): only `sb-*`/`selfbase-*` objects and selfbase paths without asking; before/after listing of foreign containers, networks, volumes in every wave's exit. |
 | Memory: 16 GB with no swap, caps sum to the budget but another team's spike can still OOM the host | Hard per-container caps, admission at overcommit 1.0, optional systemd slice cap, capacity screen. |
@@ -937,3 +937,82 @@ step comes:
 4. Enter third-party secrets (SMTP, OAuth clients, SMS) in Studio; builders never see them.
 5. Take the CorteQS handoff of each wave to the team for approval.
 6. Provide the real wildcard domain when it exists (then: one settings change, 7.3).
+
+## 15. Server facts (measured 2026-11-22)
+
+Read-only, over SSH as root, by wave 1 task 1. `<ip>` is the server's address, `<BASE>` is
+`<ip>.sslip.io`. Other teams' object names are not recorded here; the full before-listing stays on the
+server (`/opt/selfbase/proofs/before.txt`, see `docs/proofs/wave1-before.md`).
+
+### 15.1 Facts
+
+| Fact | Value | Command |
+|---|---|---|
+| Proxy container, image | `coolify-proxy`, `traefik:v3.6` (floating tag), running Traefik **v3.6.22**, restart `unless-stopped`, compose project `coolify-proxy` from `/data/coolify/proxy/docker-compose.yml` | `docker inspect coolify-proxy --format '{{.Config.Image}}'`, label `org.opencontainers.image.version` |
+| Proxy networks | `coolify` (10.0.1.0/24 + an IPv6 /64, attachable bridge, 11 containers) and the v1 resource's network (Coolify joins the proxy *into* a compose resource's network) | `docker inspect coolify-proxy --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}'` |
+| Entrypoints | `http` (:80), `https` (:443, HTTP/3 on), both `encodequerysemicolons=true`, `http2.maxConcurrentStreams=250`; `ping` on `http` | `docker inspect coolify-proxy --format '{{json .Config.Cmd}}'` |
+| Certificate resolver | `letsencrypt`: HTTP-01 on entrypoint `http`, storage `/traefik/acme.json` | same |
+| Docker provider | `providers.docker=true`, `exposedbydefault=false`, no default network, no constraints; file provider `/traefik/dynamic/` (watched) | same |
+| Global HTTP→HTTPS redirect | **None.** The only file-provider router is Coolify's `catchall` (`PathPrefix(/)`, entrypoints `http`+`https`, service `noop`, priority -1000). Coolify apps redirect per router with a label middleware `redirect-to-https` (`redirectscheme.scheme=https`). | `cat /data/coolify/proxy/dynamic/default_redirect_503.yaml`; v1 `core` labels |
+| Ports published by the proxy | 80/tcp, 443/tcp, 443/udp, 8080/tcp (dashboard, `api.insecure=false`) | `/data/coolify/proxy/docker-compose.yml` |
+| Docker Engine / API | 29.6.1, API 1.55 (min 1.40) | `docker version` |
+| cgroup | driver `systemd`, cgroup v2 (`cgroup2fs`); `selfbase.slice` not active | `docker info -f '{{.CgroupDriver}} {{.CgroupVersion}}'`, `stat -fc %T /sys/fs/cgroup`, `systemctl show selfbase.slice` |
+| Storage driver | `overlayfs` via the containerd snapshotter (`io.containerd.snapshotter.v1`, containerd image store), root `/var/lib/docker` | `docker info` |
+| live-restore / userns-remap / rootless | off / off / off (security options: apparmor, seccomp builtin, cgroupns) | `docker info` |
+| Daemon config | `log-driver json-file` (`max-size 10m`, `max-file 3`); `default-address-pools` **10.0.0.0/8, size /24** | `cat /etc/docker/daemon.json`, `docker info -f '{{.DefaultAddressPools}}'` |
+| RAM, swap, cores | 32016 MiB total, 28206 MiB available (10205 free + reclaimable cache), swap 0, 8 cores | `free -m`, `nproc` |
+| Disk (Docker root and `/opt`) | `/dev/vda1` 464G, 449G free (4% used) | `df -h /var/lib/docker /opt` |
+| Docker usage | 36 images (17 in use, 2.4 GB reclaimable), 17 containers, 14 volumes, build cache 5.6 GB (0 in use) | `docker system df` |
+| Docker networks (6) | `bridge` 10.0.0.0/24, `coolify` 10.0.1.0/24, one foreign bridge 10.0.2.0/24, v1 resource 10.0.3.0/24, `host`, `none`. Nothing in 10.207.0.0/16. | `docker network inspect $(docker network ls -q) --format '{{.Name}} {{range .IPAM.Config}}{{.Subnet}} {{end}}'` |
+| Listening ports 5000–7000 | tcp 6001, 6002 (Coolify realtime), IPv4 and IPv6; no UDP | `ss -lntuH` |
+| Listening ports 54000–55000 | none (tcp or udp) | `ss -lntuH` |
+| UDP 5514 on 127.0.0.1 | free | `ss -lnuH` |
+| Other listeners | 22, 80, 443 (tcp+udp), 8000 (Coolify UI), 8080, 127.0.0.1:18080, 53 on 127.0.0.53/54 | `ss -lntuH` |
+| Host firewall | `ufw` inactive, iptables `INPUT` policy ACCEPT: a published port is reachable from the internet | `ufw status`, `iptables -S INPUT` |
+| Coolify | `ghcr.io/coollabsio/coolify:4.7.6` (+ `coolify-db`, `coolify-redis`, `coolify-sentinel:1.1.5`, `coolify-proxy`) | `docker ps -a --format '{{.Names}} {{.Image}}'` |
+| Coolify cleanup: what it runs | Source `app/Actions/Server/CleanupDocker.php` at tag `v4.7.6`: (1) `docker rm` of stopped containers **with `coolify.managed=true`** except the proxy and `coolify.type=database\|application\|service`; (2) `docker image prune -f` (dangling), then `docker rmi` (no `-f`) of every tagged image that has no `coolify.managed=true` label and is not a Coolify application repository or the current helper — `rmi` fails on an image any container (running or stopped) uses, so **unused images are deleted, images of stopped containers stay**; (3) `docker builder prune -af` and buildx prune; (4) old helper/realtime/sentinel images; (5) `docker volume prune -af` only if "delete unused volumes" is on; (6) `docker network prune -f` only if "delete unused networks" is on. | read from github.com/coollabsio/coolify at `v4.7.6` |
+| Coolify cleanup: when | Documented defaults of that version: `force_docker_cleanup=true` (runs on schedule regardless of disk use), `docker_cleanup_frequency='0 0 * * *'` (00:00 UTC; host timezone is UTC), `delete_unused_volumes=false`, `delete_unused_networks=false`; also after a resource stop when disk use ≥ the threshold. **The server's actual values live in Coolify's database/UI and were not read** (no exec into `coolify-db`); the owner confirms them in the Coolify UI (Server → Docker Cleanup). Docker's event buffer holds no prune history. | migrations `2024_09_06_062534`, `2024_09_07_185402`, `2024_09_22_165240` at `v4.7.6`; `docker events --since 48h` |
+| v1 resource | Coolify compose resource `<v1-resource>`; containers `{core,rest,db,fn,backup}-<v1-resource>-20261122T065708` (all running; `rest` is `postgrest/postgrest:v14.1`, the others are built images `<v1-resource>_<svc>:<commit>`); network `<v1-resource>` (10.0.3.0/24; `core` is on it only, the proxy joined it); volumes `<v1-resource>_{pgdata,storage,backups,denocache}` plus one anonymous volume on `backup` | `docker ps -a --filter label=com.docker.compose.project=<uuid>`, `docker inspect --format '{{.Mounts}}'` |
+| v1 `SUPABASE_DIR` | **not set** on `fn` or `core`. `fn` has `FUNCTIONS_DIR` set to a path under `/supabase`, and `/supabase` is a read-only bind of an empty host directory (`/data/coolify/applications/<uuid>/fn/empty`): v1 serves no functions today. | env key names only: `docker inspect <c> --format '{{range .Config.Env}}{{println .}}{{end}}' \| cut -d= -f1` |
+| v1 `SMTP_HOST` | the key exists on `core` with an **empty value** (as do `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`); not on `fn`. SMTP is not configured. | emptiness only, value never printed |
+| v1 routing labels | `traefik.docker.network=<uuid>`, routers `http-0-<uuid>-core-a74a` (entrypoint `http`, middleware `redirect-to-https`) and `https-0-<uuid>-core-a74a` (entrypoint `https`, `tls.certresolver=letsencrypt`, middleware `gzip-sse`), rule `Host(selfbase-corteqs.<BASE>) && PathPrefix(/)`, port 8080 | `docker inspect` labels `traefik.*` |
+| Other tenants | 6 other Coolify application containers on `coolify`; counts of everything not ours are in `docs/proofs/wave1-before.md` | `docker ps -a` |
+
+### 15.2 sslip.io certificates (nothing issued)
+
+| Check | Result |
+|---|---|
+| crt.sh, `%.<ip>.sslip.io` | crt.sh answered 502 Bad Gateway on every attempt (JSON wildcard and identity queries); not available today |
+| Cert Spotter (`api.certspotter.com/v1/issuances?domain=<ip>.sslip.io&include_subdomains=true`, unexpired) | **2** certificates, both in the last 7 days: one other app's host (2026-11-21T22:19Z) and `selfbase-corteqs.<BASE>` (2026-11-22T05:30Z). Worldwide sslip.io issuance cannot be counted from here. |
+| Proxy log (`docker logs coolify-proxy`, 1739 lines since 2026-07-05) | 0 lines matching `rateLimited` / `too many certificates`. The ACME errors in the log are daily renewal failures (403 unauthorized) for other teams' own domains, not sslip.io. |
+| `selfbase-corteqs.<BASE>` | valid: `CN=selfbase-corteqs.<BASE>`, issuer Let's Encrypt `YR2`, not before 2026-11-22 05:30:55 UTC, not after 2027-02-20 (`openssl s_client -servername …`) |
+
+Reading: no sign of rate limiting; three new hosts look obtainable. The sslip.io-wide weekly count
+stays outside our view.
+
+### 15.3 Chosen values
+
+| Setting | Value | Reason |
+|---|---|---|
+| `PROXY_NETWORK` | `coolify` | the proxy's own network, attachable |
+| `PROXY_ENTRYPOINT_HTTP` | `http` | from the proxy command line |
+| `PROXY_ENTRYPOINT_HTTPS` | `https` | same |
+| `PROXY_CERTRESOLVER` | `letsencrypt` | same |
+| `PROXY_TRAEFIK_MAJOR` | `3` | v3.6.22 |
+| `PROJECT_SUBNET_POOL` | `10.207.0.0/16` | overlaps no existing subnet. It lies inside the daemon's default pool `10.0.0.0/8`; Docker hands out pool /24s first-free from 10.0.0.0 and skips subnets in use, so Coolify's networks reach 10.207 only after ~53 000 networks. |
+| `DB_PORT_RANGE` | `54000-54999` (wave 2) | nothing listens there; the host has no firewall, so a published port is public |
+| `LOG_SYSLOG_ADDR` | `udp://127.0.0.1:5514` | free |
+| `CGROUP_PARENT` | `selfbase.slice` | systemd cgroup driver, cgroup v2 |
+
+### 15.4 Where a fact differs from the text above
+
+- **Coolify's cleanup deletes images no container uses** (15.1). Images used by stopped containers
+  stay and our containers are never pruned, but an image pulled ahead of use, or a job image after its
+  container is removed, is gone after the next nightly cleanup. This is the case D-1 of the wave 1 plan
+  leaves to the controller (a provisioner token or a re-pull step).
+- **The "delete unused volumes/networks" settings were not read.** Defaults are off; if either is on, a
+  project volume or network that briefly has no container (between remove and recreate) could be
+  pruned at 00:00 UTC. The owner confirms both are off.
+- AC-9's reason ("default address pools allow only ~31 networks") does not hold here: the pool is
+  10.0.0.0/8 in /24s. The decision (explicit /27 subnets) is unaffected.
+- No global HTTP→HTTPS redirect exists, which the design already assumes (own `sb-<ref>-redirect`).
