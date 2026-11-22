@@ -91,6 +91,7 @@ const OTHER_TX = /^(rollback|abort|savepoint|release|prepare transaction|commit 
 const PLAIN_BEGIN = /^(begin( transaction| work)?|start transaction)$/
 // change how the server (and psql) lex quotes, so the scan would no longer match what runs
 const SCS_ON = /^set\s+(session\s+|local\s+)?standard_conforming_strings\s*(to|=)\s*'?on'?\s*;?$/i
+const UTF8_ENC = /^set\s+(session\s+|local\s+)?(client_encoding\s*(to|=)|names)\s*'?utf-?8'?\s*;?$/i
 
 // Checks a migration runs in psql exactly as read here and as one transaction. Returns { error } or
 // { commitAt, ownBegin, beginEnd }: the offset of its COMMIT (a BEGIN ... COMMIT wrapper, which 200 of
@@ -135,9 +136,18 @@ export function scan(sql) {
   for (const s of stmts) {
     if (NO_TX.test(s.t)) return { error: `contains "${s.t.slice(0, 60)}", which cannot run inside a transaction` }
     if (OTHER_TX.test(s.t)) return { error: `contains ${s.t.split(' ')[0].toUpperCase()} (transaction control)` }
-    if (/\bbackslash_quote\b/.test(s.t) || (/\bstandard_conforming_strings\b/.test(s.t) && !SCS_ON.test(sql.slice(s.at, s.end).trim()))) {
-      return { error: `changes how quotes are read ("${s.t.slice(0, 60)}"); only standard_conforming_strings = on is allowed` }
+    const raw = sql.slice(s.at, s.end).trim()
+    if (/\bbackslash_quote\b/.test(s.t) || (/\bstandard_conforming_strings\b/.test(s.t) && !SCS_ON.test(raw)) ||
+        (/^set (session |local )?(client_encoding|names)\b/.test(s.t) && !UTF8_ENC.test(raw))) {
+      return { error: `changes how quotes or text are read ("${s.t.slice(0, 60)}"); only standard_conforming_strings = on and UTF8 are allowed` }
     }
+    // sync runs the file read-only except inside its one transaction; nothing may switch that back
+    if (/\b(default_transaction_read_only|transaction_read_only)\b/.test(s.t) || /^set (session |local )?transaction\b.*\bread\b/.test(s.t) ||
+        /^set session characteristics\b/.test(s.t) || /^reset all\b/.test(s.t)) {
+      return { error: `changes the transaction read-only mode ("${s.t.slice(0, 60)}"), which sync relies on` }
+    }
+    const cfg = /\bset_config\s*\(\s*'(standard_conforming_strings|backslash_quote|client_encoding|default_transaction_read_only|transaction_read_only)'/i.exec(raw)
+    if (cfg) return { error: `calls set_config('${cfg[1]}', ...), which changes how sync's session reads the file` }
   }
   const begins = stmts.filter((s) => /^(begin|start transaction)\b/.test(s.t))
   const commits = stmts.filter((s) => /^(commit|end)\b/.test(s.t))
@@ -153,6 +163,7 @@ export function scan(sql) {
   if (begin && !ownBegin && !PLAIN_BEGIN.test(begin.t)) {
     return { error: 'has a BEGIN with options that is not its first statement, so the options would not take effect' }
   }
+  if (ownBegin && /\bread only\b/.test(begin.t)) return { error: 'has a READ ONLY BEGIN; a migration has to write' }
   return { commitAt: commit ? commit.at : -1, ownBegin, beginEnd: ownBegin ? begin.end : 0 }
 }
 
@@ -367,12 +378,15 @@ select 'V', version, coalesce(name, '') from supabase_migrations.schema_migratio
     // else one added on line 1; the record goes before the file's COMMIT, or a COMMIT is added.
     // Tripwire, independent of the scan: a guard created right after that BEGIN (on the same line, so
     // error line numbers stay the file's) is dropped by any COMMIT, and the record block reads it first.
+    // The session is read-only by default and only the one intended transaction is read-write, so after
+    // a COMMIT or ROLLBACK the scan missed, every later write fails instead of committing on its own.
     const t = f.text
     const b = s.ownBegin ? s.beginEnd : 0
     const c = s.commitAt < 0 ? t.length : s.commitAt
     const guard = `create temp table _selfbase_sync_guard () on commit drop; insert into selfbase.sync_inflight (name) values (${lit(f.name)});`
     const rec = `\nreset role;\nselect from pg_temp._selfbase_sync_guard;\ndelete from selfbase.sync_inflight where name = ${lit(f.name)};\n${record(f)}`
-    const sql = `${s.ownBegin ? '' : 'begin; '}${t.slice(0, b)} ${guard} ${t.slice(b, c)}` +
+    const sql = `set default_transaction_read_only = on; ${s.ownBegin ? '' : 'begin read write; '}${t.slice(0, b)}` +
+      `${s.ownBegin ? ' set transaction read write;' : ''} ${guard} ${t.slice(b, c)}` +
       (s.commitAt < 0 ? `\n;${rec}commit;\n` : `${rec}${t.slice(c)}`)
     const r = run('', sql)
     // "already in progress" is expected when sync's BEGIN wraps a later plain BEGIN of the file; "no
@@ -380,16 +394,27 @@ select 'V', version, coalesce(name, '') from supabase_migrations.schema_migratio
     const out = r.stderr.split('\n').filter((l) => l && !/there is already a transaction in progress/.test(l))
       .map((l) => l.replace(/^psql:<stdin>:/, `${f.name}:`))
     const unseenCommit = out.some((l) => /there is no transaction in progress/.test(l))
+    const guardGone = out.some((l) => /_selfbase_sync_guard" does not exist/.test(l))
     if (r.status !== 0 || unseenCommit) {
-      const left = query(`select name from selfbase.sync_inflight where name = ${lit(f.name)};
-delete from selfbase.sync_inflight where name = ${lit(f.name)};`).length
-      if (left || unseenCommit) {
+      const tail = `(${done} applied before it):\n${out.join('\n')}`
+      const check = run("-At", `select name from selfbase.sync_inflight where name = ${lit(f.name)};
+delete from selfbase.sync_inflight where name = ${lit(f.name)};`)
+      if (check.status !== 0) {
+        stop(`sync: FAILED ${f.name}: could not determine whether it committed; it is NOT recorded; inspect the database ` +
+          `before running sync again ${tail}\n${check.stderr.trim()}`)
+      }
+      if (check.stdout.trim() || unseenCommit) {
         const msg = `sync: FAILED ${f.name}: it committed outside the expected transaction; it is NOT recorded; ` +
-          `inspect the database before running sync again (${done} applied before it):\n${out.join('\n')}`
+          `inspect the database before running sync again ${tail}`
         done++ // its changes are in the database, so PostgREST still has to reload
         stop(msg)
       }
-      stop(`sync: FAILED ${f.name} (rolled back; ${done} applied before it):\n${out.join('\n')}`)
+      if (guardGone) {
+        stop(`sync: FAILED ${f.name}: sync's guard was gone when the record was to be written (the file dropped it, ` +
+          'ran DISCARD TEMP, or ended the transaction with a COMMIT or ROLLBACK the scan did not see); it is NOT recorded; ' +
+          `the database state must be inspected before running sync again ${tail}`)
+      }
+      stop(`sync: FAILED ${f.name} (rolled back) ${tail}`)
     }
     done++
     console.log(`sync: applied ${f.name}`)

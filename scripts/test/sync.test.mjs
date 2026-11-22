@@ -98,19 +98,62 @@ describe('sync', () => {
     assert.equal(sql("select to_regclass('t13.t') is null and to_regclass('t13.u') is null"), 't')
   })
 
+  // With standard_conforming_strings off (the setting name comes from a VALUES row, which no static scan
+  // can follow), psql and the server read 'a\', ' as one string and run what follows; the scan reads
+  // two strings and sees nothing.
+  const hide = (sqlText) => "select set_config(x, 'off', false) from (values ('standard_conforming_strings')) v(x);\n" +
+    `create table t13.h (id int);\nselect 'a\\', '; ${sqlText} -- '\nselect 2;\ncreate table t13.after (id int);\n`
+
   test('tripwire: a COMMIT the scan cannot see fails the run truthfully and records nothing', () => {
-    // With standard_conforming_strings off (set inside a string, so the scan does not see it), psql and
-    // the server read 'a\', ' as one string and run the commit; the scan reads it as two strings.
-    const hidden = "select set_config('standard_conforming_strings', 'off', false);\ncreate table t13.h (id int);\n" +
-      "select 'a\\', '; commit; -- '\nselect 2;\n"
+    const hidden = hide('commit;')
     assert.equal(scan(hidden).error, undefined) // the scan is fooled; the tripwire must catch it
     const r = sync(repo({ [M1]: hidden }))
     assert.equal(r.status, 1)
     assert.match(r.stderr, new RegExp(`FAILED ${M1}: it committed outside the expected transaction; it is NOT recorded; ` +
       'inspect the database before running sync again'))
+    assert.match(r.stderr, /read-only transaction/) // what followed the hidden COMMIT could not write
     assert.doesNotMatch(r.stderr, /rolled back/)
     assert.equal(applied(), '')
-    assert.equal(sql("select to_regclass('t13.h') is not null"), 't') // it did commit
+    assert.equal(sql("select to_regclass('t13.h') is not null and to_regclass('t13.after') is null"), 't')
+    noGuard()
+  })
+
+  test('tripwire: after a hidden ROLLBACK nothing can commit, and the message says rolled back', () => {
+    const hidden = hide('rollback; create table t13.x ();')
+    assert.equal(scan(hidden).error, undefined)
+    const r = sync(repo({ [M1]: hidden }))
+    assert.equal(r.status, 1)
+    assert.match(r.stderr, /read-only transaction/)
+    assert.match(r.stderr, new RegExp(`FAILED ${M1} \\(rolled back\\)`)) // true: nothing committed
+    assert.equal(applied(), '')
+    assert.equal(sql("select to_regclass('t13.h') is null and to_regclass('t13.x') is null and to_regclass('t13.after') is null"), 't')
+    noGuard()
+  })
+
+  test('tripwire: a hidden COMMIT that re-creates the guard in a new transaction still fails', () => {
+    const r = sync(repo({ [M1]: hide('commit; begin; create temp table _selfbase_sync_guard () on commit drop;') }))
+    assert.equal(r.status, 1)
+    assert.match(r.stderr, /committed outside the expected transaction; it is NOT recorded/)
+    assert.equal(applied(), '')
+    noGuard()
+  })
+
+  test('a guard dropped inside the open transaction (DISCARD TEMP) is reported in words', () => {
+    const r = sync(repo({ [M1]: 'create table t13.d (id int);\ndiscard temp;\n' }))
+    assert.equal(r.status, 1)
+    assert.match(r.stderr, /sync's guard was gone when the record was to be written \(the file dropped it, ran DISCARD TEMP/)
+    assert.equal(applied(), '')
+    assert.equal(sql("select to_regclass('t13.d') is null"), 't')
+  })
+
+  test('plain and wrapper files with DDL, DML and set_config(search_path) still apply and record', () => {
+    const body = "create table t13.p (id int);\ninsert into t13.p values (1);\nselect set_config('search_path', '', false);\n" +
+      'update t13.p set id = 2;\n'
+    const d = repo({ [M1]: body, [M2]: `begin;\n${body.replace(/t13\.p/g, 't13.q')}commit;\n` })
+    const r = sync(d)
+    assert.equal(r.status, 0, r.stderr)
+    assert.equal(applied(), `${M1},${M2}`)
+    assert.equal(sql('select (select id from t13.p) + (select id from t13.q)'), '4')
     noGuard()
   })
 
@@ -410,10 +453,27 @@ test('scan: unterminated constructs are refused with their line', () => {
 test('scan: \\encoding only UTF8; settings that change quote lexing are refused', () => {
   assert.equal(scan("\\encoding 'utf8'\nselect 1;\n").error, undefined)
   assert.match(scan('\\encoding LATIN1\nselect 1;\n').error, /meta-command \\encoding LATIN1/)
-  assert.match(scan('set standard_conforming_strings = off;\n').error, /changes how quotes are read/)
-  assert.match(scan("set local standard_conforming_strings to 'off';\n").error, /changes how quotes are read/)
+  assert.match(scan('set standard_conforming_strings = off;\n').error, /changes how quotes or text are read/)
+  assert.match(scan("set local standard_conforming_strings to 'off';\n").error, /changes how quotes or text are read/)
   assert.equal(scan("set standard_conforming_strings to 'on';\nselect 1;\n").error, undefined)
-  assert.match(scan('set backslash_quote = on;\n').error, /changes how quotes are read/)
+  assert.match(scan('set backslash_quote = on;\n').error, /changes how quotes or text are read/)
+  assert.match(scan("select set_config('standard_conforming_strings', 'off', false);\n").error, /set_config\('standard_conforming_strings'/)
+  assert.match(scan("select set_config( 'backslash_quote', 'on', true);\n").error, /set_config\('backslash_quote'/)
+  assert.match(scan("set client_encoding = 'LATIN1';\n").error, /changes how quotes or text are read/)
+  assert.match(scan("set names 'SQL_ASCII';\n").error, /changes how quotes or text are read/)
+  assert.equal(scan("set client_encoding = 'UTF8';\nset names utf8;\n").error, undefined)
+})
+
+test('scan: nothing may change the read-only mode sync runs the file in', () => {
+  for (const s of ['set default_transaction_read_only = off;', 'set transaction read write;', 'set local transaction_read_only = off;',
+    "select set_config('default_transaction_read_only', 'off', false);", 'set session characteristics as transaction read write;',
+    'reset all;', 'reset default_transaction_read_only;', 'alter role postgres set default_transaction_read_only = off;']) {
+    assert.match(scan(`select 1;\n${s}\n`).error ?? '', /read-only mode|set_config/, s)
+  }
+  assert.match(scan('begin read only;\nselect 1;\ncommit;\n').error, /READ ONLY BEGIN/)
+  assert.match(scan('select 1;\nbegin read write;\nselect 2;\ncommit;\n').error, /BEGIN with options/)
+  assert.equal(scan('begin read write;\nselect 1;\ncommit;\n').error, undefined)
+  assert.equal(scan('set transaction isolation level serializable;\n').error, undefined)
 })
 
 test('scan: casts, slices and time literals are not psql variables', () => {
