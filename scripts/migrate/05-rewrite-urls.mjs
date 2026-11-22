@@ -78,6 +78,20 @@ export function parseUrl(name, value) {
   }
 }
 
+// Every table in the supabase_realtime publication without core's trigger: selfbase.enable_realtime for
+// it ('enabled'), or 'no id column' when the trigger cannot work (the caller reports it, not fatal).
+// Idempotent: a table that has the trigger is not listed. Used by sync.mjs and 06-realtime-cron.mjs.
+export const REALTIME_FOLLOW = `with todo as (
+  select c.oid, format('%I.%I', p.schemaname, p.tablename) as rel,
+         exists (select 1 from pg_attribute a where a.attrelid = c.oid and a.attname = 'id' and not a.attisdropped) as has_id
+    from pg_publication_tables p
+    join pg_namespace n on n.nspname = p.schemaname
+    join pg_class c on c.relnamespace = n.oid and c.relname = p.tablename
+   where p.pubname = 'supabase_realtime'
+     and not exists (select 1 from pg_trigger t where t.tgrelid = c.oid and t.tgname = 'selfbase_realtime'))
+select rel, case when has_id then (select 'enabled' from selfbase.enable_realtime(oid)) else 'no id column' end as what
+  from todo order by rel;`
+
 // Trailing dots are stripped: abc.supabase.co. is the same host.
 export const isSupabaseHost = (url) => /\.supabase\.(co|com)$/i.test(new URL(url).hostname.replace(/\.+$/, ''))
 
