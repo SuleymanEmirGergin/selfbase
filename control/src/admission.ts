@@ -8,8 +8,9 @@ import { projectCapMb } from './sizes.ts'
 export type Size = 'micro' | 'small' | 'medium'
 type Sizes = Parameters<typeof projectCapMb>[1]
 
-// Supabase's project statuses. Only these two cost no memory; any other status, known or not, counts as running.
-const STOPPED = ['INACTIVE', 'REMOVED']
+// Supabase's project statuses. Only these cost no memory; any other status, known or not, counts as running.
+// REMOVE_FAILED counts as stopped; a delete that failed before its remove step may still hold memory until retried.
+const STOPPED = ['INACTIVE', 'REMOVED', 'REMOVE_FAILED']
 export const RUNNING_STATUSES = ['ACTIVE_HEALTHY', 'ACTIVE_UNHEALTHY', 'COMING_UP', 'GOING_DOWN', 'INIT_FAILED', 'PAUSING',
   'PAUSE_FAILED', 'RESIZING', 'RESTARTING', 'RESTORE_FAILED', 'RESTORING', 'UNKNOWN', 'UPGRADING']
 
