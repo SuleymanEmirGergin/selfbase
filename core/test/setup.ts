@@ -33,6 +33,6 @@ Object.assign(process.env, {
 })
 
 afterAll(async () => {
-  const { pool } = await import('../src/db.ts')
-  await pool.end()
+  const { closeDb } = await import('../src/db.ts')
+  await closeDb()
 })

@@ -18,7 +18,7 @@ export type JwtClaims = {
 export type AppEnv = { Variables: { claims: JwtClaims | null } }
 
 const key = new TextEncoder().encode(config.jwtSecret)
-const ROLES = ['anon', 'authenticated', 'service_role']
+export const ROLES: readonly string[] = ['anon', 'authenticated', 'service_role']
 
 /** Signs claims with HS256; exp is set from expiresInSec (any exp in claims is overridden). */
 export function sign(claims: Omit<JwtClaims, 'exp'> & { exp?: number }, expiresInSec: number): Promise<string> {
@@ -26,9 +26,9 @@ export function sign(claims: Omit<JwtClaims, 'exp'> & { exp?: number }, expiresI
   return new SignJWT({ ...claims, iat: now, exp: now + expiresInSec }).setProtectedHeader({ alg: 'HS256', typ: 'JWT' }).sign(key)
 }
 
-/** Verifies signature, expiry and role; throws on any invalid token. */
+/** Verifies signature, required exp and role; throws on any invalid token. */
 export async function verify(token: string): Promise<JwtClaims> {
-  const { payload } = await jwtVerify(token, key, { algorithms: ['HS256'] })
+  const { payload } = await jwtVerify(token, key, { algorithms: ['HS256'], requiredClaims: ['exp'] })
   if (!ROLES.includes(payload.role as string)) throw new Error('invalid role claim')
   return payload as unknown as JwtClaims
 }

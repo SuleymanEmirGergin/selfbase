@@ -37,6 +37,7 @@ services:
     build:
       context: .
       dockerfile: core/Dockerfile
+    init: true
     restart: unless-stopped
     ports:
       - "${CORE_PORT:-8080}:8080"

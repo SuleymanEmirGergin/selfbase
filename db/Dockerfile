@@ -8,4 +8,4 @@ RUN sed -i 's#apt.postgresql.org/pub/repos/apt/#apt-archive.postgresql.org/pub/r
 
 COPY bootstrap/ /docker-entrypoint-initdb.d/
 
-CMD ["postgres", "-c", "shared_preload_libraries=pg_cron", "-c", "cron.database_name=postgres"]
+CMD ["postgres", "-c", "shared_preload_libraries=pg_cron", "-c", "cron.database_name=postgres", "-c", "wal_level=logical"]

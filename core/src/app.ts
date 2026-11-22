@@ -15,7 +15,7 @@ app.use(
   '*',
   cors({
     origin: '*',
-    allowHeaders: ['authorization', 'apikey', 'content-type', 'x-client-info', 'prefer', 'range', 'x-upsert'],
+    // no allowHeaders: Hono echoes Access-Control-Request-Headers, so every supabase-js header passes
     exposeHeaders: ['content-range'],
   }),
 )
@@ -28,9 +28,13 @@ app.route('/realtime/v1', realtimeRouter)
 app.route('/admin', adminRouter)
 
 /** Forwards the request to target with the mount prefix stripped from the path. */
-const forward = (target: string, prefix: string) => (c: Context) => {
+const forward = (target: string, prefix: string) => async (c: Context) => {
   const url = new URL(c.req.url)
-  return proxy(target + (url.pathname.slice(prefix.length) || '/') + url.search, { raw: c.req.raw })
+  try {
+    return await proxy(target + (url.pathname.slice(prefix.length) || '/') + url.search, { raw: c.req.raw })
+  } catch {
+    return c.json({ error: 'upstream_unavailable' }, 502)
+  }
 }
 app.all('/rest/v1/*', forward(config.pgrstUrl, '/rest/v1'))
 app.all('/functions/v1/*', forward(config.fnUrl, '/functions/v1'))

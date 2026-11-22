@@ -9,3 +9,5 @@ dist/
 .vitest/
 .test-storage/
 .test-functions/
+.env.*
+!.env.example

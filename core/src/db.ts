@@ -1,18 +1,21 @@
 import pg from 'pg'
 import type { PoolClient } from 'pg'
 import { config } from './config.ts'
+import { ROLES } from './jwt.ts'
 import type { JwtClaims } from './jwt.ts'
 
-/** Superuser pool. End-user requests must go through asUser(), never this directly. */
+/** Superuser pool for core's own bookkeeping. End-user requests must go through asUser(), never this. */
 export const pool = new pg.Pool({ ...config.db, max: 10 })
 
-const ROLES = new Set(['anon', 'authenticated', 'service_role'])
+// Same login PostgREST uses: NOINHERIT and can only switch to the API roles, never superuser.
+const userPool = new pg.Pool({ ...config.db, user: 'authenticator', max: 10 })
 
 /** Runs fn in a transaction as the JWT's role with request.jwt.claims set, like PostgREST does. */
 export async function asUser<T>(claims: JwtClaims | null, fn: (c: PoolClient) => Promise<T>): Promise<T> {
   const role = claims?.role ?? 'anon'
-  if (!ROLES.has(role)) throw new Error(`invalid role: ${role}`)
-  const client = await pool.connect()
+  if (!ROLES.includes(role)) throw new Error(`invalid role: ${role}`)
+  const client = await userPool.connect()
+  let broken: Error | undefined
   try {
     await client.query('begin')
     await client.query(`select set_config('role', $1, true), set_config('request.jwt.claims', $2, true)`, [
@@ -23,9 +26,14 @@ export async function asUser<T>(claims: JwtClaims | null, fn: (c: PoolClient) =>
     await client.query('commit')
     return result
   } catch (err) {
-    await client.query('rollback').catch(() => {})
+    await client.query('rollback').catch((e: Error) => (broken = e))
     throw err
   } finally {
-    client.release()
+    client.release(broken)
   }
+}
+
+/** Closes both pools (tests, shutdown). */
+export async function closeDb(): Promise<void> {
+  await Promise.all([pool.end(), userPool.end()])
 }
