@@ -23,5 +23,5 @@ export const paused = createMiddleware(async (c, next) => {
       where d.hostname = $1 and p.status <> all($2) and p.status <> 'REMOVED'`,
     [host, DESIRED_RUNNING],
   )
-  return rowCount ? c.json({ message: 'project paused' }, 540 as ContentfulStatusCode) : c.json({ message: 'not found' }, 404)
+  return rowCount ? c.json({ message: 'project is not running' }, 540 as ContentfulStatusCode) : c.json({ message: 'not found' }, 404)
 })

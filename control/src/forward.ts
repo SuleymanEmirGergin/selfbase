@@ -42,6 +42,10 @@ export async function adminFetch(p: Target, actor: string, url: URL, init: { met
   }
 }
 
+// platform schemas hold password hashes, tokens, decrypted secrets and internal queues: reading their rows is as much
+// as running SQL (/admin/users, which leaves the secrets out, stays a read)
+const PLATFORM_SCHEMAS = ['auth', 'vault', 'selfbase', 'pgsodium', 'net', 'supabase_functions', 'storage', 'realtime', 'extensions']
+
 /** The admin path the way core will route it (decoded, slashes collapsed, case folded): for the permission check only. */
 function actionFor(method: string, pathname: string): Action {
   let path: string
@@ -51,9 +55,8 @@ function actionFor(method: string, pathname: string): Action {
     throw new ApiError(400, 'invalid_path', 'the path is not valid')
   }
   const canon = path.toLowerCase().replace(/\/{2,}/g, '/').replace(/\/+$/, '')
-  // the auth schema holds password hashes and tokens: reading its rows is as much as running SQL (/admin/users,
-  // which leaves them out, stays a read)
-  if (canon === '/admin/sql' || canon.startsWith('/admin/rows/auth/')) return 'project.sql'
+  const schema = /^\/admin\/rows\/([^/]+)\//.exec(canon)?.[1]
+  if (canon === '/admin/sql' || (schema && PLATFORM_SCHEMAS.includes(schema))) return 'project.sql'
   return method === 'GET' || method === 'HEAD' ? 'project.read' : 'project.write'
 }
 

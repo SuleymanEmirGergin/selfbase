@@ -65,7 +65,8 @@ describe('admin forwarding', () => {
 
   test('rows of the auth schema (password hashes) need developer, however the path is spelled', async () => {
     const n = core.seen.length
-    for (const path of ['/rows/auth/users', '/rows/AUTH/users', '/rows/%61uth/users', '//rows//auth/identities'])
+    for (const path of ['/rows/auth/users', '/rows/AUTH/users', '/rows/%61uth/users', '//rows//auth/identities',
+      '/rows/vault/decrypted_secrets', '/rows/selfbase/admin_audit', '/rows/Selfbase/http_queue', '/rows/storage/objects'])
       expect((await withToken(reader.token, 'GET', `${A()}${path}`)).status, path).toBe(403)
     expect(core.seen.length).toBe(n)
     expect((await withToken(dev.token, 'GET', `${A()}/rows/auth/users`)).status).toBe(200)
@@ -149,7 +150,7 @@ describe('hosts', () => {
     for (const path of ['/', '/platform/login', '/v1/projects', '/health', '/index.html', `/platform/projects/${p.ref}/admin/schemas`]) {
       const res = await app.request(path, { method: path === '/platform/login' ? 'POST' : 'GET', headers: { host } })
       expect(res.status, path).toBe(540)
-      expect(await res.json()).toEqual({ message: 'project paused' })
+      expect(await res.json()).toEqual({ message: 'project is not running' })
     }
     // every status where the project is not meant to serve, not only INACTIVE
     for (const status of ['PAUSING', 'PAUSE_FAILED', 'RESTORING', 'RESTORE_FAILED']) {
