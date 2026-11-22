@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Downloads every object listed in dump/storage.objects.jsonl from Supabase Storage into
-// STORAGE_DIR/<bucket>/<name> (the folder bound to core's storage volume, or docker cp it there).
+// STORAGE_DIR/<bucket>/<name> on this computer (run it as STORAGE_DIR=./data/storage node ...), then copy that folder into core's storage volume (docs/REHBER.md section 7).
 // Existing files are skipped, so it can be re-run. Prints downloaded / skipped / failed counts;
 // exits 1 if any failed. Env (or .env at the repo root): SUPABASE_URL, SUPABASE_SERVICE_KEY, STORAGE_DIR.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'

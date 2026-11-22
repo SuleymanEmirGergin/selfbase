@@ -3,7 +3,7 @@
 Source of truth for selfbase auth defaults. No secrets in this file.
 
 ## URL configuration
-- Site URL: `https://<v1-host>.<server-ip>.sslip.io/`
+- Site URL: `https://<coolify-host>/`
 - Redirect allowlist: `http://localhost:8099/**`, `http://127.0.0.1:8099/**`
 
 ## Sign-ups

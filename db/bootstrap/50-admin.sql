@@ -1,4 +1,4 @@
--- Admin panel audit log: one row per admin write and per SQL runner execution (Task 6)
+-- Admin panel audit log: one row per admin write and per SQL runner execution
 create table selfbase.admin_audit (
   id bigserial primary key,
   at timestamptz not null default now(),

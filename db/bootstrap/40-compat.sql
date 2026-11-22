@@ -1,5 +1,5 @@
 -- Supabase compatibility shims needed to load the CorteQS baseline dump and its migrations
--- unedited (Task 10). Each block names the migration or dump section that needs it.
+-- unedited. Each block names the migration or dump section that needs it.
 -- Runs after the postgis image's 10_postgis.sh.
 
 -- The image's tiger/topology extensions go (CorteQS uses neither). tiger depends on fuzzystrmatch,
