@@ -1,0 +1,50 @@
+// Node settings, read once from the environment at start (loadSettings). A bad value stops startup.
+import { ProvisionError } from './names.ts'
+
+export type NodeSettings = { registry: string; templateVersion: string; proxyNetwork: string; entrypointHttp: string
+  entrypointHttps: string; certResolver: string; logSyslogAddr: string; cgroupParent: string; backupHostDir: string
+  subnetPool: string; controlContainer: string; controlNetwork: string }
+
+export const VERSION_RE = /^[0-9A-Za-z._-]{1,64}$/
+const OCTET = '(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)'
+const CIDR_RE = new RegExp(`^${OCTET}\\.${OCTET}\\.${OCTET}\\.${OCTET}/(3[0-2]|[12]?\\d)$`)
+
+// IPv4 network in CIDR form; the address must be the network address of its prefix.
+export function parseCidr(cidr: unknown): { base: number; prefix: number; mask: number } {
+  const m = typeof cidr === 'string' ? CIDR_RE.exec(cidr) : null
+  if (!m) throw new ProvisionError(400, 'invalid_subnet', 'subnet must be an IPv4 CIDR')
+  const base = m.slice(1, 5).reduce((a, o) => a * 256 + Number(o), 0)
+  const prefix = Number(m[5])
+  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0
+  if (((base & mask) >>> 0) !== base) throw new ProvisionError(400, 'invalid_subnet', 'subnet is not a network address')
+  return { base, prefix, mask }
+}
+
+export function loadSettings(env: Record<string, string | undefined> = process.env): NodeSettings {
+  const need = (k: string) => env[k] || fail(`${k} is required`)
+  const s: NodeSettings = {
+    registry: need('REGISTRY'),
+    templateVersion: need('TEMPLATE_VERSION'),
+    proxyNetwork: env.PROXY_NETWORK ?? 'coolify',
+    entrypointHttp: env.PROXY_ENTRYPOINT_HTTP ?? 'http',
+    entrypointHttps: env.PROXY_ENTRYPOINT_HTTPS ?? 'https',
+    certResolver: env.PROXY_CERTRESOLVER ?? 'letsencrypt',
+    logSyslogAddr: env.LOG_SYSLOG_ADDR ?? '',
+    cgroupParent: env.CGROUP_PARENT ?? '',
+    backupHostDir: env.BACKUP_HOST_DIR ?? '',
+    subnetPool: env.PROJECT_SUBNET_POOL ?? '10.207.0.0/16',
+    controlContainer: env.CONTROL_CONTAINER ?? 'selfbase-control',
+    controlNetwork: env.CONTROL_NETWORK ?? 'selfbase',
+  }
+  if (!/^[a-z0-9]+([._:/-][a-z0-9]+)*$/.test(s.registry)) fail('REGISTRY is not a registry path')
+  if (!VERSION_RE.test(s.templateVersion)) fail('TEMPLATE_VERSION is not a version')
+  if (s.backupHostDir && (!/^(\/[A-Za-z0-9._-]+)+$/.test(s.backupHostDir) || /\/\.\.?(\/|$)/.test(s.backupHostDir))) {
+    fail('BACKUP_HOST_DIR must be an absolute path')
+  }
+  parseCidr(s.subnetPool)
+  return s
+}
+
+function fail(message: string): never {
+  throw new Error(`settings: ${message}`)
+}
