@@ -49,8 +49,10 @@ const applyVerification = (type: MailKind, userId: string, email: string) =>
     const r = type === 'email_change'
       ? await tx.query(`update auth.users set email = email_change, email_change = '', email_confirmed_at = coalesce(email_confirmed_at, now()),
           updated_at = now() where id = $1 and email_change = $2`, [userId, email])
-      : await tx.query(`update auth.users set email_confirmed_at = coalesce(email_confirmed_at, now()), updated_at = now()
-          where id = $1 and email = $2`, [userId, email])
+      : await tx.query(`update auth.users set email_confirmed_at = coalesce(email_confirmed_at, now()),
+          -- a magic or recovery link proves the address, not a password set before anyone proved it (pre-account takeover)
+          encrypted_password = case when email_confirmed_at is null and $3 then null else encrypted_password end,
+          updated_at = now() where id = $1 and email = $2`, [userId, email, type !== 'signup'])
     if (!r.rowCount) return false
     await tx.query(`update auth.identities set identity_data = identity_data || jsonb_build_object('email', $2::text, 'email_verified', true),
       updated_at = now() where user_id = $1 and provider = 'email'`, [userId, email])

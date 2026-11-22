@@ -26,8 +26,10 @@ function pathRegex(path: string): RegExp {
 
 function matches(url: URL, pattern: string): boolean {
   // wildcards only in the path: the origin part is compared exactly, as parsed URLs
-  const m = pattern.match(/^(https?:\/\/[^/*?#]+)(\/.*)$/)
+  // no path ("http://localhost:3000") means the origin's root, with or without the trailing slash
+  const m = pattern.match(/^(https?:\/\/[^/*?#]+)(\/.*)?$/)
   if (!m) return false
+  m[2] ??= '/'
   let origin: string
   try {
     origin = new URL(m[1]).origin

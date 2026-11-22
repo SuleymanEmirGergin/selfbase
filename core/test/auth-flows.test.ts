@@ -196,6 +196,44 @@ describe('email links', () => {
     await mails(e, 2)
   })
 
+  it('repeat signup of an unconfirmed email replaces the earlier password and data', async () => {
+    const e = email()
+    config.authConfirmEmail = true
+    await call('POST', '/signup', { email: e, password: 'attacker-password', data: { who: 'attacker' } })
+    await mails(e)
+    await pool.query(`update auth.users set confirmation_sent_at = now() - interval '61 seconds' where email = $1`, [e])
+    expect((await call('POST', '/signup', { email: e, password: PW, data: { who: 'owner' } })).status).toBe(200)
+    const link = linkIn((await mails(e, 2))[1].html)
+    expect(fragment(await open(link)).get('type')).toBe('signup')
+    expect((await call('POST', '/token?grant_type=password', { email: e, password: 'attacker-password' })).status).toBe(400)
+    expect((await call('POST', '/token?grant_type=password', { email: e, password: PW })).status).toBe(200)
+    expect((await pool.query('select raw_user_meta_data from auth.users where email = $1', [e])).rows[0].raw_user_meta_data).toEqual({ who: 'owner' })
+  })
+
+  it('magic link and recovery on an unconfirmed user drop the unproven password; signup link keeps it', async () => {
+    for (const path of ['/otp', '/recover']) {
+      const e = email()
+      await signUpConfirmOn(e)
+      await pool.query(`update auth.users set confirmation_sent_at = null where email = $1`, [e])
+      await call('POST', path, { email: e, create_user: false })
+      const res = await open(linkIn((await mails(e, 2))[1].html))
+      expect(fragment(res).get('access_token'), path).toBeTruthy()
+      const row = (await pool.query('select email_confirmed_at, encrypted_password from auth.users where email = $1', [e])).rows[0]
+      expect(row.email_confirmed_at, path).toBeTruthy()
+      expect(row.encrypted_password, path).toBeNull()
+    }
+    const e = email()
+    await open(linkIn((await signUpConfirmOn(e)).html))
+    expect((await pool.query('select encrypted_password from auth.users where email = $1', [e])).rows[0].encrypted_password).toBeTruthy()
+  })
+
+  it('two concurrent uses of one link: exactly one signs in', async () => {
+    const link = linkIn((await signUpConfirmOn()).html)
+    const results = await Promise.all([open(link), open(link)])
+    expect(results.filter((r) => fragment(r).get('access_token')).length).toBe(1)
+    expect(results.filter((r) => fragment(r).get('error_code') === 'otp_expired').length).toBe(1)
+  })
+
   it('repeat signup of a confirmed email sends nothing', async () => {
     const s = await session()
     expect((await call('POST', '/signup', { email: s.user.email, password: PW })).status).toBe(200)
@@ -222,7 +260,7 @@ describe('email links', () => {
 
 describe('safeRedirect', () => {
   it('allows exact, trailing * and ** patterns and rejects host tricks', () => {
-    config.authRedirectAllowlist = ['https://allowed.example/**', 'http://localhost:8099/app/*', 'myapp://callback', 'https://exact.example/cb']
+    config.authRedirectAllowlist = ['https://allowed.example/**', 'http://localhost:8099/app/*', 'myapp://callback', 'https://exact.example/cb', 'http://localhost:3000']
     const site = config.siteUrl
     expect(safeRedirect(undefined)).toBe(site)
     expect(safeRedirect('')).toBe(site)
@@ -232,7 +270,15 @@ describe('safeRedirect', () => {
     expect(safeRedirect('https://allowed.example/')).toBe('https://allowed.example/')
     expect(safeRedirect('https://allowed.example/a/b?c=1')).toBe('https://allowed.example/a/b?c=1')
     expect(safeRedirect('http://localhost:8099/app/x/y')).toBe('http://localhost:8099/app/x/y')
+    // an entry without a path is that origin's root, with or without the slash
+    expect(safeRedirect('http://localhost:3000')).toBe('http://localhost:3000')
+    expect(safeRedirect('http://localhost:3000/')).toBe('http://localhost:3000/')
     for (const bad of [
+      'http://localhost:3000/x',
+      'http://localhost:3000/?x=1',
+      'http://localhost:3000.evil.com/',
+      'http://localhost:3000@evil.com/',
+      'http://localhost:30001/',
       'https://allowed.example.evil.com/',
       'https://evil.com/?https://allowed.example/',
       'https://allowed.example@evil.com/',
@@ -291,17 +337,34 @@ function useFakeGoogle() {
   config.google = { clientId: 'test-client-id', clientSecret: GOOGLE_SECRET, authUrl: `${fakeUrl}/auth`,
     tokenUrl: `${fakeUrl}/token`, userinfoUrl: `${fakeUrl}/userinfo` }
 }
+let lastCookie = '' // the nonce cookie set by the last authorize(), "name=value"
+let lastSetCookie = ''
 async function authorize(redirectTo = 'http://localhost:5173/after') {
   const res = await app.request(`/auth/v1/authorize?provider=google&redirect_to=${encodeURIComponent(redirectTo)}`)
   expect(res.status).toBe(302)
+  lastSetCookie = res.headers.get('set-cookie') ?? ''
+  lastCookie = lastSetCookie.split(';')[0]
   return new URL(res.headers.get('location')!)
 }
-const callback = (qs: string) => app.request(`/auth/v1/callback?${qs}`)
+const callback = (qs: string, cookie = lastCookie) => app.request(`/auth/v1/callback?${qs}`, { headers: { cookie } })
+/** authorize + callback in one, with this flow's own cookie (safe to run concurrently). */
+async function googleLogin(code = 'x') {
+  const res = await app.request(`/auth/v1/authorize?provider=google&redirect_to=${encodeURIComponent('http://localhost:5173/after')}`)
+  const state = new URL(res.headers.get('location')!).searchParams.get('state')!
+  return callback(`code=${code}&state=${encodeURIComponent(state)}`, res.headers.get('set-cookie')!.split(';')[0])
+}
 
 describe('google oauth', () => {
   it('authorize redirects to Google with a signed state and no secret', async () => {
     useFakeGoogle()
     const loc = await authorize()
+    expect(lastSetCookie).toMatch(/^sb-oauth-nonce=[\w-]+;/)
+    expect(lastSetCookie).toContain('Path=/auth/v1/callback')
+    expect(lastSetCookie).toContain('HttpOnly')
+    expect(lastSetCookie).toContain('SameSite=Lax')
+    expect(lastSetCookie).toContain('Max-Age=600')
+    expect(lastSetCookie).not.toContain('Secure') // PUBLIC_URL is plain http://localhost in tests
+    expect(lastCookie.split('=')[1]).toBe(JSON.parse(Buffer.from(loc.searchParams.get('state')!.split('.')[1], 'base64url').toString()).nonce)
     expect(loc.origin + loc.pathname).toBe(`${fakeUrl}/auth`)
     expect(loc.searchParams.get('client_id')).toBe('test-client-id')
     expect(loc.searchParams.get('redirect_uri')).toBe(`${config.publicUrl}/auth/v1/callback`)
@@ -370,6 +433,65 @@ describe('google oauth', () => {
     const res = await callback(`code=x&state=${encodeURIComponent(state)}`)
     expect(fragment(res).get('error')).toBeTruthy()
     expect((await pool.query('select 1 from auth.users where email = $1', [e])).rowCount).toBe(0)
+  })
+
+  it('callback without this browser\'s nonce cookie is refused (login CSRF)', async () => {
+    useFakeGoogle()
+    const e = email()
+    googleUser = { sub: String(randomInt(1e9, 9e9)), email: e, email_verified: true }
+    const state = (await authorize()).searchParams.get('state')!
+    const right = lastCookie
+    const qs = `code=x&state=${encodeURIComponent(state)}`
+    for (const cookie of ['', 'sb-oauth-nonce=someone-elses-nonce']) {
+      const res = await callback(qs, cookie)
+      expect(res.status).toBe(302)
+      expect(fragment(res).get('error')).toBe('access_denied')
+      expect(fragment(res).get('access_token')).toBeNull()
+    }
+    expect((await pool.query('select 1 from auth.users where email = $1', [e])).rowCount).toBe(0)
+    const ok = await callback(qs, right)
+    expect(fragment(ok).get('access_token')).toBeTruthy()
+    expect(ok.headers.get('set-cookie')).toMatch(/^sb-oauth-nonce=;.*Max-Age=0/) // cleared
+  })
+
+  it('a confirmed password user keeps the password and gets the Google identity linked', async () => {
+    useFakeGoogle()
+    const s = await session()
+    const before = (await pool.query('select encrypted_password from auth.users where id = $1', [s.user.id])).rows[0].encrypted_password
+    googleUser = { sub: String(randomInt(1e9, 9e9)), email: s.user.email, email_verified: true }
+    const res = await googleLogin()
+    expect((await verify(fragment(res).get('access_token')!)).sub).toBe(s.user.id)
+    const row = (await pool.query('select encrypted_password from auth.users where id = $1', [s.user.id])).rows[0]
+    expect(row.encrypted_password).toBe(before)
+    const providers = (await pool.query('select provider from auth.identities where user_id = $1 order by provider', [s.user.id])).rows
+    expect(providers.map((r) => r.provider)).toEqual(['email', 'google'])
+    config.authConfirmEmail = true
+    expect((await call('POST', '/token?grant_type=password', { email: s.user.email, password: PW })).status).toBe(200)
+  })
+
+  it('a banned email user is refused before anything is linked or confirmed', async () => {
+    useFakeGoogle()
+    const e = email()
+    await signUpConfirmOn(e)
+    await pool.query(`update auth.users set banned_until = now() + interval '1 day' where email = $1`, [e])
+    googleUser = { sub: String(randomInt(1e9, 9e9)), email: e, email_verified: true }
+    const res = await googleLogin()
+    expect(fragment(res).get('error_code')).toBe('user_banned')
+    const row = (await pool.query('select id, email_confirmed_at, encrypted_password from auth.users where email = $1', [e])).rows[0]
+    expect(row.email_confirmed_at).toBeNull()
+    expect(row.encrypted_password).toBeTruthy()
+    expect((await pool.query(`select 1 from auth.identities where user_id = $1 and provider = 'google'`, [row.id])).rowCount).toBe(0)
+  })
+
+  it('two concurrent first logins of one Google account end in the same user', async () => {
+    useFakeGoogle()
+    const e = email()
+    googleUser = { sub: String(randomInt(1e9, 9e9)), email: e, email_verified: true }
+    const [a, b] = await Promise.all([googleLogin('a'), googleLogin('b')])
+    const subA = (await verify(fragment(a).get('access_token')!)).sub
+    expect((await verify(fragment(b).get('access_token')!)).sub).toBe(subA)
+    expect((await pool.query('select 1 from auth.users where email = $1', [e])).rowCount).toBe(1)
+    expect((await pool.query('select 1 from auth.identities where user_id = $1', [subA])).rowCount).toBe(1)
   })
 
   it('missing, unsigned, tampered or expired state is 400', async () => {
@@ -448,5 +570,71 @@ describe('phone', () => {
     expect(row.phone_confirmed_at).toBeTruthy()
     expect(row.phone_change).toBe('')
     expect((await call('POST', '/verify', { type: 'phone_change', phone: p, token: payload.sms.otp })).status).toBe(403)
+  })
+
+  const enablePhone = () => Object.assign(config, { authPhoneEnabled: true, fnUrl: fakeUrl,
+    authSmsHookSecret: `v1,whsec_${Buffer.from('test-hook-secret-bytes').toString('base64')}` })
+  /** PUT /user {phone}; returns the OTP the hook received. */
+  async function requestOtp(token: string, p: string) {
+    hookCalls.length = 0
+    const res = await call('PUT', '/user', { phone: p }, token)
+    expect(res.status).toBe(200)
+    return JSON.parse(hookCalls[0].body).sms.otp as string
+  }
+  const guess = (p: string, token: string) => call('POST', '/verify', { type: 'phone_change', phone: p, token })
+  const wrongFor = (otp: string) => (otp === '000000' ? '111111' : '000000')
+  const allowResend = (id: string) => pool.query(`update auth.users set phone_change_sent_at = now() - interval '61 seconds' where id = $1`, [id])
+
+  it('a code dies after 5 guesses: the 6th fails even when right; 4 wrong + right succeeds', async () => {
+    enablePhone()
+    const s = await session()
+    const p = phone()
+    const otp = await requestOtp(s.access_token, p)
+    for (let i = 0; i < 5; i++) expect((await guess(p, wrongFor(otp))).status).toBe(403)
+    expect((await guess(p, otp)).status).toBe(403)
+
+    const s2 = await session()
+    const p2 = phone()
+    const otp2 = await requestOtp(s2.access_token, p2)
+    for (let i = 0; i < 4; i++) expect((await guess(p2, wrongFor(otp2))).status).toBe(403)
+    expect((await guess(p2, otp2)).status).toBe(200)
+  })
+
+  it('reissuing a code does not reset the guess count', async () => {
+    enablePhone()
+    const s = await session()
+    const p = phone()
+    const first = await requestOtp(s.access_token, p)
+    for (let i = 0; i < 3; i++) expect((await guess(p, wrongFor(first))).status).toBe(403)
+    await allowResend(s.user.id)
+    const second = await requestOtp(s.access_token, p)
+    for (let i = 0; i < 2; i++) expect((await guess(p, wrongFor(second))).status).toBe(403)
+    expect((await guess(p, second)).status).toBe(403)
+  })
+
+  it('SMS sends are 60 s apart per user: 429 over_sms_send_rate_limit and nothing recorded', async () => {
+    enablePhone()
+    const s = await session()
+    await requestOtp(s.access_token, phone())
+    hookCalls.length = 0
+    const other = phone()
+    const res = await call('PUT', '/user', { phone: other }, s.access_token)
+    expect(res.status).toBe(429)
+    expect(await res.json()).toMatchObject({ code: 429, error_code: 'over_sms_send_rate_limit' })
+    expect(hookCalls).toHaveLength(0)
+    expect((await pool.query('select phone_change from auth.users where id = $1', [s.user.id])).rows[0].phone_change).not.toBe(other)
+    await allowResend(s.user.id)
+    expect((await requestOtp(s.access_token, other))).toMatch(/^\d{6}$/)
+  })
+
+  it('an empty AUTH_SMS_HOOK_SECRET refuses to send (500, generic error)', async () => {
+    enablePhone()
+    config.authSmsHookSecret = ''
+    const s = await session()
+    hookCalls.length = 0
+    const res = await call('PUT', '/user', { phone: phone() }, s.access_token)
+    expect(res.status).toBe(500)
+    expect(await res.json()).toMatchObject({ error_code: 'unexpected_failure' })
+    expect(hookCalls).toHaveLength(0)
   })
 })

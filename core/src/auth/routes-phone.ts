@@ -10,11 +10,25 @@ import { sha256, storeToken } from './mail.ts'
 
 const router = new Hono<AppEnv>()
 const MAX_ATTEMPTS = 5
+const SMS_INTERVAL = 60
 
 export const phoneDisabled = () => authError(422, 'phone_provider_disabled', 'Phone provider is disabled')
 
 /** Sends a 6-digit OTP for the user's pending phone change through FN_URL/send-phone-otp-hook (Standard Webhooks signed). */
 export async function sendPhoneOtp(user: UserRow, phone: string): Promise<void> {
+  const failed = () => authError(500, 'unexpected_failure', 'Error sending phone OTP')
+  if (!config.authSmsHookSecret) {
+    console.error('AUTH_SMS_HOOK_SECRET is not set: phone OTP not sent')
+    throw failed()
+  }
+  // per-user minimum gap between SMS sends (same 60 s as for mails)
+  const slot = await pool.query(
+    `update auth.users set phone_change_sent_at = now()
+     where id = $1 and coalesce(phone_change_sent_at, '-infinity') <= now() - make_interval(secs => $2)`,
+    [user.id, SMS_INTERVAL],
+  )
+  if (!slot.rowCount)
+    throw authError(429, 'over_sms_send_rate_limit', `For security purposes, you can only request this after ${SMS_INTERVAL} seconds.`)
   const otp = String(randomInt(0, 1_000_000)).padStart(6, '0')
   await storeToken(user.id, 'phone_change_token', sha256(phone + otp), phone)
   const body = JSON.stringify({ user: toUserJson(user), sms: { otp } })
@@ -29,7 +43,7 @@ export async function sendPhoneOtp(user: UserRow, phone: string): Promise<void> 
     signal: AbortSignal.timeout(10_000),
   }).catch(() => null)
   await res?.body?.cancel()
-  if (!res?.ok) throw authError(500, 'unexpected_failure', 'Error sending phone OTP')
+  if (!res?.ok) throw failed()
 }
 
 router.post('/verify', async (c) => {

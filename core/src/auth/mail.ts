@@ -25,13 +25,18 @@ const SENT_AT: Record<MailKind, string> = {
   email_change: 'email_change_sent_at',
 }
 
-/** Stores the hash of a one-time token, replacing the user's previous token of that type. */
+/**
+ * Stores the hash of a one-time token, replacing the user's previous token of that type. Failed attempts carry
+ * over while the previous token was still live, so reissuing a code never buys fresh guesses.
+ */
 export async function storeToken(userId: string, tokenType: string, tokenHash: string, relatesTo: string): Promise<void> {
   await pool.query(
     `insert into auth.one_time_tokens (user_id, token_type, token_hash, relates_to) values ($1, $2, $3, $4)
      on conflict (user_id, token_type) do update
-       set token_hash = excluded.token_hash, relates_to = excluded.relates_to, attempts = 0, created_at = now(), updated_at = now()`,
-    [userId, tokenType, tokenHash, relatesTo],
+       set token_hash = excluded.token_hash, relates_to = excluded.relates_to,
+         attempts = case when one_time_tokens.created_at > now() - make_interval(secs => $5) then one_time_tokens.attempts else 0 end,
+         created_at = now(), updated_at = now()`,
+    [userId, tokenType, tokenHash, relatesTo, config.authOtpExpiry],
   )
 }
 
@@ -42,8 +47,11 @@ const logFailure = (err: any) => console.error(`auth mail failed: ${err?.code ??
 export const background = (p: Promise<unknown>) => void p.catch(logFailure)
 
 let transport: Transporter | undefined
+let warned = false
 async function deliver(to: string, subject: string, html: string): Promise<void> {
   if (!config.smtp.host) {
+    if (!warned) console.warn('SMTP_HOST is empty: auth mails are written to selfbase.mail_log and not delivered')
+    warned = true
     await pool.query(`insert into selfbase.mail_log (to_email, subject, html) values ($1, $2, $3)`, [to, subject, html])
     return
   }
