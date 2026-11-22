@@ -175,6 +175,8 @@ end
 $$;
 SQL
   echo 'commit;'
+  # after the commit, so PostgREST reloads its schema cache only when the phase succeeded
+  echo "notify pgrst, 'reload schema';"
 } | q > /dev/null
 EOS
 )"
