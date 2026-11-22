@@ -19,10 +19,12 @@ const TABS = [
 ] as const
 const OUTSIDE_TABS = { new: NewProject, import: ImportProject } as const
 
-/** Only same-site paths are followed after sign-in. */
+/** Only same-origin targets are followed after sign-in (`/\evil.com` and the like resolve elsewhere and are dropped). */
 const nextPath = () => {
-  const n = new URLSearchParams(location.search).get('next') ?? ''
-  return n.startsWith('/') && !n.startsWith('//') ? n : ''
+  const n = new URLSearchParams(location.search).get('next')
+  if (!n) return ''
+  const u = new URL(n, location.origin)
+  return u.origin === location.origin ? u.pathname + u.search + u.hash : ''
 }
 const homeOf = (me: Me) => (me.organizations[0] ? `/org/${me.organizations[0].slug}` : '/org')
 
@@ -88,7 +90,7 @@ function Routes({ me, signOut, reload }: { me: Me | null | undefined; signOut: (
   if (me === undefined) return <div className="boot"><Loading /></div>
   if (me === null) return <SignIn onSignedIn={reload} />
   if (first === 'sign-in' || first === '') return <div className="boot"><Loading /></div>
-  if (first === 'project') return <ProjectArea />
+  if (first === 'project') return <ProjectArea me={me} onSignOut={signOut} />
 
   const slug = first === 'org' ? second : first in OUTSIDE_TABS ? second : ''
   const tab = first === 'org' ? third : first
@@ -119,6 +121,9 @@ export default function App() {
 
   const signOut = useCallback(async () => {
     await platform.logout().catch(() => {})
+    // An explicit sign-out keeps no `next`: the next account must not land on this one's page. Replacing the URL
+    // without emitting keeps the redirect effect from adding it back; the render below reads the new path.
+    history.replaceState(null, '', '/sign-in')
     setMe(null)
   }, [])
 

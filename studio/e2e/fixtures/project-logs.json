@@ -1,0 +1,14 @@
+[
+  {
+    "ts": "2026-11-22T10:15:03Z",
+    "msg": "POST /admin/sql 200 12ms"
+  },
+  {
+    "ts": "2026-11-22T10:15:01Z",
+    "msg": "GET /rest/v1/notes 200 4ms"
+  },
+  {
+    "ts": "2026-11-22T10:14:58Z",
+    "msg": "auth: token refreshed for 4f1c2a9e"
+  }
+]

@@ -13,7 +13,7 @@ let signedOut = () => {}
 /** Called when a 401 survives one refresh, so the app can return to the sign-in screen. */
 export const onSignedOut = (fn: () => void) => { signedOut = fn }
 
-type Opts = { body?: unknown; raw?: Blob; contentType?: string; form?: FormData; bearer?: string }
+type Opts = { body?: unknown; raw?: Blob; contentType?: string; form?: FormData; bearer?: string; onHeaders?: (h: Headers) => void }
 
 // Paths whose 401 is an answer, not an expired session.
 const NO_REFRESH = new Set(['/login', '/refresh', '/logout', '/invitations/accept'])
@@ -50,6 +50,7 @@ export async function request<T = unknown>(method: string, path: string, opts: O
     if (await refresh()) res = await send(method, path, opts)
     if (res.status === 401) signedOut()
   }
+  opts.onHeaders?.(res.headers)
   const data = await res.json().catch(() => null)
   if (!res.ok) throw new ApiError(res.status, (data && (data.message || data.error_description || data.msg || data.error)) || `HTTP ${res.status}`)
   return data as T
@@ -86,9 +87,29 @@ export type AuditRow = {
   id: number | string; at: string; actor: string; org_id: string | null; project_id: string | null
   action: string; target: string | null; ip: string | null; details: { status?: number; body_keys?: string[] } | null
 }
+// Task 13 / 14 shapes for the project screens. ServiceState is the provisioner's; memUsageMb is our addition (null
+// when unknown) so the home screen can show memory use next to the limit.
+export type ServiceState = {
+  service: string; exists: boolean; state: string; health: string; specHash: string; templateVersion: string
+  memLimitMb: number; proxyAttached: boolean; memUsageMb?: number | null
+}
+export type JobRef = { id: string; type: string; status: Job['status']; step: number; error: string | null }
+export type ProjectDetail = Project & {
+  size: Size; template_version: string; current_template_version: string; urls: { api: string; legacy: string[] }
+  certificate: 'ok' | 'pending'; smtp_configured: boolean; services: ServiceState[]; last_job: JobRef | null
+}
+/** The masked list: anon is a public key and comes in full; service_role is masked until revealed. */
+export type ApiKey = { name: 'anon' | 'service_role'; api_key: string; type?: string }
+export type Domain = { hostname: string; kind: 'default' | 'legacy' | 'custom' }
+export type Backup = {
+  id: string; kind: string; status: string; started_at: string; finished_at: string | null; size_bytes: number | null; location: string | null
+}
+export type LogService = 'db' | 'rest' | 'core' | 'fn' | 'pooler'
+export type LogLine = { ts: string; msg: string }
 export type ImportResult = { project: Project; job_id: string; ignored: string[]; unknown: string[] }
 
 const org = (slug: string) => `/organizations/${enc(slug)}`
+const prj = (ref: string) => `/projects/${enc(ref)}`
 
 export const platform = {
   login: (email: string, password: string) => request<{ email: string }>('POST', '/login', { body: { email, password } }),
@@ -115,6 +136,26 @@ export const platform = {
   tokens: () => request<AccessToken[]>('GET', '/access-tokens'),
   createToken: (name: string) => request<{ id: string; name: string; token: string }>('POST', '/access-tokens', { body: { name } }),
   deleteToken: (id: string) => request('DELETE', `/access-tokens/${enc(id)}`),
+
+  project: (ref: string) => request<ProjectDetail>('GET', prj(ref)),
+  pause: (ref: string) => request<{ job_id: string }>('POST', `${prj(ref)}/pause`),
+  restore: (ref: string) => request<{ job_id: string }>('POST', `${prj(ref)}/restore`),
+  upgrade: (ref: string) => request<{ job_id: string }>('POST', `${prj(ref)}/upgrade`),
+  deleteProject: (ref: string, confirm_name: string) => request<{ job_id?: string }>('DELETE', prj(ref), { body: { confirm_name } }),
+  apiKeys: (ref: string) => request<ApiKey[]>('GET', `${prj(ref)}/api-keys`),
+  revealKey: (ref: string, name: ApiKey['name']) => request<{ api_key: string }>('POST', `${prj(ref)}/api-keys/reveal`, { body: { name } }),
+  domains: (ref: string) => request<Domain[]>('GET', `${prj(ref)}/domains`),
+  addDomain: (ref: string, d: { hostname: string; kind: 'legacy' | 'custom' }) => request<{ job_id: string }>('POST', `${prj(ref)}/domains`, { body: d }),
+  removeDomain: (ref: string, hostname: string) => request<{ job_id: string }>('DELETE', `${prj(ref)}/domains`, { body: { hostname } }),
+  backups: (ref: string) => request<Backup[]>('GET', `${prj(ref)}/backups`),
+  backupNow: (ref: string) => request<{ job_id: string }>('POST', `${prj(ref)}/backups`),
+  exportProject: (ref: string, passphrase: string) => request<{ job_id: string }>('POST', `${prj(ref)}/export`, { body: { passphrase } }),
+  /** Newest first; `fromContainer` when control fell back to the container tail (x-selfbase-log-source: container). */
+  logs: async (ref: string, service: LogService, limit = 200) => {
+    let source = ''
+    const lines = await request<LogLine[]>('GET', `${prj(ref)}/logs?service=${service}&limit=${limit}`, { onHeaders: (h) => { source = h.get('x-selfbase-log-source') ?? '' } })
+    return { lines, fromContainer: source === 'container' }
+  },
 
   auditLog: (slug: string, q: { limit: number; before?: string }) =>
     request<AuditRow[]>('GET', `${org(slug)}/audit-log?limit=${q.limit}${q.before ? `&before=${enc(q.before)}` : ''}`),
@@ -187,7 +228,6 @@ export function projectAdmin(ref: string) {
   }
 }
 
-// shortcut: the v1 pages still import a module-level api; Task 16 moves them onto projectAdmin(ref) and removes this.
-export const api = projectAdmin(location.pathname.split('/')[2] ?? '')
+export type ProjectAdmin = ReturnType<typeof projectAdmin>
 
 export const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e))

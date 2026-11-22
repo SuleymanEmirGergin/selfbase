@@ -1,0 +1,10 @@
+[
+  {
+    "hostname": "corteqsprojectrefaaa.example.test",
+    "kind": "default"
+  },
+  {
+    "hostname": "selfbase-corteqs.example.test",
+    "kind": "legacy"
+  }
+]

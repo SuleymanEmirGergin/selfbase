@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { api, errMsg } from '../api.ts'
+import { errMsg } from '../api.ts'
+import { useAdmin, useCan } from './context.ts'
 import type { User } from '../api.ts'
 import { Empty, ErrorBox, Icon, Loading, confirmDanger, fmtDate, toast } from '../ui.tsx'
 
@@ -35,6 +36,8 @@ export default function Users() {
   const [busy, setBusy] = useState<string | null>(null)
   const [tick, setTick] = useState(0)
   const reload = () => setTick((t) => t + 1)
+  const api = useAdmin()
+  const canWrite = useCan()('project.write')
 
   useEffect(() => {
     const t = setTimeout(() => { setQ(search.trim()); setOffset(0) }, 250)
@@ -118,7 +121,7 @@ export default function Users() {
                       <td className="small">{fmtDate(u.created_at)}</td>
                       <td className="small">{fmtDate(u.last_sign_in_at)}</td>
                       <td>
-                        <div className="row-actions end">
+                        {canWrite && <div className="row-actions end">
                           {!u.email_confirmed_at && (
                             <button className="btn sm" disabled={busy === u.id}
                               onClick={() => act(u, () => api.updateUser(u.id, { email_confirmed: true }), 'E-posta doğrulandı olarak işaretlendi')}>
@@ -131,7 +134,7 @@ export default function Users() {
                           <button className="icon-btn danger" disabled={busy === u.id} onClick={() => remove(u)} aria-label={`${u.email || u.id} kullanıcısını sil`} title="Sil">
                             <Icon name="trash" />
                           </button>
-                        </div>
+                        </div>}
                       </td>
                     </tr>
                   ))}

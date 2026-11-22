@@ -1,0 +1,90 @@
+{
+  "id": "corteqsprojectrefaaa",
+  "ref": "corteqsprojectrefaaa",
+  "organization_id": "8a0f2c1e-0000-4000-8000-0000000000a1",
+  "name": "corteqs",
+  "region": "main",
+  "status": "ACTIVE_HEALTHY",
+  "created_at": "2026-11-20T10:00:00Z",
+  "database": {
+    "host": "db",
+    "version": "17",
+    "postgres_engine": "17",
+    "release_channel": "ga"
+  },
+  "size": "small",
+  "template_version": "2.0.0",
+  "current_template_version": "2.1.0",
+  "urls": {
+    "api": "https://corteqsprojectrefaaa.example.test",
+    "legacy": [
+      "https://selfbase-corteqs.example.test"
+    ]
+  },
+  "certificate": "ok",
+  "smtp_configured": true,
+  "services": [
+    {
+      "service": "db",
+      "exists": true,
+      "state": "running",
+      "health": "healthy",
+      "specHash": "3f9a1c",
+      "templateVersion": "2.0.0",
+      "memLimitMb": 1024,
+      "proxyAttached": false,
+      "memUsageMb": 412
+    },
+    {
+      "service": "rest",
+      "exists": true,
+      "state": "running",
+      "health": "healthy",
+      "specHash": "3f9a1c",
+      "templateVersion": "2.0.0",
+      "memLimitMb": 256,
+      "proxyAttached": false,
+      "memUsageMb": 38
+    },
+    {
+      "service": "core",
+      "exists": true,
+      "state": "running",
+      "health": "healthy",
+      "specHash": "3f9a1c",
+      "templateVersion": "2.0.0",
+      "memLimitMb": 512,
+      "proxyAttached": true,
+      "memUsageMb": 121
+    },
+    {
+      "service": "fn",
+      "exists": true,
+      "state": "running",
+      "health": "healthy",
+      "specHash": "3f9a1c",
+      "templateVersion": "2.0.0",
+      "memLimitMb": 512,
+      "proxyAttached": false,
+      "memUsageMb": 64
+    },
+    {
+      "service": "pooler",
+      "exists": true,
+      "state": "running",
+      "health": "none",
+      "specHash": "3f9a1c",
+      "templateVersion": "2.0.0",
+      "memLimitMb": 32,
+      "proxyAttached": false,
+      "memUsageMb": null
+    }
+  ],
+  "last_job": {
+    "id": "5b7e0c3d-0000-4000-8000-0000000000e1",
+    "type": "project.backup",
+    "status": "succeeded",
+    "step": 3,
+    "error": null
+  }
+}

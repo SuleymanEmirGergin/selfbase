@@ -217,7 +217,9 @@ test('a 401 followed by a good refresh retries the call once', async ({ page }) 
 test('at 375 px nothing overflows horizontally', async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 })
   await mockApi(page, { ...signedIn(), 'GET /me': () => ({ status: 401, body: fx('unauthorized') }), 'POST /refresh': { status: 401 } })
-  const overflow = () => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+  // the page and every scrolling area inside it
+  const overflow = () => page.evaluate(() =>
+    Math.max(...[document.documentElement, ...document.querySelectorAll('.scroll-area, .grid-wrap')].map((el) => el.scrollWidth - el.clientWidth)))
   await page.goto('/sign-in')
   await expect(page.getByRole('button', { name: 'Giriş yap' })).toBeVisible()
   expect(await overflow()).toBeLessThanOrEqual(0)
@@ -229,4 +231,63 @@ test('at 375 px nothing overflows horizontally', async ({ page }) => {
     await expect(page.locator('main h1')).toBeVisible()
     expect(await overflow(), path).toBeLessThanOrEqual(0)
   }
+})
+
+test('next is followed only when it stays on this origin', async ({ page }) => {
+  let session = false
+  const routes = {
+    ...signedIn(),
+    'GET /me': () => (session ? { body: fx('me') } : { status: 401, body: fx('unauthorized') }),
+    'POST /refresh': { status: 401, body: fx('unauthorized') },
+    'POST /login': () => { session = true; return { body: fx('login') } },
+  }
+  const signIn = async (next: string) => {
+    session = false
+    await page.goto(`/sign-in?next=${encodeURIComponent(next)}`)
+    await page.getByLabel('E-posta').fill('owner@example.test')
+    await page.getByLabel('Parola').fill('correct horse battery')
+    await page.getByRole('button', { name: 'Giriş yap' }).click()
+  }
+  await mockApi(page, routes)
+  await signIn('/\\evil.com')
+  await expect(page).toHaveURL(/\/org\/acme$/)
+  await expect(page.getByRole('heading', { name: 'Projeler' })).toBeVisible()
+  await signIn('//evil.com/x')
+  await expect(page).toHaveURL(/\/org\/acme$/)
+  await signIn('/org/acme/members')
+  await expect(page).toHaveURL(/\/org\/acme\/members$/)
+})
+
+test('an explicit sign-out drops next', async ({ page }) => {
+  const api = await mockApi(page, { ...signedIn(), 'POST /logout': { body: {} } })
+  await page.goto('/org/acme/members')
+  await page.getByRole('button', { name: 'Çıkış' }).click()
+  await expect(page.getByRole('button', { name: 'Giriş yap' })).toBeVisible()
+  await expect(page).toHaveURL(/\/sign-in$/)
+  expect(api.count('POST /logout')).toBe(1)
+})
+
+test('the reset screen strips the fragment and never shows its error text', async ({ page }) => {
+  await mockApi(page, { 'GET /me': { status: 401, body: fx('unauthorized') }, 'POST /refresh': { status: 401, body: fx('unauthorized') } })
+  await page.goto('/reset-password#error=access_denied&error_description=Call+555+to+restore+your+account')
+  await expect(page.getByRole('alert')).toHaveText('Bağlantı geçersiz ya da süresi dolmuş. Yeni bir sıfırlama bağlantısı isteyin.')
+  await expect(page.getByText('555')).toHaveCount(0)
+  expect(await page.evaluate(() => location.hash)).toBe('')
+
+  let bearer = ''
+  await page.unrouteAll()
+  await page.goto('about:blank') // a hash-only change would not remount the screen
+  await mockApi(page, {
+    'GET /me': { status: 401, body: fx('unauthorized') },
+    'POST /refresh': { status: 401, body: fx('unauthorized') },
+    'PUT /auth/v1/user': (req) => { bearer = req.headers().authorization ?? ''; return { body: {} } },
+  })
+  await page.goto('/reset-password#access_token=recovery-token-for-tests&type=recovery')
+  await expect(page.getByRole('heading', { name: 'Yeni parola' })).toBeVisible()
+  expect(await page.evaluate(() => location.hash)).toBe('')
+  await page.getByLabel('Yeni parola', { exact: true }).fill('a long new password')
+  await page.getByLabel('Yeni parola (tekrar)').fill('a long new password')
+  await page.getByRole('button', { name: 'Parolayı kaydet' }).click()
+  await expect(page.getByRole('heading', { name: 'Parola değişti' })).toBeVisible()
+  expect(bearer).toBe('Bearer recovery-token-for-tests')
 })

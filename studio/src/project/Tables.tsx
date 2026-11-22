@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
-import { api, errMsg } from '../api.ts'
+import { errMsg } from '../api.ts'
+import { useAdmin, useCan } from './context.ts'
 import type { Column, Relation, Row } from '../api.ts'
 import { Grid, cellText } from '../Grid.tsx'
 import type { Sort } from '../Grid.tsx'
@@ -16,6 +17,7 @@ const JSON_TYPES = new Set(['json', 'jsonb'])
 export function SchemaSelect({ value, onChange }: { value: string; onChange: (s: string) => void }) {
   const [schemas, setSchemas] = useState<string[]>([value])
   const [error, setError] = useState('')
+  const api = useAdmin()
   useEffect(() => {
     let live = true
     api.schemas().then((s) => live && setSchemas(s), (e) => live && setError(errMsg(e)))
@@ -49,6 +51,7 @@ export default function Tables() {
   const [search, setSearch] = useState('')
   const [name, setName] = useState<string | null>(null)
   const [tick, setTick] = useState(0)
+  const api = useAdmin()
 
   useEffect(() => {
     let live = true // a response for a schema that is no longer selected is dropped
@@ -109,6 +112,8 @@ function TableView({ rel }: { rel: Relation }) {
   const [editing, setEditing] = useState<'new' | number | null>(null)
   const [tick, setTick] = useState(0)
   const pkCols = rel.columns.filter((c) => c.is_pk)
+  const api = useAdmin()
+  const canWrite = useCan()('project.write')
 
   useEffect(() => {
     let live = true // only the latest page/sort/filter request may land
@@ -141,7 +146,7 @@ function TableView({ rel }: { rel: Relation }) {
         <RlsBadge rel={rel} />
         <div className="spacer" />
         <button className="icon-btn" onClick={() => setTick((t) => t + 1)} aria-label="Yenile" title="Yenile"><Icon name="refresh" /></button>
-        <button className="btn primary" onClick={() => setEditing('new')}><Icon name="plus" />Satır ekle</button>
+        {canWrite && <button className="btn primary" onClick={() => setEditing('new')}><Icon name="plus" />Satır ekle</button>}
       </div>
       <form className="filterbar" onSubmit={applyFilter} aria-label="Filtre">
         <select aria-label="Filtre kolonu" value={filter.col} onChange={(e) => setFilter({ ...filter, col: e.target.value })}>
@@ -204,7 +209,10 @@ function RowDrawer({ rel, row, onClose, onSaved }: { rel: Relation; row: Row | n
   const pkCols = rel.columns.filter((c) => c.is_pk)
   const pk = row && pkCols.length ? Object.fromEntries(pkCols.map((c) => [c.name, row[c.name]])) : null
   const pkLabel = pk ? Object.entries(pk).map(([k, v]) => `${k}=${cellText(v)}`).join(', ') : ''
-  const readOnly = !!row && !pk
+  const api = useAdmin()
+  const canWrite = useCan()('project.write')
+  const noPk = !!row && !pk
+  const readOnly = noPk || !canWrite
 
   const set = (name: string, patch: Partial<FieldState>) => setForm((f) => ({ ...f, [name]: { ...f[name], ...patch } }))
 
@@ -255,14 +263,14 @@ function RowDrawer({ rel, row, onClose, onSaved }: { rel: Relation; row: Row | n
       onClose={onClose}
       footer={
         <>
-          {row && pk && <button type="button" className="btn danger ghost" onClick={remove} disabled={busy}><Icon name="trash" />Sil</button>}
+          {row && pk && canWrite && <button type="button" className="btn danger ghost" onClick={remove} disabled={busy}><Icon name="trash" />Sil</button>}
           <div className="spacer" />
           <button type="button" className="btn" onClick={onClose}>Vazgeç</button>
           {!readOnly && <button className="btn primary" form="row-form" disabled={busy}>{busy ? 'Kaydediliyor…' : 'Kaydet'}</button>}
         </>
       }>
       <form id="row-form" className="form" onSubmit={save}>
-        {readOnly && <div className="note">Bu tablonun birincil anahtarı yok; satır yalnızca görüntülenebilir.</div>}
+        {noPk && <div className="note">Bu tablonun birincil anahtarı yok; satır yalnızca görüntülenebilir.</div>}
         {rel.columns.map((c) => {
           const f = form[c.name]
           const id = `f-${c.name}`
