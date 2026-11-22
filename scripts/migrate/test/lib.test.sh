@@ -30,4 +30,25 @@ eq "$(url_host "$U")" aws-1-eu-west-2.pooler.supabase.com 'url_host'
 T="$U"; ( refuse_supabase_target T ) 2>/dev/null && { echo 'FAIL guard: supabase.com accepted'; fail=1; } || echo 'ok guard: supabase.com refused'
 T='postgres://u:p@abcdefghijklmnopqrst.supabase.co:5432/postgres'; ( refuse_supabase_target T ) 2>/dev/null && { echo 'FAIL guard: supabase.co accepted'; fail=1; } || echo 'ok guard: supabase.co refused'
 T='postgres://postgres:x@db:5432/postgres'; ( refuse_supabase_target T ) && echo 'ok guard: selfbase accepted' || fail=1
+for T in 'postgres://u:p@abc.supabase.co./postgres' 'postgres://u:p@abc.supabase.co.:5432/postgres' \
+         'postgres://u:p@abc.supabase.com..:6543/postgres'; do
+  ( refuse_supabase_target T ) 2>/dev/null && { echo "FAIL guard: trailing-dot host accepted: $T"; fail=1; } || echo "ok guard: refused $T"
+done
+
+# IPv6 hosts, with and without a port
+( V='postgres://u:p@[::1]:5433/db'; pgenv V; eq "$PGHOST|$PGPORT" '::1|5433' 'pgenv: [IPv6]:port' ) || fail=1
+( V='postgres://u:p@[fe80::1]/db'; pgenv V; eq "$PGHOST|${PGPORT-none}" 'fe80::1|none' 'pgenv: [IPv6] without port' ) || fail=1
+eq "$(url_host 'postgres://u:p@[::1]:5433/db')" '::1' 'url_host: IPv6'
+# Query parameters other than sslmode are refused, by name only
+out="$( V='postgres://u:secret@h/db?sslmode=require&options=-csearch_path%3Dx'; pgenv V 2>&1 )" && { echo 'FAIL pgenv: unsupported parameter accepted'; fail=1; } || true
+eq "$out" "V: unsupported URL parameter 'options' (only sslmode is supported)" 'pgenv: unsupported parameter refused'
+
+# Same path 02 uses: pgenv defined into the container script on stdin (container_run)
+if command -v docker > /dev/null; then
+  X='postgres://user:p%25a\b%40c%3Ad%2Fe@db:5432/postgres'
+  got="$(printf '%s\n' 'pgenv X' 'printf "%s|%s|%s|%s" "$PGUSER" "$PGPASSWORD" "$PGHOST" "${X-unset}"' | X="$X" container_run -e X)"
+  eq "$got" 'user|p%a\b@c:d/e|db|unset' 'container_run: password with % \ @ : / reaches PGPASSWORD'
+else
+  echo 'skip container_run: no docker'
+fi
 exit $fail

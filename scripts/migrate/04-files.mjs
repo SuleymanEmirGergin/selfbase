@@ -6,11 +6,11 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { loadEnv, requireEnv } from './05-rewrite-urls.mjs'
+import { loadEnv, parseUrl, requireEnv } from './05-rewrite-urls.mjs'
 
 loadEnv()
 const [supabaseUrl, key, storageDir] = requireEnv('SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'STORAGE_DIR')
-const base = new URL(supabaseUrl).origin
+const base = parseUrl('SUPABASE_URL', supabaseUrl).origin
 const root = resolve(storageDir)
 const dumpDir = process.env.DUMP_DIR || fileURLToPath(new URL('../../dump', import.meta.url))
 

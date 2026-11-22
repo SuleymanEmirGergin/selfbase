@@ -64,7 +64,7 @@ for (const j of catalog('cron_jobs')) {
     await db.query('commit')
     console.log(`06: cron ${j.jobname || `#${j.jobid}`} ${j.schedule} ${active ? 'ACTIVE' : 'inactive'}`)
   } catch (e) {
-    await db.query('rollback')
+    await db.query('rollback').catch(() => {}) // a dead connection must not end the loop
     console.error(`06: cron ${j.jobname || `#${j.jobid}`}: ${e.message}`)
     failed++
   }

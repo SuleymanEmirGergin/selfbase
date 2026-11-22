@@ -37,6 +37,12 @@ if [ "$n" != 0 ]; then
   echo "replay: public schema holds $n non-extension objects; use a fresh database" >&2
   exit 1
 fi
+# The helpers go on every exit path, installed before they exist (drops are "if exists").
+cleanup() {
+  run -c 'drop event trigger if exists replay_restore_ext' -c 'drop function if exists selfbase.replay_restore_ext()' \
+      -c 'drop table if exists selfbase.replay_public_ext' || true
+}
+trap cleanup EXIT
 # The dump does not create the extensions it uses (a schema-only dump never does), so they are
 # put back into public as soon as the dump's CREATE SCHEMA public runs, then the trigger goes.
 run <<'SQL'
@@ -55,12 +61,6 @@ end $f$;
 create event trigger replay_restore_ext on ddl_command_end when tag in ('CREATE SCHEMA')
   execute function selfbase.replay_restore_ext();
 SQL
-# The helpers go on every exit path, not only after a baseline that loaded.
-cleanup() {
-  run -c 'drop event trigger if exists replay_restore_ext' -c 'drop function if exists selfbase.replay_restore_ext()' \
-      -c 'drop table if exists selfbase.replay_public_ext' || true
-}
-trap cleanup EXIT
 
 start=$(date +%s)
 baseline=$(ls /src/baseline/*.sql | sort | tail -n 1)

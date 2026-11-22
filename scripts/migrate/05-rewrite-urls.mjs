@@ -55,10 +55,22 @@ export function requireEnv(...names) {
   return names.map((n) => process.env[n])
 }
 
-export const isSupabaseHost = (url) => /\.supabase\.(co|com)$/i.test(new URL(url).hostname)
+// Parses a URL from env var `name`; on failure says so without ever printing the value (it may hold a password).
+export function parseUrl(name, value) {
+  try {
+    return new URL(value)
+  } catch {
+    console.error(`${name} is not a valid URL (percent-encode the password)`)
+    process.exit(2)
+  }
+}
+
+// Trailing dots are stripped: abc.supabase.co. is the same host.
+export const isSupabaseHost = (url) => /\.supabase\.(co|com)$/i.test(new URL(url).hostname.replace(/\.+$/, ''))
 
 // The target must be selfbase, never the hosted project being migrated away from.
 export function refuseSupabaseTarget(url) {
+  parseUrl('TARGET_DB_URL', url)
   if (isSupabaseHost(url)) {
     console.error('TARGET_DB_URL points at a Supabase host; it must be the selfbase database')
     process.exit(2)
@@ -75,8 +87,9 @@ export async function connect(url) {
     console.error('pg not found: run `npm ci` in core/ first')
     process.exit(2)
   }
-  const client = new pg.Client({ connectionString: url })
+  let client
   try {
+    client = new pg.Client({ connectionString: url })
     await client.connect()
   } catch (e) {
     console.error(`cannot connect to TARGET_DB_URL: ${e.code || e.message.replace(/postgres(ql)?:\/\/\S+/g, '<db-url>')}`)
@@ -89,8 +102,8 @@ async function main() {
   loadEnv()
   const dryRun = process.argv.includes('--dry-run')
   const [supabaseUrl, publicUrl, dbUrl] = requireEnv('SUPABASE_URL', 'PUBLIC_URL', 'TARGET_DB_URL')
-  const fromHost = new URL(supabaseUrl).host
-  const toOrigin = new URL(publicUrl).origin
+  const fromHost = parseUrl('SUPABASE_URL', supabaseUrl).host
+  const toOrigin = parseUrl('PUBLIC_URL', publicUrl).origin
   if (!fromHost.endsWith('.supabase.co')) {
     console.error('SUPABASE_URL is not a *.supabase.co address')
     process.exit(2)
@@ -115,23 +128,28 @@ async function main() {
   for (const col of cols) {
     const rel = `${db.escapeIdentifier(col.schema)}.${db.escapeIdentifier(col.table)}`
     const ident = db.escapeIdentifier(col.column)
-    await db.query('begin')
-    // updated_at, audit and notification triggers must not fire for a URL rewrite
-    await db.query('set local session_replication_role = replica')
-    const { rows } = await db.query(
-      `select ctid::text as ctid, ${ident}::text as v from ${rel} where strpos(lower(${ident}::text), lower($1)) > 0`,
-      [needle],
-    )
     let changed = 0
-    for (const r of rows) {
-      const next = rewrite(r.v, fromHost, toOrigin)
-      if (next === r.v) continue
-      changed++
-      if (!dryRun) {
-        await db.query(`update ${rel} set ${ident} = $1::${col.type} where ctid = $2::tid`, [next, r.ctid])
+    try {
+      await db.query('begin')
+      // updated_at, audit and notification triggers must not fire for a URL rewrite
+      await db.query('set local session_replication_role = replica')
+      const { rows } = await db.query(
+        `select ctid::text as ctid, ${ident}::text as v from ${rel} where strpos(lower(${ident}::text), lower($1)) > 0`,
+        [needle],
+      )
+      for (const r of rows) {
+        const next = rewrite(r.v, fromHost, toOrigin)
+        if (next === r.v) continue
+        changed++
+        // untyped parameter: assignment semantics, so a value too long for varchar(n) fails, never truncates
+        if (!dryRun) await db.query(`update ${rel} set ${ident} = $1 where ctid = $2::tid`, [next, r.ctid])
       }
+      await db.query('commit')
+    } catch (e) {
+      await db.query('rollback').catch(() => {})
+      console.error(`${col.schema}.${col.table}.${col.column} (${col.type}): ${e.message}; this column was rolled back`)
+      process.exit(1)
     }
-    await db.query('commit')
     if (changed) console.log(`${col.schema}.${col.table}.${col.column}: ${changed}`)
     total += changed
   }

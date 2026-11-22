@@ -1,6 +1,8 @@
 // node --test scripts/migrate/test
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { isSupabaseHost, parseEnv, rewrite } from '../05-rewrite-urls.mjs'
 
 const from = 'abcdefghijklmnopqrst.supabase.co'
@@ -54,4 +56,28 @@ test('Supabase hosts are refused as target', () => {
   assert.equal(isSupabaseHost('postgres://postgres.abc:p@aws-1-eu-west-2.pooler.supabase.com:5432/postgres'), true)
   assert.equal(isSupabaseHost('postgres://postgres:p@abcdefghijklmnopqrst.supabase.co:5432/postgres'), true)
   assert.equal(isSupabaseHost('postgres://postgres:p@localhost:54451/postgres'), false)
+  assert.equal(isSupabaseHost('postgres://u:p@abc.supabase.co./postgres'), true)
+  assert.equal(isSupabaseHost('postgres://u:p@abc.supabase.co.:5432/postgres'), true)
+  assert.equal(isSupabaseHost('postgres://u:p@abc.supabase.com..:6543/postgres'), true)
+})
+
+test('an unparsable URL is reported by name, never echoed', () => {
+  const secret = 'pa/ss#word'
+  const ok = { SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co', PUBLIC_URL: 'https://a.example',
+    TARGET_DB_URL: 'postgres://u:p@localhost:1/db', SUPABASE_SERVICE_KEY: 'k', SERVICE_ROLE_KEY: 'k', STORAGE_DIR: '.' }
+  for (const [script, arg, name] of [
+    ['03-auth-storage.sql.mjs', 'rows', 'TARGET_DB_URL'],
+    ['04-files.mjs', '', 'SUPABASE_URL'],
+    ['05-rewrite-urls.mjs', '--dry-run', 'SUPABASE_URL'],
+    ['05-rewrite-urls.mjs', '--dry-run', 'PUBLIC_URL'],
+    ['05-rewrite-urls.mjs', '--dry-run', 'TARGET_DB_URL'],
+    ['06-realtime-cron.mjs', '', 'TARGET_DB_URL'],
+  ]) {
+    const bad = name === 'TARGET_DB_URL' ? `postgres://u:${secret}@localhost:1/db` : `https://u:${secret}@x`
+    const r = spawnSync(process.execPath, [fileURLToPath(new URL(`../${script}`, import.meta.url)), arg].filter(Boolean),
+      { env: { ...process.env, ...ok, [name]: bad, DUMP_DIR: 'nonexistent' }, encoding: 'utf8', timeout: 20000 })
+    assert.equal(r.status, 2, `${script}: ${r.stderr}`)
+    assert.match(r.stderr, new RegExp(`${name} is not a valid URL \\(percent-encode the password\\)`))
+    assert.ok(!r.stderr.includes(secret) && !r.stdout.includes(secret), `${script} printed the input`)
+  }
 })

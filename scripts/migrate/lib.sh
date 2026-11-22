@@ -16,15 +16,22 @@ load_env() {
   done < "$1"
 }
 
-# Host part of a postgres URL (no credentials).
-url_host() { local u="${1#*://}"; u="${u##*@}"; u="${u%%[/?]*}"; echo "${u%:*}"; }
+# Host part of a postgres URL (no credentials, no port, IPv6 brackets and trailing dots removed).
+url_host() {
+  local u="${1#*://}"
+  u="${u##*@}"; u="${u%%[/?]*}"
+  if [[ $u == \[* ]]; then u="${u%%]*}"; u="${u#\[}"; else u="${u%:*}"; fi
+  while [[ $u == *. ]]; do u="${u%.}"; done
+  echo "$u"
+}
 
-# The target must be selfbase, never the hosted project being migrated away from.
+# The target must be selfbase, never the hosted project being migrated away from. Returns 2 (scripts
+# call `refuse_supabase_target X || exit 2`), so it is also safe in an interactive shell.
 refuse_supabase_target() {
   local h; h="$(url_host "${!1}")"
   if [[ ${h,,} == *.supabase.co || ${h,,} == *.supabase.com ]]; then
     echo "$1 points at a Supabase host; it must be the selfbase database" >&2
-    exit 2
+    return 2
   fi
 }
 
@@ -47,11 +54,42 @@ pgenv() {
   fi
   hostport="${rest%%/*}"
   [[ $rest == */* && -n ${rest#*/} ]] && export PGDATABASE="$(dec "${rest#*/}")"
-  export PGHOST="${hostport%:*}"
-  [[ $hostport == *:* ]] && export PGPORT="${hostport##*:}"
-  for kv in ${q//&/ }; do [ "${kv%%=*}" = sslmode ] && export PGSSLMODE="${kv#*=}"; done
+  if [[ $hostport == \[* ]]; then # [IPv6] or [IPv6]:port
+    PGHOST="${hostport%%]*}"; export PGHOST="${PGHOST#\[}"
+    [[ $hostport == *]:* ]] && export PGPORT="${hostport##*]:}"
+  else
+    export PGHOST="${hostport%:*}"
+    [[ $hostport == *:* ]] && export PGPORT="${hostport##*:}"
+  fi
+  for kv in ${q//&/ }; do
+    if [ "${kv%%=*}" = sslmode ]; then export PGSSLMODE="${kv#*=}"
+    else echo "$1: unsupported URL parameter '${kv%%=*}' (only sslmode is supported)" >&2; return 1; fi
+  done
   unset "$1"
 }
+
+# Runs a bash script read from stdin in postgres:17, with pgenv defined in it. The script (and any
+# data after an `exec psql ...` line, which bash leaves unread) goes on stdin, never into docker's argv.
+# Arguments: docker run options (network, -e NAME, mounts).
+container_run() {
+  { declare -f pgenv; cat; } | MSYS_NO_PATHCONV=1 docker run --rm -i "$@" postgres:17 bash -s
+}
+
+_lib_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# psql against the selfbase target for SQL on stdin: `node 03-auth-storage.sql.mjs rows | psql_target`.
+# Reads the root .env like the scripts (in a subshell, so the calling shell is untouched), refuses a
+# Supabase host, and passes the password via PGPASSWORD inside the container. Optional: DOCKER_NETWORK.
+psql_target() (
+  load_env "$_lib_root/.env"
+  [ -n "${TARGET_DB_URL:-}" ] || { echo "TARGET_DB_URL is not set" >&2; exit 2; }
+  refuse_supabase_target TARGET_DB_URL || exit 2
+  net=()
+  [ -n "${DOCKER_NETWORK:-}" ] && net=(--network "$DOCKER_NETWORK")
+  set -o pipefail
+  { echo 'set -e; pgenv TARGET_DB_URL; exec psql -X -q -v ON_ERROR_STOP=1'; cat; } |
+    container_run "${net[@]}" -e TARGET_DB_URL 2>&1 | redact
+)
 
 # On Linux/macOS the container runs as the caller, so files it writes under dump/ are the caller's.
 docker_user=()

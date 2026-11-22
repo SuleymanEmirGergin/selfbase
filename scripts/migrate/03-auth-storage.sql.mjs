@@ -5,8 +5,8 @@
 //             afterwards every source id must exist in the target, or the transaction aborts.
 //   policies  recreates the source's storage policies and its user triggers on auth.users / storage.objects.
 // Run as:
-//   node scripts/migrate/03-auth-storage.sql.mjs rows | docker run --rm -i [--network ...] -e TARGET_DB_URL \
-//     postgres:17 bash -c 'psql "$TARGET_DB_URL" -X -q -v ON_ERROR_STOP=1'
+//   . scripts/migrate/lib.sh    # once per shell: defines psql_target (password via PGPASSWORD in the container)
+//   node scripts/migrate/03-auth-storage.sql.mjs rows | psql_target
 // Re-runnable: existing rows are kept, policies and triggers are replaced.
 // Env (or .env at the repo root): TARGET_DB_URL (checked: never a Supabase host). Reads DUMP_DIR (default dump/).
 import { existsSync, readFileSync } from 'node:fs'

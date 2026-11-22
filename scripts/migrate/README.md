@@ -6,6 +6,10 @@ reads its values from the environment or from `.env` at the repo root and never 
 **`.env` format** (bash and Node scripts read it the same way): one `KEY=value` per line, the value
 taken literally to the end of the line: no quotes, no inline `#` comments, no `$` expansion, no
 `export`. Windows line endings are fine. A variable already set in the environment wins.
+The root `.env` is also read by docker compose, which strips quotes and inline ` #` comments
+while these scripts keep them: write every value unquoted and without an inline comment so it
+means the same to both. A password with characters that are special in a URL (`/ # ? @ : %`) is
+percent-encoded inside the URL variables.
 
 | Variable | Used by | What |
 |---|---|---|
@@ -18,9 +22,10 @@ taken literally to the end of the line: no quotes, no inline `#` comments, no `$
 | `NOTIFY_DISPATCH_SECRET`, `RADAR_NEWS_CRON_SECRET` | 06 | Optional; the edge functions' values for the two vault secrets |
 | `STORAGE_DIR` | 04 | Host folder that becomes core's storage volume |
 
-`pg_dump`/`psql` 17 run from the `postgres:17` image, and the URLs are turned into `PG*` variables
-inside the container, so no password appears in a command line. 01, 02 and the 03 pipe run in a
-container, so `TARGET_DB_URL` there must be reachable from a container: set `DOCKER_NETWORK` to the
+`pg_dump`/`psql` 17 run from the `postgres:17` image. The container script goes in on stdin and
+turns the URL into `PG*` variables (password in `PGPASSWORD`), so no password appears in a command
+line, neither docker's nor psql's; 05 and 06 hand the URL to `pg` in-process. 01, 02 and the 03 pipe
+(`psql_target` from `lib.sh`) run in a container, so `TARGET_DB_URL` there must be reachable from a container: set `DOCKER_NETWORK` to the
 compose network and use the service name (`db:5432`), or use `host.docker.internal:<port>`. 05 and
 06 run on the host (they use `pg` from `core/node_modules`, so `npm ci` in `core/` first), so their
 `TARGET_DB_URL` uses `localhost:<port>`.
@@ -29,9 +34,9 @@ compose network and use the service name (`db:5432`), or use `host.docker.intern
 if the pooler refuses to export one it says so and the reads are separate.
 
 ```bash
-# psql against the target, used by steps 3 and 5
-psql_target() { docker run --rm -i --network <net> -e TARGET_DB_URL postgres:17 \
-  bash -c 'psql "$TARGET_DB_URL" -X -q -v ON_ERROR_STOP=1'; }
+# psql_target (steps 3 and 5): reads .env like the scripts, refuses a Supabase host, password via
+# PGPASSWORD inside the container; honours DOCKER_NETWORK
+. scripts/migrate/lib.sh
 
 bash scripts/migrate/01-dump.sh                                   # 1. source -> dump/ (gitignored)
 bash scripts/migrate/02-restore.sh pre                            # 2. extensions, tables, functions, rows
@@ -60,16 +65,19 @@ What each step does:
    `supabase_migrations.schema_migrations`, row counts per table. A catalog the pooler role cannot
    read is reported as `NOT READ` and the rest still runs. Files are owner-only (on Linux/macOS the
    container runs as you).
-2. **02-restore.sh pre**: installs the source's extensions (skips `pg_graphql, supabase_vault, pg_net,
-   pgsodium, pg_stat_statements` and says so; moves relocatable ones to the source's schema), loads
-   the pre-data and data sections with `ON_ERROR_STOP=1`, leaving out event triggers, and copies
-   the source's migration history into `supabase_migrations.schema_migrations`. A missing Supabase
-   object is fixed with a shim in `db/bootstrap/`, never by editing the dump.
+2. **02-restore.sh pre**: refuses a target that is not empty, then in one transaction installs the
+   source's extensions (skips `pg_graphql, supabase_vault, pg_net, pgsodium, pg_stat_statements` and
+   says so; moves relocatable ones to the source's schema), loads the pre-data and data sections
+   with `ON_ERROR_STOP=1`, leaving out event triggers, and copies the source's migration history
+   into `supabase_migrations.schema_migrations`. A failure rolls everything back, so fix the cause
+   and run it again. A missing Supabase object is fixed with a shim in `db/bootstrap/`, never by
+   editing the dump.
 3. **03 rows**: copies the auth/storage rows into selfbase's tables (common columns only; source-only
    column names are listed; source triggers off). Every source id must be present afterwards, or it
    aborts. Re-runnable.
-4. **02-restore.sh post**: loads the post-data section, then compares every table's row count
-   (auth and storage included) with `catalog/counts.json`.
+4. **02-restore.sh post**: refuses unless `auth.users`/`auth.identities` hold the source's counts
+   (step 3 ran), then in one transaction loads the post-data section and compares every table's row
+   count (auth and storage included) with `catalog/counts.json`; a mismatch rolls it back.
 5. **03 policies**: recreates the storage policies and the user triggers on `auth.users` and
    `storage.objects`.
 6. **04-files.mjs**: downloads each object to `STORAGE_DIR/<bucket>/<name>`; skips files already
