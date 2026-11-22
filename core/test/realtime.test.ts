@@ -7,6 +7,7 @@ import WebSocket from 'ws'
 import { pool } from '../src/db.ts'
 import { sign } from '../src/jwt.ts'
 import { attachRealtime, stopRealtime } from '../src/realtime/index.ts'
+import { setStatementTimeout } from '../src/realtime/hub.ts'
 
 const server = createServer()
 let base = ''
@@ -44,6 +45,14 @@ beforeAll(async () => {
     alter table public.rt_msgs enable row level security;
     create policy rt_recipient on public.rt_msgs for select using (recipient = auth.uid());
     select selfbase.enable_realtime('public.rt_msgs');
+    drop table if exists public.rt_slow;
+    create or replace function public.rt_sleepy() returns boolean language sql as $$ select pg_sleep(10); select true $$;
+    create table public.rt_slow (id bigserial primary key);
+    alter table public.rt_slow enable row level security;
+    create policy rt_slow_read on public.rt_slow for select using (public.rt_sleepy());
+    select selfbase.enable_realtime('public.rt_slow');
+    drop table if exists public.rt_lock;
+    create table public.rt_lock (id bigserial primary key);
   `)
   await attachRealtime(server)
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
@@ -54,7 +63,7 @@ afterAll(async () => {
   sockets.forEach((s) => s.terminate())
   await stopRealtime()
   await new Promise((r) => server.close(r))
-  await pool.query('drop table if exists public.rt_msgs; drop table if exists public.rt_noid')
+  await pool.query('drop table if exists public.rt_msgs, public.rt_noid, public.rt_slow, public.rt_lock; drop function if exists public.rt_sleepy()')
 })
 
 describe('realtime', () => {
@@ -172,6 +181,67 @@ Sec-WebSocket-Version: 13
     const ok = await connect(await user(randomUUID()))
     ok.ws.send(JSON.stringify({ type: 'ping' }))
     await ok.waitFor((m) => m.type === 'pong')
+  })
+
+  it('a stalled re-select or subscribe check times out and the queue moves on', async () => {
+    setStatementTimeout('300ms')
+    const locker = await pool.connect()
+    try {
+      const a = await connect(await user(randomUUID()))
+      await a.subscribe({ ref: 'slow', table: 'rt_slow', event: 'INSERT' })
+      await pool.query('insert into public.rt_slow default values') // its re-select sleeps 10 s in the RLS policy
+      await sleep(100)
+      a.ws.send(JSON.stringify({ type: 'ping' }))
+      await a.waitFor((m) => m.type === 'pong', 3000)
+      await locker.query('begin; lock table public.rt_lock in access exclusive mode')
+      await a.subscribe({ ref: 'lk', table: 'rt_lock', event: 'INSERT' })
+      expect(a.msgs.find((m) => m.ref === 'lk')).toMatchObject({ type: 'error', message: expect.stringMatching(/timeout/) })
+      a.ws.send(JSON.stringify({ type: 'ping', ref: 'p2' }))
+      await a.waitFor((m) => m.type === 'pong' && a.msgs.filter((x) => x.type === 'pong').length === 2)
+    } finally {
+      setStatementTimeout('5s')
+      await locker.query('rollback')
+      locker.release()
+    }
+  })
+
+  it('closes the connection with 1013 when more than 200 items are queued', async () => {
+    const locker = await pool.connect()
+    try {
+      await locker.query('begin; lock table public.rt_lock in access exclusive mode')
+      const a = await connect(await user(randomUUID()))
+      const closed = new Promise<number>((r) => a.ws.once('close', r))
+      // the first subscribe check waits on the lock, so the rest pile up behind it
+      for (let i = 0; i < 250; i++) a.ws.send(JSON.stringify({ type: 'subscribe', ref: `q${i}`, schema: 'public', table: 'rt_lock', event: 'INSERT' }))
+      expect(await closed).toBe(1013)
+    } finally {
+      await locker.query('rollback')
+      locker.release()
+    }
+  })
+
+  it('does not deliver to a ref unsubscribed after the change was snapshotted', async () => {
+    const A = randomUUID()
+    const a = await connect(await user(A))
+    const watcher = await connect(await user(A))
+    await a.subscribe({ ref: 'x', table: 'rt_msgs', event: 'INSERT' })
+    await a.subscribe({ ref: 'y', table: 'rt_msgs', event: 'INSERT' })
+    await watcher.subscribe({ ref: 'w', table: 'rt_msgs', event: 'INSERT' })
+    const locker = await pool.connect()
+    try {
+      await locker.query('begin; lock table public.rt_lock in access exclusive mode')
+      // block a's queue, then queue the unsubscribe before the change arrives
+      a.ws.send(JSON.stringify({ type: 'subscribe', ref: 'blk', schema: 'public', table: 'rt_lock', event: 'INSERT' }))
+      a.ws.send(JSON.stringify({ type: 'unsubscribe', ref: 'x' }))
+      await sleep(100)
+      await pool.query(`insert into public.rt_msgs (recipient) values ($1)`, [A])
+      await watcher.waitFor((m) => m.type === 'change') // the change has been fanned out to a's queue too
+    } finally {
+      await locker.query('rollback')
+      locker.release()
+    }
+    await a.waitFor((m) => m.type === 'change' && m.ref === 'y')
+    expect(a.msgs.filter((m) => m.type === 'change').map((m) => m.ref)).toEqual(['y'])
   })
 
   it('closes the connection with 4401 on a failed auth message', async () => {

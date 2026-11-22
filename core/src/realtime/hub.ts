@@ -44,7 +44,7 @@ export function listen(channel: string, onPayload: (payload: string) => void, on
 }
 
 type Sub = { schema: string; table: string; event: string; filter?: { col: string; value: string } }
-type Conn = { ws: WebSocket; claims: JwtClaims; subs: Map<string, Sub>; queue: Promise<unknown> }
+type Conn = { ws: WebSocket; claims: JwtClaims; subs: Map<string, Sub>; queue: Promise<unknown>; pending: number; dropped: boolean }
 type Change = { schema: string; table: string; type: 'INSERT' | 'UPDATE' | 'DELETE'; id: unknown }
 
 const conns = new Set<Conn>()
@@ -52,11 +52,34 @@ const EVENTS = ['INSERT', 'UPDATE', 'DELETE', '*']
 const FILTER = /^([A-Za-z_][A-Za-z0-9_]*)=eq\.(.*)$/s
 const MAX_SUBS = 100
 const MAX_PAYLOAD = 16 * 1024
+const MAX_PENDING = 200
+let statementTimeout = '5s'
+/** Tests only: shorten the per-query timeout of the hub's queries. */
+export const setStatementTimeout = (v: string) => void (statementTimeout = v)
 const ident = pg.escapeIdentifier
 const send = (c: Conn, msg: object) => c.ws.send(JSON.stringify(msg))
 const live = (c: Conn) => c.claims.exp * 1000 > Date.now()
+/** asUser with a statement timeout, so a lock or slow policy cannot stall a connection's queue. */
+const asHub = <T>(claims: JwtClaims, fn: (db: pg.PoolClient) => Promise<T>) =>
+  asUser(claims, async (db) => {
+    await db.query(`select set_config('statement_timeout', $1, true)`, [statementTimeout])
+    return fn(db)
+  })
 // Per-connection FIFO: a connection's messages and deliveries run one at a time, in order.
-const enqueue = (c: Conn, fn: () => Promise<unknown>) => (c.queue = c.queue.then(fn).catch(() => {}))
+// Over MAX_PENDING queued items the client is not keeping up (or is flooding): close and drop the queue.
+const enqueue = (c: Conn, fn: () => Promise<unknown>) => {
+  if (c.dropped) return
+  if (++c.pending > MAX_PENDING) {
+    c.dropped = true
+    c.subs.clear()
+    conns.delete(c)
+    return c.ws.close(1013, 'too many pending messages')
+  }
+  c.queue = c.queue
+    .then(() => (c.dropped ? undefined : fn()))
+    .catch(() => {})
+    .finally(() => c.pending--)
+}
 /** eq compares as text against a non-null value; `col=eq.null` matches nothing. */
 const matches = (row: Record<string, unknown>, f?: Sub['filter']) => {
   if (!f) return true
@@ -91,7 +114,7 @@ async function onMessage(c: Conn, raw: string) {
     return send(c, { type: 'error', ref, message: `at most ${MAX_SUBS} subscriptions per connection` })
   try {
     // Fails early on a missing table or filter column, or no SELECT grant, as the subscriber's own role.
-    await asUser(c.claims, (db) => db.query(`select ${f ? ident(f[1]) : ''} from ${ident(schema)}.${ident(m.table)} limit 0`))
+    await asHub(c.claims, (db) => db.query(`select ${f ? ident(f[1]) : ''} from ${ident(schema)}.${ident(m.table)} limit 0`))
   } catch (err) {
     return send(c, { type: 'error', ref, message: (err as Error).message })
   }
@@ -100,6 +123,8 @@ async function onMessage(c: Conn, raw: string) {
 }
 
 // shortcut: one query per subscribed connection per change; batch by identical claims when a table exceeds ~100 subscribers
+// refs are snapshotted when the change arrives; an unsubscribe queued before it may have run since.
+const current = (c: Conn, ref: string, sub: Sub) => c.subs.get(ref) === sub
 /** Re-reads the changed row once for this connection and sends it to each of its matching refs. */
 async function deliver(c: Conn, refs: [string, Sub][], ch: Change) {
   if (!live(c)) return
@@ -107,15 +132,15 @@ async function deliver(c: Conn, refs: [string, Sub][], ch: Change) {
   if (ch.type === 'DELETE') {
     // The row is gone so RLS cannot be asked; only service_role may learn the id.
     if (c.claims.role !== 'service_role') return
-    for (const [ref, sub] of refs) if (matches({ id: ch.id }, sub.filter)) send(c, { ...base, ref, new: {}, old: { id: ch.id } })
+    for (const [ref, sub] of refs) if (current(c, ref, sub) && matches({ id: ch.id }, sub.filter)) send(c, { ...base, ref, new: {}, old: { id: ch.id } })
     return
   }
   const claims = c.claims
-  const row = await asUser(claims, async (db) =>
+  const row = await asHub(claims, async (db) =>
     (await db.query(`select to_jsonb(t) as r from ${ident(ch.schema)}.${ident(ch.table)} t where id = $1`, [ch.id])).rows[0]?.r,
   ).catch(() => undefined)
   if (!row || !live(c) || c.claims !== claims || c.ws.readyState !== c.ws.OPEN) return
-  for (const [ref, sub] of refs) if (matches(row, sub.filter)) send(c, { ...base, ref, new: row, old: {} })
+  for (const [ref, sub] of refs) if (current(c, ref, sub) && matches(row, sub.filter)) send(c, { ...base, ref, new: row, old: {} })
 }
 
 function onChange(payload: string) {
@@ -152,7 +177,7 @@ export function startHub(server: Server): Promise<void> {
     }
     if (socket.destroyed) return
     ws.handleUpgrade(req, socket, head, (sock) => {
-      const c: Conn = { ws: sock, claims, subs: new Map(), queue: Promise.resolve() }
+      const c: Conn = { ws: sock, claims, subs: new Map(), queue: Promise.resolve(), pending: 0, dropped: false }
       conns.add(c)
       // Bad frames (unmasked, bad UTF-8, over maxPayload) surface here; with no listener they crash core.
       sock.on('error', () => sock.terminate())
