@@ -1,0 +1,73 @@
+// All runtime settings, read once from the environment. A missing or bad value stops startup naming the key
+// (never its value).
+import { fileURLToPath } from 'node:url'
+
+export type Config = ReturnType<typeof loadConfig>
+
+export function loadConfig(env: Record<string, string | undefined> = process.env) {
+  const need = (k: string) => env[k] || fail(`${k} is required`)
+  const num = (k: string, dflt: number) => {
+    const v = env[k]
+    if (v === undefined || v === '') return dflt
+    const n = Number(v)
+    return Number.isFinite(n) && n >= 0 ? n : fail(`${k} must be a non-negative number`)
+  }
+  const oneOf = <T extends string>(k: string, dflt: T, allowed: T[]) => {
+    const v = (env[k] || dflt) as T
+    return allowed.includes(v) ? v : fail(`${k} must be one of ${allowed.join(', ')}`)
+  }
+
+  const masterKeyB64 = need('SELFBASE_MASTER_KEY')
+  // canonical base64 of exactly 32 bytes: Buffer.from would silently accept a truncated or padded key
+  if (!/^[A-Za-z0-9+/]{43}=$/.test(masterKeyB64)) fail('SELFBASE_MASTER_KEY must be base64 of exactly 32 bytes')
+  const jwtSecret = need('CONTROL_JWT_SECRET')
+  if (jwtSecret.length < 32) fail('CONTROL_JWT_SECRET must be at least 32 characters')
+  const base = need('BASE_DOMAIN')
+
+  return {
+    port: num('PORT', 8080),
+    masterKey: Buffer.from(masterKeyB64, 'base64'),
+    // DB_HOST/DB_PORT for core's modules are derived from these (db.ts)
+    dbHost: env.CONTROL_DB_HOST || 'selfbase-control-db',
+    dbPort: num('CONTROL_DB_PORT', 5432),
+    dbPassword: need('CONTROL_DB_PASSWORD'),
+    jwtSecret,
+    provisionerUrl: env.PROVISIONER_URL || 'http://selfbase-provisioner:8090',
+    provisionerToken: need('PROVISIONER_TOKEN'),
+    baseDomain: base,
+    publicUrl: env.PUBLIC_URL || `https://selfbase.${base}`,
+    nodeName: env.NODE_NAME || 'main',
+    proxyMode: oneOf('PROXY_MODE', 'coolify', ['coolify', 'own']),
+    proxyNetwork: env.PROXY_NETWORK || 'coolify',
+    templateVersion: need('TEMPLATE_VERSION'),
+    memoryBudgetMb: num('MEMORY_BUDGET_MB', 16384),
+    overcommit: num('OVERCOMMIT', 1.0),
+    sharedReservedMb: num('SHARED_RESERVED_MB', 2720),
+    jobSlotMb: num('JOB_SLOT_MB', 512),
+    projectSubnetPool: env.PROJECT_SUBNET_POOL || '10.207.0.0/16',
+    maxNewHostsPerWeek: num('MAX_NEW_HOSTS_PER_WEEK', 3),
+    branchHostSlots: num('BRANCH_HOST_SLOTS', 2),
+    testHost: env.TEST_HOST || `sb-test.${base}`,
+    certProbe: oneOf('CERT_PROBE', 'on', ['on', 'off']),
+    logsUrl: env.LOGS_URL || 'http://selfbase-logs:9428',
+    backupRetentionDays: num('BACKUP_RETENTION_DAYS', 7),
+    smtp: {
+      host: env.SMTP_HOST || '',
+      port: num('SMTP_PORT', 587),
+      user: env.SMTP_USER || '',
+      pass: env.SMTP_PASS || '',
+      from: env.SMTP_FROM || '',
+    },
+    // empty: no Studio build to serve (API only)
+    studioDir: env.STUDIO_DIR || '',
+    // core's platform migrations (auth schema); the image copies db/platform here
+    platformDir: env.PLATFORM_DIR || fileURLToPath(new URL('../../db/platform', import.meta.url)),
+    controlMigrationsDir: fileURLToPath(new URL('../migrations', import.meta.url)),
+  }
+}
+
+function fail(message: string): never {
+  throw new Error(`config: ${message}`)
+}
+
+export const config = loadConfig()
