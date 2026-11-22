@@ -19,14 +19,18 @@ export type Job = { id: string; type: string; project_id: string | null; status:
   payload: Record<string, any>; attempts: number; created_by: string | null }
 export type Project = { id: string; ref: string; org_id: string; name: string; status: string; size: string
   template_version: string | null; subnet: string; paused_at: Date | null }
-export type Waits = { pollMs: number; healthyMs: number; certificateMs: number }
+export type Waits = { pollMs: number; healthyMs: number; certificateMs: number; warmMs: number }
 export type JobCtx = { db: pg.Pool; provisioner: Provisioner; job: Job; project: Project | null; step: string
   probe: (hostname: string) => Promise<'ok' | 'pending'>; waits: Waits
+  /** core's URL on the project network (control is attached to sb-<ref>) */
+  coreUrl(ref: string): string
   log(event: string, fields?: Record<string, unknown>): Promise<void> }
-export type Step = { name: string; run(ctx: JobCtx): Promise<void> }
+/** retry: false for a step that polls on its own budget; its first failure fails the job */
+export type Step = { name: string; retry?: boolean; run(ctx: JobCtx): Promise<void> }
 type Def = { type: string; lane: Lane; steps: Step[]; onFail?: (ctx: JobCtx, error: Error) => Promise<void> }
 
 export type WorkerDeps = { db: pg.Pool; provisioner: Provisioner; probe?: JobCtx['probe']; waits?: Partial<Waits>
+  coreUrl?: JobCtx['coreUrl']
   /** delay before try n+1 is backoffMs * 4^(n-1) */
   backoffMs?: number; idleMs?: number }
 
@@ -36,6 +40,8 @@ const LOCK_NS = 7213017
 const APP_NAME = 'selfbase-jobs'
 const FORBIDDEN = new Set<string>([...SECRET_ENV, ...THIRD_PARTY_SECRET_ENV])
 const MAX_VALUE = 2048
+// a project should be running: reconcile acts on these, project.apply only touches these
+export const DESIRED_RUNNING = ['ACTIVE_HEALTHY', 'ACTIVE_UNHEALTHY', 'COMING_UP']
 
 export function defineJob(type: string, lane: Lane, steps: Step[], opts: { onFail?: Def['onFail'] } = {}): void {
   defs.set(type, { type, lane, steps, onFail: opts.onFail })
@@ -47,21 +53,31 @@ function checkPayload(v: unknown, path: string): void {
   else if (v && typeof v === 'object') {
     for (const [k, x] of Object.entries(v)) {
       // the name only, never the value
-      if (FORBIDDEN.has(k)) throw new Error(`job payload: ${k} is a secret and cannot be part of a job payload`)
+      if (FORBIDDEN.has(k.toUpperCase())) throw new Error(`job payload: ${k} is a secret and cannot be part of a job payload`)
       checkPayload(x, `${path}.${k}`)
     }
   }
 }
 
-export async function enqueue(db: Db, j: { type: string; projectId?: string; payload: Record<string, unknown>; createdBy: string | null }): Promise<string> {
+type EnqueueInput = { type: string; projectId?: string; payload: Record<string, unknown>; createdBy: string | null }
+
+async function insertJob(db: Db, j: EnqueueInput, ifIdle: boolean): Promise<string | null> {
   const def = defs.get(j.type)
   if (!def) throw new Error(`unknown job type ${j.type}`)
   checkPayload(j.payload, 'payload')
   return (await db.query(
-    `insert into control.jobs (type, project_id, lane, step, payload, created_by) values ($1, $2, $3, '0', $4, $5) returning id`,
-    [j.type, j.projectId ?? null, def.lane, j.payload, j.createdBy],
-  )).rows[0].id
+    `insert into control.jobs (type, project_id, lane, step, payload, created_by) select $1, $2, $3, '0', $4, $5
+     where not $6 or not exists (select 1 from control.jobs where project_id = $2 and status in ('pending', 'running')) returning id`,
+    [j.type, j.projectId ?? null, def.lane, j.payload, j.createdBy, ifIdle],
+  )).rows[0]?.id ?? null
 }
+
+export async function enqueue(db: Db, j: EnqueueInput): Promise<string> {
+  return (await insertJob(db, j, false))!
+}
+
+/** Enqueues only when the project has no pending or running job, in one statement; null when it had one. */
+export const enqueueIfIdle = (db: Db, j: EnqueueInput & { projectId: string }) => insertJob(db, j, true)
 
 const ignore = () => {}
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -70,7 +86,8 @@ const message = (e: unknown) => String((e as Error)?.message ?? e).slice(0, 1000
 /** Starts one worker per lane. stop() lets the current step finish, then leaves the job for the next start. */
 export function startWorkers(deps: WorkerDeps): { stop(): Promise<void> } {
   let stopping = false
-  const waits: Waits = { pollMs: 2000, healthyMs: 120_000, certificateMs: 600_000, ...deps.waits }
+  const waits: Waits = { pollMs: 2000, healthyMs: 120_000, certificateMs: 600_000, warmMs: 60_000, ...deps.waits }
+  const coreUrl = deps.coreUrl ?? ((ref: string) => `http://sb-${ref}-core:8080`)
   const probe = deps.probe ?? probeCertificate
   const idleMs = deps.idleMs ?? 1000
   const backoffMs = deps.backoffMs ?? 2000
@@ -102,18 +119,19 @@ export function startWorkers(deps: WorkerDeps): { stop(): Promise<void> } {
       ? ((await deps.db.query('select * from control.projects where id = $1', [job.project_id])).rows[0] ?? null) as Project | null
       : null
     const ctxFor = async (step: string): Promise<JobCtx> => ({
-      db: deps.db, provisioner: deps.provisioner, job, project: await loadProject(), step, probe, waits,
+      db: deps.db, provisioner: deps.provisioner, job, project: await loadProject(), step, probe, waits, coreUrl,
       log: async (event, fields) => {
         await deps.db.query(`insert into control.job_events (job_id, status, step, message) values ($1, 'log', $2, $3)`,
           [job.id, step, fields ? `${event} ${JSON.stringify(fields)}`.slice(0, MAX_VALUE) : event])
       },
     })
     const fail = async (step: string, error: Error) => {
+      // onFail first: whoever sees the job failed also sees the project status it left (a crash here re-runs the step)
+      if (def?.onFail) await def.onFail(await ctxFor(step), error).catch((e) => console.error(`job ${job.id} onFail: ${message(e)}`))
       await c.query('begin')
       await c.query(`insert into control.job_events (job_id, status, step, message) values ($1, 'failed', $2, $3)`, [job.id, step, message(error)])
       await c.query(`update control.jobs set status = 'failed', error = $2, updated_at = now() where id = $1`, [job.id, message(error)])
       await c.query('commit')
-      if (def?.onFail) await def.onFail(await ctxFor(step), error).catch((e) => console.error(`job ${job.id} onFail: ${message(e)}`))
     }
     if (!def) return fail('-', new Error(`unknown job type ${job.type}`))
 
@@ -128,7 +146,7 @@ export function startWorkers(deps: WorkerDeps): { stop(): Promise<void> } {
           await step.run(await ctxFor(step.name))
         } catch (e) {
           const err = e instanceof Error ? e : new Error(String(e))
-          const fatal = err instanceof ApiError && err.status < 500
+          const fatal = step.retry === false || (err instanceof ApiError && err.status < 500)
           if (fatal || attempts >= MAX_ATTEMPTS) return fail(step.name, err)
           await c.query(`insert into control.job_events (job_id, status, step, message) values ($1, 'retry', $2, $3)`, [job.id, step.name, message(err)])
           for (let t = backoffMs * 4 ** (attempts - 1); t > 0 && !stopping; t -= 100) await sleep(Math.min(t, 100))

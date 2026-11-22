@@ -123,6 +123,8 @@ test('enqueue refuses a secret name anywhere in the payload, and an over-long va
   defineJob(type, 'light', [])
   await expect(enqueue(pool, { type, payload: { JWT_SECRET: 'x' }, createdBy: null })).rejects.toThrow(/JWT_SECRET/)
   await expect(enqueue(pool, { type, payload: { a: [{ SMTP_PASS: 'x' }] }, createdBy: null })).rejects.toThrow(/SMTP_PASS/)
+  await expect(enqueue(pool, { type, payload: { jwt_secret: 'x' }, createdBy: null })).rejects.toThrow(/jwt_secret/)
+  await expect(enqueue(pool, { type, payload: { Service_Role_Key: 'x' }, createdBy: null })).rejects.toThrow(/Service_Role_Key/)
   await expect(enqueue(pool, { type, payload: { a: 'x'.repeat(2049) }, createdBy: null })).rejects.toThrow(/2048/)
   const err = await enqueue(pool, { type, payload: { JWT_SECRET: 'the-value' }, createdBy: null }).catch((e) => e)
   expect(err.message).not.toContain('the-value')

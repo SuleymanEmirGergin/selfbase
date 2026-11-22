@@ -4,13 +4,13 @@ import pg from 'pg'
 import { admit, type Size } from '../admission.ts'
 import { config } from '../config.ts'
 import { ApiError } from '../errors.ts'
-import { allocateHost, releaseHost } from '../hosts.ts'
+import { allocateHost, hostsOf, releaseHost } from '../hosts.ts'
 import { newRef } from '../ids.ts'
 import { loadProjectEnv } from '../project-env.ts'
 import { generateProjectSecrets } from '../project-secrets.ts'
 import { getSecrets, putSecret } from '../secrets.ts'
 import { allocateSubnet } from '../subnets.ts'
-import { defineJob, enqueue, type JobCtx, type Project } from './engine.ts'
+import { defineJob, enqueue, DESIRED_RUNNING, type JobCtx, type Project } from './engine.ts'
 
 // admit reserves nothing: every admission and the status change that makes the project count run under this lock
 const ADMISSION_LOCK = 7213018
@@ -110,7 +110,7 @@ async function healthy(ctx: JobCtx) {
 }
 
 async function certificate(ctx: JobCtx) {
-  const host = (await loadProjectEnv(ctx.db, need(ctx))).hosts[0]
+  const host = (await hostsOf(ctx.db, need(ctx).id))[0]
   const until = Date.now() + ctx.waits.certificateMs
   while ((await ctx.probe(host)) !== 'ok') {
     if (Date.now() >= until) throw new Error(`the certificate for ${host} is not issued yet`)
@@ -118,8 +118,32 @@ async function certificate(ctx: JobCtx) {
   }
 }
 
-const step = (name: string, run: (ctx: JobCtx) => Promise<unknown>) => ({ name, run: async (ctx: JobCtx) => { await run(ctx) } })
-const healthySteps = [step('healthy', healthy)]
+// PostgREST loads its schema cache on the first request; make that request ours. service_role has no statement
+// timeout (0001-bootstrap sets 3 s for anon, 8 s for authenticated only). Not fatal: the project works without it.
+async function warm(ctx: JobCtx) {
+  const p = need(ctx)
+  const key = (await getSecrets(ctx.db, p)).SERVICE_ROLE_KEY
+  const until = Date.now() + ctx.waits.warmMs
+  let last = ''
+  for (;;) {
+    try {
+      const res = await fetch(`${ctx.coreUrl(p.ref)}/rest/v1/`, { headers: { apikey: key, authorization: `Bearer ${key}` },
+        signal: AbortSignal.timeout(Math.max(1000, Math.min(10_000, until - Date.now()))) })
+      await res.body?.cancel()
+      if (res.status === 200) return
+      last = `status ${res.status}`
+    } catch (e) {
+      last = (e as Error).name
+    }
+    if (Date.now() >= until) return ctx.log('warm_failed', { last })
+    await pause(ctx.waits.pollMs)
+  }
+}
+
+const step = (name: string, run: (ctx: JobCtx) => Promise<unknown>, retry = true) =>
+  ({ name, retry, run: async (ctx: JobCtx) => { await run(ctx) } })
+// these poll on their own budgets (120 s, 10 min); a retry would only multiply the time the light lane waits
+const healthySteps = [step('healthy', healthy, false), step('warm', warm)]
 const activate = step('activate', (ctx) => setStatus(ctx, 'ACTIVE_HEALTHY'))
 // the status a failed job leaves, unless it failed at a step listed in `keep` (status unchanged)
 const failTo = (status: string, keep: string[] = []) => ({
@@ -149,7 +173,7 @@ defineJob('project.create', 'light', [
   }),
   step('ensure', (ctx) => ensure(ctx)),
   ...healthySteps,
-  step('certificate', certificate),
+  step('certificate', certificate, false),
   activate,
 ], failTo('INIT_FAILED', ['certificate']))
 
@@ -174,21 +198,40 @@ defineJob('project.restore', 'light', [
 
 // The REMOVED row keeps its /27 (projects.subnet is not null unique): deleting the row would cascade to this
 // job and its history. 2048 /27s in the default pool; purging old REMOVED rows is left to a later task.
+// REMOVE_FAILED is ignored by reconcile and not counted by admission.
 defineJob('project.delete', 'light', [
   step('remove', (ctx) => ctx.provisioner.remove(need(ctx).ref, true)),
-  step('release', (ctx) => releaseHost(ctx.db, need(ctx).id)),
+  step('release', async (ctx) => {
+    await releaseHost(ctx.db, need(ctx).id)
+    // legacy and custom names too: they become free for another project
+    await ctx.db.query('delete from control.project_domains where project_id = $1', [need(ctx).id])
+  }),
   step('secrets', (ctx) => ctx.db.query('delete from control.project_secrets where project_id = $1', [need(ctx).id])),
   step('removed', (ctx) => setStatus(ctx, 'REMOVED')),
-], failTo('ACTIVE_UNHEALTHY'))
+], failTo('REMOVE_FAILED'))
 
 const recreateOf = (ctx: JobCtx): string[] => (Array.isArray(ctx.job.payload.recreate) ? ctx.job.payload.recreate : [])
 
-defineJob('project.apply', 'light', [step('ensure', (ctx) => ensure(ctx, recreateOf(ctx)))], failTo('ACTIVE_UNHEALTHY'))
+// reconcile may enqueue this from a read that is stale by now: it acts only on a project that should be running
+defineJob('project.apply', 'light', [step('ensure', async (ctx) => {
+  if (!ctx.project || !DESIRED_RUNNING.includes(ctx.project.status)) return ctx.log('skipped', { status: ctx.project?.status ?? null })
+  await ensure(ctx, recreateOf(ctx))
+})], {
+  onFail: async (ctx) => {
+    if (ctx.project) {
+      await ctx.db.query(`update control.projects set status = 'ACTIVE_UNHEALTHY' where id = $1 and status = any($2)`,
+        [ctx.project.id, DESIRED_RUNNING])
+    }
+  },
+})
 
 defineJob('project.upgrade', 'light', [
-  step('version', (ctx) => ctx.db.query(
-    `update control.projects set status = 'UPGRADING',
-       template_version = (select value from control.settings where key = 'current_template_version') where id = $1`, [need(ctx).id])),
+  step('version', async (ctx) => {
+    const r = await ctx.db.query(
+      `update control.projects set status = 'UPGRADING', template_version = s.value
+       from control.settings s where s.key = 'current_template_version' and control.projects.id = $1`, [need(ctx).id])
+    if (!r.rowCount) throw new ApiError(409, 'no_template_version', 'current_template_version is not set; nothing to upgrade to')
+  }),
   step('ensure', (ctx) => ensure(ctx, recreateOf(ctx))),
   ...healthySteps,
   activate,

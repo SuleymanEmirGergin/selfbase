@@ -36,6 +36,8 @@ export class ProvisionerError extends ApiError {
 
 // The provisioner holds its jobs lock through an image pull (up to 120 s) and stops services one by one, each
 // with its stop_grace_period; these bounds sit above both.
+// reads of project state can wait behind the provisioner's per-ref and jobs locks
+const STATE_MS = 180_000
 const READ_MS = 60_000
 const JOB_MS = 180_000
 const MUTATE_MS = 600_000
@@ -69,8 +71,8 @@ export function httpProvisioner(url: string, token: string): Provisioner {
   }
   const p = (ref: string) => `/projects/${seg(ref)}`
   return {
-    list: () => call('GET', '/projects', READ_MS),
-    inspect: (ref) => call('GET', p(ref), READ_MS),
+    list: () => call('GET', '/projects', STATE_MS),
+    inspect: (ref) => call('GET', p(ref), STATE_MS),
     ensure: ({ ref, ...body }) => call('POST', `${p(ref)}/ensure`, MUTATE_MS, body),
     start: (ref, services) => call('POST', `${p(ref)}/start`, MUTATE_MS, services ? { services } : {}),
     stop: (ref, services) => call('POST', `${p(ref)}/stop`, MUTATE_MS, services ? { services } : {}),

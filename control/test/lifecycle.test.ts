@@ -6,6 +6,9 @@ import { addDomain } from '../src/hosts.ts'
 import { createProject, enqueue, startWorkers } from '../src/jobs/index.ts'
 import { probeCertificate } from '../src/cert.ts'
 import { AdmissionError } from '../src/admission.ts'
+import { getSecrets } from '../src/secrets.ts'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { FakeProvisioner, SERVICES } from './fake-provisioner.ts'
 
 // template/sizes.json is Task 5's; the global constraints' table stands in for it
@@ -33,9 +36,17 @@ let fake: FakeProvisioner
 let cert: 'ok' | 'pending'
 let orgId: string
 const running: { stop(): Promise<void> }[] = []
+// stands in for every project's core: records the warm-up requests, answers restStatus
+let restStatus = 200
+const warmed: { url: string; apikey: string; authorization: string }[] = []
+const stub = createServer((req, res) => {
+  warmed.push({ url: req.url ?? '', apikey: String(req.headers.apikey), authorization: String(req.headers.authorization) })
+  res.writeHead(restStatus).end('{}')
+})
 const workers = () => {
+  const port = (stub.address() as AddressInfo).port
   const w = startWorkers({ db: pool, provisioner: fake, backoffMs: 1, idleMs: 20, probe: async () => cert,
-    waits: { pollMs: 10, healthyMs: 2000, certificateMs: 300 } })
+    coreUrl: (ref) => `http://127.0.0.1:${port}/${ref}`, waits: { pollMs: 10, healthyMs: 2000, certificateMs: 300, warmMs: 200 } })
   running.push(w)
   return w
 }
@@ -60,11 +71,21 @@ const fill = async (n: number) => {
 }
 const cap = config.maxNewHostsPerWeek
 
-beforeAll(() => { config.maxNewHostsPerWeek = 1000 })
-afterAll(() => { config.maxNewHostsPerWeek = cap })
+beforeAll(async () => {
+  config.maxNewHostsPerWeek = 1000
+  await new Promise<void>((r) => stub.listen(0, '127.0.0.1', r))
+})
+afterAll(async () => {
+  config.maxNewHostsPerWeek = cap
+  await new Promise((r) => stub.close(r))
+})
 beforeEach(async () => {
+  restStatus = 200
+  warmed.length = 0
   await pool.query('delete from control.projects')
   await pool.query('delete from control.host_slots')
+  // jobs without a project (other files) are not removed by the cascade
+  await pool.query('delete from control.jobs')
   fake = new FakeProvisioner()
   cert = 'ok'
   orgId = (await pool.query(`insert into control.organizations (slug, name) values ($1, 'o') returning id`, [`o-${newRef()}`])).rows[0].id
@@ -109,7 +130,7 @@ test('a create killed after ensure returned resumes; the network and each contai
   expect((await project(p.id)).status).toBe('ACTIVE_HEALTHY')
   // allocate and secrets ran before the kill and were not repeated
   const steps = (await pool.query(`select step from control.job_events where job_id = $1 and status = 'succeeded' order by id`, [jobId])).rows
-  expect(steps.map((r) => r.step)).toEqual(['allocate', 'secrets', 'ensure', 'healthy', 'certificate', 'activate'])
+  expect(steps.map((r) => r.step)).toEqual(['allocate', 'secrets', 'ensure', 'healthy', 'warm', 'certificate', 'activate'])
 })
 
 test('create over budget throws before any row exists', async () => {
@@ -207,6 +228,99 @@ test('reused secrets and the db password are stored in the request and never ent
   expect(env).toMatchObject({ POSTGRES_PASSWORD: 'given-db-password-value', SMTP_PASS: 'given-smtp-pass', PROJECT_REF: p.ref })
   await expect(createProject(pool, { orgId, name: 'x', size: 'micro', pool: 'project', createdBy: null, reuseSecrets: { JWT_SECRET: 'j' } }))
     .rejects.toMatchObject({ code: 'invalid_secrets' })
+})
+
+test('create, restore and upgrade warm PostgREST through core with the service_role key', async () => {
+  const { project: p, jobId } = await create()
+  workers()
+  await finished(jobId)
+  const key = (await getSecrets(pool, p)).SERVICE_ROLE_KEY
+  expect(warmed).toEqual([{ url: `/${p.ref}/rest/v1/`, apikey: key, authorization: `Bearer ${key}` }])
+  await finished(await enqueue(pool, { type: 'project.pause', projectId: p.id, payload: {}, createdBy: null }))
+  await finished(await enqueue(pool, { type: 'project.restore', projectId: p.id, payload: {}, createdBy: null }))
+  expect((await finished(await enqueue(pool, { type: 'project.upgrade', projectId: p.id, payload: {}, createdBy: null }))).status).toBe('succeeded')
+  expect(warmed).toHaveLength(3)
+  const steps = (await pool.query(`select j.type, e.step from control.job_events e join control.jobs j on j.id = e.job_id
+    where j.project_id = $1 and e.status = 'succeeded' order by e.id`, [p.id])).rows
+  for (const t of ['project.create', 'project.restore', 'project.upgrade']) {
+    const s = steps.filter((r) => r.type === t).map((r) => r.step)
+    expect(s.indexOf('warm'), t).toBe(s.indexOf('healthy') + 1)
+    expect(s.indexOf('warm'), t).toBeLessThan(s.indexOf('activate'))
+  }
+})
+
+test('a warm-up that never gets 200 is logged and the create still succeeds', async () => {
+  restStatus = 503
+  const { project: p, jobId } = await create()
+  workers()
+  expect((await finished(jobId)).status).toBe('succeeded')
+  expect((await project(p.id)).status).toBe('ACTIVE_HEALTHY')
+  expect(warmed.length).toBeGreaterThan(1)
+  const logs = (await pool.query(`select step, message from control.job_events where job_id = $1 and status = 'log'`, [jobId])).rows
+  expect(logs).toEqual([{ step: 'warm', message: 'warm_failed {"last":"status 503"}' }])
+})
+
+test('healthy and certificate fail on their first timeout, without retries', async () => {
+  cert = 'pending'
+  const { jobId } = await create()
+  workers()
+  const j = await finished(jobId)
+  expect(j).toMatchObject({ status: 'failed', attempts: 1 })
+  expect((await pool.query(`select count(*)::int as n from control.job_events where job_id = $1 and status = 'retry'`, [jobId])).rows[0].n).toBe(0)
+  fake.health = 'starting'
+  const second = await create('slow')
+  const k = await finished(second.jobId)
+  expect(k).toMatchObject({ status: 'failed', attempts: 1 })
+  expect(k.error).toMatch(/not healthy/)
+  expect((await project(second.project.id)).status).toBe('INIT_FAILED')
+})
+
+test('delete frees legacy and custom domains: the legacy hostname can be added to a new project', async () => {
+  const was = config.legacyHostnames
+  config.legacyHostnames = ['legacy.example.test']
+  try {
+    const { project: p, jobId } = await create()
+    workers()
+    await finished(jobId)
+    await addDomain(pool, p.id, 'legacy.example.test', 'legacy')
+    await addDomain(pool, p.id, 'api.example.com', 'custom')
+    await finished(await enqueue(pool, { type: 'project.delete', projectId: p.id, payload: {}, createdBy: null }))
+    expect((await pool.query('select count(*)::int as n from control.project_domains where project_id = $1', [p.id])).rows[0].n).toBe(0)
+    const next = await create('next')
+    await addDomain(pool, next.project.id, 'legacy.example.test', 'legacy')
+    await addDomain(pool, next.project.id, 'api.example.com', 'custom')
+  } finally {
+    config.legacyHostnames = was
+  }
+})
+
+test('a failed delete ends REMOVE_FAILED, which admission does not count', async () => {
+  const { project: p, jobId } = await create()
+  workers()
+  await finished(jobId)
+  fake.fail('remove', 3)
+  const j = await finished(await enqueue(pool, { type: 'project.delete', projectId: p.id, payload: {}, createdBy: null }))
+  expect(j).toMatchObject({ status: 'failed', attempts: 3 })
+  expect((await project(p.id)).status).toBe('REMOVE_FAILED')
+  // 10 running fillers + this create = 11 micro, the most that fit: the REMOVE_FAILED one must not count
+  await fill(10)
+  await expect(create('fits')).resolves.toBeTruthy()
+})
+
+test('upgrade refuses when current_template_version is not set', async () => {
+  const { project: p, jobId } = await create()
+  workers()
+  await finished(jobId)
+  const was = (await pool.query(`select value from control.settings where key = 'current_template_version'`)).rows[0].value
+  await pool.query(`delete from control.settings where key = 'current_template_version'`)
+  try {
+    const j = await finished(await enqueue(pool, { type: 'project.upgrade', projectId: p.id, payload: {}, createdBy: null }))
+    expect(j).toMatchObject({ status: 'failed', attempts: 1 })
+    expect(j.error).toMatch(/current_template_version/)
+    expect((await project(p.id)).template_version).toBe('test')
+  } finally {
+    await pool.query(`insert into control.settings (key, value) values ('current_template_version', $1)`, [was])
+  }
 })
 
 test('probeCertificate: off is always ok; an unresolvable host is pending', async () => {

@@ -60,7 +60,10 @@ export class FakeProvisioner implements Provisioner {
   }
   async inspect(ref: string) {
     await this.rec('inspect', [ref])
-    return this.state(ref)
+    // the snapshot is taken first: a hook models a change that happens after the caller's read
+    const s = this.state(ref)
+    await this.done('inspect')
+    return s
   }
   async ensure(input: EnsureInput & { recreate?: string[] }) {
     await this.rec('ensure', [input])
