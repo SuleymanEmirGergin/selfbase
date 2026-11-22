@@ -1,0 +1,22 @@
+{
+  "name": "selfbase-js",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "supabase-js compatible client for selfbase",
+  "license": "MIT",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/ws": "^8.18.2",
+    "dts-bundle-generator": "^10.0.0",
+    "esbuild": "^0.28.2",
+    "typescript": "~5.9.3",
+    "vitest": "^5.1.1",
+    "ws": "^8.23.0"
+  }
+}
