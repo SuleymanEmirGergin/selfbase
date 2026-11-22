@@ -91,7 +91,8 @@ const message = (e: unknown) => String((e as Error)?.message ?? e).slice(0, 1000
 export function startWorkers(deps: WorkerDeps): { stop(): Promise<void> } {
   let stopping = false
   const waits: Waits = { pollMs: 2000, healthyMs: 120_000, certificateMs: 600_000, warmMs: 60_000, ...deps.waits }
-  const coreUrl = deps.coreUrl ?? ((ref: string) => `http://sb-${ref}-core:8080`)
+  // over the project network only (forward.ts says why)
+  const coreUrl = deps.coreUrl ??((ref: string) => `http://sb-${ref}-core.sb-${ref}:8080`)
   const probe = deps.probe ?? probeCertificate
   const idleMs = deps.idleMs ?? 1000
   const backoffMs = deps.backoffMs ?? 2000

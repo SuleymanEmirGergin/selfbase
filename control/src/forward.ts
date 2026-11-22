@@ -10,8 +10,11 @@ import { projectConfig } from './project-env.ts'
 import { getSecrets } from './secrets.ts'
 import type { Env } from './session.ts'
 
-/** Mutable so tests can point it at a stub. */
-export const forwardTarget = { url: (ref: string) => `http://sb-${ref}-core:8081` }
+/**
+ * Mutable so tests can point it at a stub. <name>.<network> resolves on the project network only: core is on the
+ * proxy network too, and Docker's DNS may answer with that address, where the admin port refuses control.
+ */
+export const forwardTarget = { url: (ref: string) => `http://sb-${ref}-core.sb-${ref}:8081` }
 
 type Target = { id: string; ref: string; org_id: string; status: string }
 

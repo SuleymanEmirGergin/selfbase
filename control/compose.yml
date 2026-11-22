@@ -1,0 +1,253 @@
+# selfbase control stack (spec 7.1, 7.5, 7.6; plan D-9). Plain docker compose, project name `selfbase`, run from the
+# directory holding this file and the 0600 env file (see .env.example; check it first with scripts/install-check.mjs):
+#   docker compose --env-file .env up -d                    PROXY_MODE=coolify: routes through coolify-proxy
+#   COMPOSE_PROFILES=proxy (in .env) adds our own Traefik    PROXY_MODE=own: a server without Coolify
+# Local and CI builds instead of pulling (CC-1): add -f compose.build.yml (and `--profile images build` first).
+#
+# Networks:
+#   selfbase         control, control-db, provisioner, logs; also the network of control-db backup jobs
+#   selfbase-docker  internal: provisioner and socket-proxy only. control is NOT on it, so a compromised control can
+#                    reach the Docker API only through the provisioner's typed operations (AC-11)
+#   proxy            ${PROXY_NETWORK}, external: Traefik reaches control (and each project's core) here
+# control reaches a project's core only as sb-<ref>-core.sb-<ref>, i.e. over that project's own network, which the
+# provisioner connects control to: core is on the proxy network too, and its admin port refuses peers from there.
+# PROXY_NETWORK, REGISTRY and BACKUP_HOST_DIR feed the provisioner and the socket-proxy allow-list
+# (../provisioner/socket-proxy.env, interpolated from the same env file), so the two always agree.
+# Coolify's nightly cleanup deletes unused images; the provisioner re-pulls before every create. Never add a
+# coolify.managed label here (Coolify removes stopped containers that carry it).
+name: selfbase
+
+x-hardening: &hardening
+  restart: unless-stopped
+  security_opt: ["no-new-privileges:true"]
+  cgroup_parent: ${CGROUP_PARENT:-}
+
+services:
+  control:
+    <<: *hardening
+    image: ${REGISTRY:?set REGISTRY}/selfbase-control:${TEMPLATE_VERSION:?set TEMPLATE_VERSION}
+    container_name: selfbase-control
+    mem_limit: 384m
+    memswap_limit: 384m
+    pids_limit: 256
+    cap_drop: [ALL]
+    environment:
+      SELFBASE_MASTER_KEY: ${SELFBASE_MASTER_KEY:?set SELFBASE_MASTER_KEY}
+      CONTROL_DB_PASSWORD: ${CONTROL_DB_PASSWORD:?set CONTROL_DB_PASSWORD}
+      CONTROL_JWT_SECRET: ${CONTROL_JWT_SECRET:?set CONTROL_JWT_SECRET}
+      PROVISIONER_TOKEN: ${PROVISIONER_TOKEN:?set PROVISIONER_TOKEN}
+      BASE_DOMAIN: ${BASE_DOMAIN:?set BASE_DOMAIN}
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      NODE_NAME: ${NODE_NAME:-}
+      PROXY_MODE: ${PROXY_MODE:-}
+      PROXY_NETWORK: ${PROXY_NETWORK:-coolify}
+      TEMPLATE_VERSION: ${TEMPLATE_VERSION}
+      MEMORY_BUDGET_MB: ${MEMORY_BUDGET_MB:-}
+      OVERCOMMIT: ${OVERCOMMIT:-}
+      SHARED_RESERVED_MB: ${SHARED_RESERVED_MB:-}
+      JOB_SLOT_MB: ${JOB_SLOT_MB:-}
+      PROJECT_SUBNET_POOL: ${PROJECT_SUBNET_POOL:-}
+      MAX_NEW_HOSTS_PER_WEEK: ${MAX_NEW_HOSTS_PER_WEEK:-}
+      BRANCH_HOST_SLOTS: ${BRANCH_HOST_SLOTS:-}
+      TEST_HOST: ${TEST_HOST:-}
+      LEGACY_HOSTNAMES: ${LEGACY_HOSTNAMES:-}
+      CERT_PROBE: ${CERT_PROBE:-}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      AUTH_RATE_LIMIT_SIGN_IN: ${AUTH_RATE_LIMIT_SIGN_IN:-}
+      # exactly one proxy appends X-Forwarded-For and control has no other way in: the rightmost entry is the client
+      TRUST_PROXY: "true"
+    volumes:
+      # an import with a passphrase reads project.json of an export here
+      - ${BACKUP_HOST_DIR:?set BACKUP_HOST_DIR}:/backups:ro
+    networks: [selfbase, proxy]
+    depends_on:
+      control-db: { condition: service_healthy }
+      provisioner: { condition: service_started }
+    healthcheck:
+      # loopback: paused.ts answers /health on localhost only, every other unknown host is a 404 or 540
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+    labels:
+      selfbase.managed: "true" # own Traefik routes only containers with this label
+      traefik.enable: "true"
+      traefik.docker.network: ${PROXY_NETWORK:-coolify}
+      traefik.http.routers.selfbase-control.rule: Host(`selfbase.${BASE_DOMAIN}`)
+      traefik.http.routers.selfbase-control.entrypoints: ${PROXY_ENTRYPOINT_HTTPS:-https}
+      traefik.http.routers.selfbase-control.tls: "true"
+      traefik.http.routers.selfbase-control.tls.certresolver: ${PROXY_CERTRESOLVER:-}
+      traefik.http.routers.selfbase-control.service: selfbase-control
+      traefik.http.services.selfbase-control.loadbalancer.server.port: "8080"
+      traefik.http.routers.selfbase-control-http.rule: Host(`selfbase.${BASE_DOMAIN}`)
+      traefik.http.routers.selfbase-control-http.entrypoints: ${PROXY_ENTRYPOINT_HTTP:-http}
+      traefik.http.routers.selfbase-control-http.middlewares: selfbase-control-redirect
+      traefik.http.routers.selfbase-control-http.service: selfbase-control
+      traefik.http.middlewares.selfbase-control-redirect.redirectscheme.scheme: https
+      traefik.http.middlewares.selfbase-control-redirect.redirectscheme.permanent: "true"
+      # D-4: paused projects answer 540 from control. Only selfbase-shaped names, never another team's host under
+      # the same base domain; \Q..\E keeps BASE_DOMAIN's dots literal. No resolver: a paused host already has its
+      # certificate from its own router. Traefik v2 syntax: compose.traefik-v2.yml (PROXY_TRAEFIK_MAJOR=2).
+      traefik.http.routers.selfbase-paused.rule: HostRegexp(`^([a-z]{20}|sb-[a-z0-9-]+)\.\Q${BASE_DOMAIN}\E$`)
+      traefik.http.routers.selfbase-paused.priority: "1"
+      traefik.http.routers.selfbase-paused.entrypoints: ${PROXY_ENTRYPOINT_HTTPS:-https}
+      traefik.http.routers.selfbase-paused.tls: "true"
+      traefik.http.routers.selfbase-paused.service: selfbase-control
+
+  control-db:
+    <<: *hardening
+    image: ${REGISTRY}/selfbase-db:${TEMPLATE_VERSION}
+    container_name: selfbase-control-db
+    mem_limit: 384m
+    memswap_limit: 384m
+    pids_limit: 256
+    cap_drop: [NET_RAW]
+    shm_size: 128m
+    environment:
+      POSTGRES_PASSWORD: ${CONTROL_DB_PASSWORD}
+    volumes:
+      - selfbase-control-pgdata:/var/lib/postgresql/data
+    networks: [selfbase]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-h", "localhost"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  provisioner:
+    <<: *hardening
+    image: ${REGISTRY}/selfbase-provisioner:${TEMPLATE_VERSION}
+    container_name: selfbase-provisioner
+    mem_limit: 128m
+    memswap_limit: 128m
+    pids_limit: 64
+    cap_drop: [ALL]
+    environment: # NodeSettings (provisioner/src/settings.ts); the same values reach socket-proxy.env
+      PROVISIONER_TOKEN: ${PROVISIONER_TOKEN}
+      REGISTRY: ${REGISTRY}
+      TEMPLATE_VERSION: ${TEMPLATE_VERSION}
+      PROXY_NETWORK: ${PROXY_NETWORK:-coolify}
+      PROXY_ENTRYPOINT_HTTP: ${PROXY_ENTRYPOINT_HTTP:-http}
+      PROXY_ENTRYPOINT_HTTPS: ${PROXY_ENTRYPOINT_HTTPS:-https}
+      # empty: no certificate resolver on project routers (local only; install-check refuses it with Coolify)
+      PROXY_CERTRESOLVER: ${PROXY_CERTRESOLVER:-}
+      LOG_SYSLOG_ADDR: ${LOG_SYSLOG_ADDR:-}
+      CGROUP_PARENT: ${CGROUP_PARENT:-}
+      BACKUP_HOST_DIR: ${BACKUP_HOST_DIR}
+      PROJECT_SUBNET_POOL: ${PROJECT_SUBNET_POOL:-10.207.0.0/16}
+      CONTROL_CONTAINER: selfbase-control
+      CONTROL_NETWORK: selfbase
+      DOCKER_HOST: http://selfbase-socket-proxy:2375
+    networks: [selfbase, selfbase-docker]
+    depends_on: [socket-proxy]
+
+  # The only container with the Docker socket (spec 7.5); answers the provisioner's address only.
+  socket-proxy:
+    <<: *hardening
+    image: wollomatic/socket-proxy:1.14.0@sha256:fead157c4de4092461267092be49c993c2e6dd296a54c89ed04b8c870016b045
+    container_name: selfbase-socket-proxy
+    # the socket's group: `stat -c %g /var/run/docker.sock` (0 when it is root:root 0660, as on Docker Desktop)
+    user: "65534:${DOCKER_SOCKET_GID:-0}"
+    mem_limit: 32m
+    memswap_limit: 32m
+    pids_limit: 64
+    cap_drop: [ALL]
+    env_file: ../provisioner/socket-proxy.env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [selfbase-docker]
+
+  # VictoriaLogs: every project container logs here by syslog over UDP (D-5: non-blocking, a project starts and runs
+  # with logs down). Published on the host loopback only, where the Docker daemon's syslog driver sends from.
+  logs:
+    <<: *hardening
+    image: victoriametrics/victoria-logs:v1.53.0@sha256:251121fa882af99b95ba0c230a4a2f412ea602d2698c64a96c58dc9842bb755d
+    container_name: selfbase-logs
+    mem_limit: 384m
+    memswap_limit: 384m
+    pids_limit: 128
+    cap_drop: [ALL]
+    command: ["-storageDataPath=/vlogs", "-retentionPeriod=14d", "-retention.maxDiskSpaceUsageBytes=5GiB", "-syslog.listenAddr.udp=:5514"]
+    volumes:
+      - selfbase-logs:/vlogs
+    ports:
+      - "127.0.0.1:5514:5514/udp"
+    networks: [selfbase]
+
+  # ---- profile proxy (PROXY_MODE=own): our own Traefik on a server without Coolify (spec 7.3) ----
+  traefik:
+    <<: *hardening
+    profiles: [proxy]
+    image: traefik:v3.6.25@sha256:31267173a15b4944e797a76ffd9c419707c8d8b32fe5b610f80cd0cfa05f372d
+    container_name: selfbase-traefik
+    mem_limit: 128m
+    memswap_limit: 128m
+    pids_limit: 128
+    cap_drop: [ALL]
+    command:
+      - --entrypoints.http.address=:80
+      - --entrypoints.https.address=:443
+      - --providers.docker=true
+      - --providers.docker.endpoint=tcp://selfbase-traefik-socket-proxy:2375
+      - --providers.docker.exposedByDefault=false
+      - --providers.docker.constraints=Label(`selfbase.managed`,`true`)
+      - --providers.docker.network=${PROXY_NETWORK}
+      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:-}
+      - --certificatesresolvers.letsencrypt.acme.storage=/acme/acme.json
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=http
+      - --ping=true
+    ports:
+      - "${PROXY_HTTP_PORT:-80}:80"
+      - "${PROXY_HTTPS_PORT:-443}:443"
+    volumes:
+      - selfbase-acme:/acme
+    networks: [proxy, selfbase-traefik-docker]
+    depends_on: [traefik-socket-proxy]
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  # Traefik's own read-only socket proxy: GET (and HEAD /_ping) on containers, networks, events, version.
+  traefik-socket-proxy:
+    <<: *hardening
+    profiles: [proxy]
+    image: wollomatic/socket-proxy:1.14.0@sha256:fead157c4de4092461267092be49c993c2e6dd296a54c89ed04b8c870016b045
+    container_name: selfbase-traefik-socket-proxy
+    user: "65534:${DOCKER_SOCKET_GID:-0}"
+    mem_limit: 32m
+    memswap_limit: 32m
+    pids_limit: 64
+    cap_drop: [ALL]
+    env_file: traefik-socket-proxy.env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [selfbase-traefik-docker]
+
+networks:
+  selfbase:
+    name: selfbase
+  selfbase-docker:
+    name: selfbase-docker
+    internal: true
+  selfbase-traefik-docker:
+    name: selfbase-traefik-docker
+    internal: true
+  proxy:
+    external: true
+    name: ${PROXY_NETWORK:-coolify}
+
+volumes:
+  selfbase-control-pgdata:
+    name: selfbase-control-pgdata
+  selfbase-logs:
+    name: selfbase-logs
+  selfbase-acme:
+    name: selfbase-acme

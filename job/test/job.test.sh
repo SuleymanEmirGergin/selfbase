@@ -79,6 +79,9 @@ check 'retention never prunes an export' in_backups '[ -d /backups/export-t/2020
 ets=${last#backup: wrote export-t/}
 check 'an export writes project.json and lists it in MANIFEST' in_backups "
   cd /backups/export-t/$ets && [ \"\$(cat project.json)\" = '{\"v\":1}' ] && grep -q '^project.json ' MANIFEST"
+# control (uid 1000, read-only mount) reads an export's project.json for an import; the dump stays owner-only
+check 'control can read project.json but not the dump' docker run --rm --user 1000 -v "$P-backups:/backups:ro" "$IMAGE" bash -c "
+  cat /backups/export-t/$ets/project.json > /dev/null && ! cat /backups/export-t/$ets/db.dump > /dev/null 2>&1 && ! ls /backups/export-t > /dev/null 2>&1"
 
 # ---- the control database: no storage mount, no storage archive ----
 JOB_ENV=(-e BACKUP_SUBDIR=control)

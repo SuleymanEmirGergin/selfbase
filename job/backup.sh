@@ -50,6 +50,10 @@ fi
 if [ -n "${MANIFEST_B64:-}" ]; then
   base64 -d <<< "$MANIFEST_B64" > "$tmp/project.json"
   files="$files project.json"
+  # control (not root, read-only mount) reads project.json for an import: traverse-only directories, a readable
+  # manifest (its secrets are sealed with the passphrase); the dump and storage stay owner-only
+  chmod 0711 "$backups" "$tmp"
+  chmod 0644 "$tmp/project.json"
 fi
 for f in $files; do
   echo "$f $(stat -c %s "$tmp/$f") $(sha256sum "$tmp/$f" | cut -d' ' -f1)"
