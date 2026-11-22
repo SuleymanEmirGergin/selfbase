@@ -42,9 +42,10 @@ test('an image neither local nor pullable is 502 image_unavailable, nothing crea
   assert.equal(tryDocker('network', 'inspect', `sb-${MISSING}`), null)
 })
 
-test('a template that cannot render is 500 template_invalid; bad input is 400', async () => {
+test('env missing a render variable is 400 invalid_env; other bad input is 400', async () => {
   const r = await api('POST', `/projects/${REF}/ensure`, input({ env: {} }))
-  assert.deepEqual([r.status, r.body.error], [500, 'template_invalid'])
+  assert.deepEqual([r.status, r.body.error], [400, 'invalid_env'])
+  assert.match(r.body.message, /MARKER/)
   assert.equal((await api('POST', `/projects/${REF}/ensure`, input({ subnet: '10.208.0.0/27' }))).body.error, 'invalid_subnet')
   assert.equal((await api('GET', '/projects/NOT-A-REF')).body.error, 'invalid_ref')
   assert.deepEqual(Object.values(await api('GET', '/projects/%E0')).map((v: any) => v.error ?? v), [400, 'invalid_path'])
@@ -66,6 +67,22 @@ test('ensure creates network, volumes and labelled containers', async () => {
     assert.match(labels['selfbase.spec'], /^[0-9a-f]{64}$/)
   }
   assert.match(docker('inspect', '-f', '{{json .NetworkSettings.Networks}}', `sb-${REF}-core`), new RegExp(PROXY_NET))
+  // depends_on order: db (core's dependency) was started first
+  const started = (s: string) => Date.parse(docker('inspect', '-f', '{{.State.StartedAt}}', `sb-${REF}-${s}`))
+  assert.ok(started('db') <= started('core'))
+})
+
+test('ensure refuses an existing network with another subnet, changing nothing', async () => {
+  const before = ids()
+  const r = await api('POST', `/projects/${REF}/ensure`, input({ subnet: '10.207.250.64/27' }))
+  assert.deepEqual([r.status, r.body.error], [409, 'subnet_conflict'])
+  assert.deepEqual(ids(), before)
+})
+
+test('a job for a project without a network is 404, nothing created', async () => {
+  const r = await api('POST', `/projects/${MISSING}/jobs`, { type: 'backup', args: {}, env: {} })
+  assert.deepEqual([r.status, r.body.error], [404, 'project_not_found'])
+  assert.equal(tryDocker('inspect', `sb-${MISSING}-job-backup`), null)
 })
 
 test('a second ensure changes nothing', async () => {
@@ -98,6 +115,9 @@ test("recreate:['core'] recreates only core", async () => {
 test('stop then start', async () => {
   const stopped = await api('POST', `/projects/${REF}/stop`, {})
   assert.deepEqual(stopped.body.services.map((s: any) => s.state), ['exited', 'exited'])
+  // reverse order: core (the dependent) stopped before db
+  const finished = (s: string) => Date.parse(docker('inspect', '-f', '{{.State.FinishedAt}}', `sb-${REF}-${s}`))
+  assert.ok(finished('core') <= finished('db'))
   const started = await api('POST', `/projects/${REF}/start`, { services: ['db'] })
   assert.deepEqual(started.body.services.map((s: any) => s.state), ['running', 'exited'])
   assert.deepEqual((await api('POST', `/projects/${REF}/start`)).body.services.map((s: any) => s.state), ['running', 'running'])
@@ -128,7 +148,8 @@ test('logs and stats', async () => {
   const stats = await api('GET', `/projects/${REF}/services/db/stats`)
   assert.equal(stats.body.mem_limit_mb, 32)
   assert.equal(typeof stats.body.cpu_percent, 'number')
-  assert.equal((await api('GET', `/projects/${REF}/services/nope/stats`)).status, 404)
+  assert.equal((await api('GET', `/projects/${REF}/services/nope/stats`)).body.error, 'invalid_service')
+  assert.equal((await api('GET', `/projects/${REF}/services/job-backup/logs`)).body.error, 'invalid_service')
 })
 
 test('a backup job runs, a second one is 409, the result is read once', async () => {
@@ -169,4 +190,15 @@ test('delete keeps volumes with volumes=false and removes them with true', async
   assert.deepEqual(gone.body.removed, { containers: [], volumes: [`sb-${REF}-pgdata`, `sb-${REF}-storage`], network: false })
   assert.equal(tryDocker('volume', 'inspect', `sb-${REF}-pgdata`), null)
   assert.equal((await api('DELETE', `/projects/${REF}?volumes=maybe`)).status, 400)
+})
+
+test('a delete and a job create for the same ref do not interleave: no job container outlives the delete', async () => {
+  for (let i = 0; i < 3; i++) {
+    assert.equal((await api('POST', `/projects/${REF}/ensure`, input())).status, 200)
+    const [del, job] = await Promise.all([api('DELETE', `/projects/${REF}?volumes=true`),
+      api('POST', `/projects/${REF}/jobs`, { type: 'backup', args: { dir: 'slow' }, env: {} })])
+    assert.equal(del.status, 200)
+    assert.ok([200, 404].includes(job.status), JSON.stringify(job.body))
+    assert.equal(tryDocker('inspect', `sb-${REF}-job-backup`), null, `round ${i}: job ${job.status}`)
+  }
 })

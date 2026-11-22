@@ -4,7 +4,8 @@
 # networks and Traefik labels are the provisioner's. Check: node provisioner/src/template.ts --check template/compose.yml
 # Local run (adds build, restart, the published core port and the project name):
 #   docker compose -f template/compose.yml -f template/compose.build.yml --env-file .env up -d --build
-# REGISTRY, TEMPLATE_VERSION, DB_SHARED_BUFFERS, DB_MAX_CONNECTIONS and POOL_SIZE are set by the provisioner.
+# REGISTRY, TEMPLATE_VERSION, PROJECT_SUBNET, DB_SHARED_BUFFERS, DB_MAX_CONNECTIONS and POOL_SIZE are set by
+# the provisioner; a project env value for any of them is ignored.
 services:
   db:
     image: ${REGISTRY}/selfbase-db:${TEMPLATE_VERSION}
@@ -51,6 +52,8 @@ services:
       ADMIN_PORT: "8081"
       ADMIN_TOKEN: ${ADMIN_TOKEN:-}
       PROJECT_REF: ${PROJECT_REF:-}
+      # the project's /27: the admin port refuses any peer outside it (core is on the shared proxy network too)
+      PROJECT_SUBNET: ${PROJECT_SUBNET:-}
       PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL (public https origin of core)}
       TRUST_PROXY: ${TRUST_PROXY:-true}
       SITE_URL: ${SITE_URL:?set SITE_URL (the app origin)}

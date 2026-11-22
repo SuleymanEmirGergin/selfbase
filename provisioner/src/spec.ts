@@ -10,13 +10,13 @@
 //   networks (body joins networks[0]; ops connects the rest, i.e. core -> proxy network) }.
 // specHash = sha256 of the canonical JSON of body without the selfbase.spec label; it is also that label.
 //
-// Render variables = input.env plus, overriding it: REGISTRY, TEMPLATE_VERSION (from node/input) and
-// DB_SHARED_BUFFERS, DB_MAX_CONNECTIONS, POOL_SIZE (from the size table). A container's Env is only its
-// template `environment`, rendered. Every refusal is a ProvisionError thrown before anything is returned.
+// Render variables = input.env without the RESERVED names, plus REGISTRY, TEMPLATE_VERSION, PROJECT_SUBNET
+// (node/input) and DB_SHARED_BUFFERS, DB_MAX_CONNECTIONS, POOL_SIZE (size table, when set). A container's Env
+// is only its template `environment`, rendered. Every refusal is a ProvisionError thrown before anything is returned.
 import { createHash } from 'node:crypto'
 import { assertRef, containerName, networkName, ProvisionError, volumeName } from './names.ts'
 import { parseCidr, VERSION_RE, type NodeSettings } from './settings.ts'
-import { isObj, render, startOrder, type Template } from './template.ts'
+import { ENV_KEY_RE, isObj, MissingVarError, render, startOrder, type Template } from './template.ts'
 
 export type Size = 'micro' | 'small' | 'medium'
 export type SizeEntry = { mem_mb: number; cpus: number; pids: number; shm_mb?: number; shared_buffers?: string
@@ -30,6 +30,15 @@ export type ContainerSpec = { name: string; service: string; body: Record<string
   networks: string[] }
 
 const MiB = 1024 * 1024
+const MAX_ENV_VALUE = 64 * 1024
+// default + legacy + custom domains of one project; each new one can cost a certificate (Task 11 caps new hosts)
+const MAX_HOSTS = 10
+// render variables only the provisioner sets; a project env value for one of them is dropped
+const RESERVED = ['REGISTRY', 'TEMPLATE_VERSION', 'PROJECT_SUBNET', 'DB_SHARED_BUFFERS', 'DB_MAX_CONNECTIONS', 'POOL_SIZE']
+
+/** Every variable the template reads, set to 'check', for the start-time and --check dry runs. */
+export const dryRunEnv = (tpl: Template) => Object.fromEntries([...JSON.stringify(tpl).matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)/g)]
+  .filter((m) => !RESERVED.includes(m[1])).map((m) => [m[1], 'check']))
 const SIZE_NAMES: string[] = ['micro', 'small', 'medium']
 const HOST_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/
 const DIR_RE = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)?$/
@@ -54,10 +63,16 @@ function canonical(v: unknown): string {
   return JSON.stringify(v)
 }
 
+// Names that are a plain identifier (no `=`, no NUL); values a string of at most 64 KiB without NUL.
 function stringMap(v: unknown): Record<string, string> {
-  return isObj(v) && Object.values(v).every((x) => typeof x === 'string')
-    ? (v as Record<string, string>)
-    : refuse(400, 'invalid_env', 'env must map names to strings')
+  if (!isObj(v)) refuse(400, 'invalid_env', 'env must map names to strings')
+  for (const [k, x] of Object.entries(v as object)) {
+    if (!ENV_KEY_RE.test(k)) refuse(400, 'invalid_env', 'env names must match [A-Za-z_][A-Za-z0-9_]*')
+    if (typeof x !== 'string' || x.includes('\0') || Buffer.byteLength(x) > MAX_ENV_VALUE) {
+      refuse(400, 'invalid_env', `env ${k} must be a string of at most 64 KiB without NUL`)
+    }
+  }
+  return { ...(v as Record<string, string>) }
 }
 
 function hostConfig(node: NodeSettings, name: string, r: SizeEntry, restart: string, network: string) {
@@ -119,27 +134,44 @@ export function buildProject(input: EnsureInput, tpl: Template, sizes: Sizes, no
   if (sub.prefix !== 27 || pool.prefix > 27 || ((sub.base & pool.mask) >>> 0) !== pool.base) {
     refuse(400, 'invalid_subnet', `subnet must be a /27 inside ${node.subnetPool}`)
   }
-  if (!Array.isArray(hosts) || !hosts.length || !hosts.every((h) => typeof h === 'string' && h.length <= 253 && HOST_RE.test(h))) {
-    refuse(400, 'invalid_host', 'hosts must be lowercase DNS names')
+  if (!Array.isArray(hosts) || !hosts.length || hosts.length > MAX_HOSTS || !hosts.every((h) => typeof h === 'string' && h.length <= 253 && HOST_RE.test(h))) {
+    refuse(400, 'invalid_host', `hosts must be 1..${MAX_HOSTS} lowercase DNS names`)
   }
   const table = sizes[size]
   const res = (service: string) => {
     const r = Object.hasOwn(table, service) ? table[service] : refuse(500, 'size_missing', `sizes.${size}.${service} is missing`)
-    // Docker reads 0, null or a negative value as "no limit"
-    const ok = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v > 0
-    for (const k of ['mem_mb', 'cpus', 'pids'] as const) if (!ok(r[k])) refuse(500, 'size_invalid', `sizes.${size}.${service}.${k} must be a number > 0`)
-    if (r.shm_mb !== undefined && !ok(r.shm_mb)) refuse(500, 'size_invalid', `sizes.${size}.${service}.shm_mb must be a number > 0`)
+    const bad = (k: string, why: string) => refuse(500, 'size_invalid', `sizes.${size}.${service}${k} ${why}`)
+    if (!isObj(r)) bad('', 'must be an object')
+    // Docker reads 0, null or a negative value as "no limit"; limits are whole numbers, cpus at least 0.01
+    const int = (v: unknown) => Number.isSafeInteger(v) && (v as number) > 0
+    for (const k of ['mem_mb', 'pids'] as const) if (!int(r[k])) bad(`.${k}`, 'must be a whole number > 0')
+    if (typeof r.cpus !== 'number' || !(r.cpus >= 0.01 && r.cpus <= 1024)) bad('.cpus', 'must be a number from 0.01')
+    if (r.shm_mb !== undefined && !int(r.shm_mb)) bad('.shm_mb', 'must be a whole number > 0')
+    // these become db command arguments and the pooler config
+    if (r.shared_buffers !== undefined && !(typeof r.shared_buffers === 'string' && /^[1-9]\d{0,6}(kB|MB|GB)$/.test(r.shared_buffers))) {
+      bad('.shared_buffers', 'must be like 128MB')
+    }
+    for (const k of ['max_connections', 'pool_size'] as const) if (r[k] !== undefined && !int(r[k])) bad(`.${k}`, 'must be a whole number > 0')
     return r
   }
-  const db = Object.hasOwn(table, 'db') ? table.db : undefined
-  const pooler = Object.hasOwn(table, 'pooler') ? table.pooler : undefined
-  const env: Record<string, string> = {
-    ...stringMap(input.env),
+  const db = Object.hasOwn(table, 'db') ? res('db') : undefined
+  const pooler = Object.hasOwn(table, 'pooler') ? res('pooler') : undefined
+  const env = stringMap(input.env)
+  const dropped = RESERVED.filter((k) => Object.hasOwn(env, k))
+  for (const k of dropped) delete env[k]
+  // names only: the values are control's and may be secrets
+  if (dropped.length) console.warn(`provisioner: ${ref}: ignored provisioner-set env names from the request: ${dropped.join(', ')}`)
+  Object.assign(env, {
     REGISTRY: node.registry,
     TEMPLATE_VERSION: templateVersion,
-    ...(db?.shared_buffers !== undefined ? { DB_SHARED_BUFFERS: String(db.shared_buffers) } : {}),
+    PROJECT_SUBNET: subnet,
+    ...(db?.shared_buffers !== undefined ? { DB_SHARED_BUFFERS: db.shared_buffers } : {}),
     ...(db?.max_connections !== undefined ? { DB_MAX_CONNECTIONS: String(db.max_connections) } : {}),
     ...(pooler?.pool_size !== undefined ? { POOL_SIZE: String(pooler.pool_size) } : {}),
+  })
+  // a variable the caller left out of env is the caller's error (400); any other render error is the template's (500)
+  const rendered = (v: string) => {
+    try { return render(v, env) } catch (e) { throw e instanceof MissingVarError ? new ProvisionError(400, 'invalid_env', e.message) : e }
   }
 
   const net = networkName(ref)
@@ -147,18 +179,18 @@ export function buildProject(input: EnsureInput, tpl: Template, sizes: Sizes, no
     const s = tpl.services[service]
     const r = res(service)
     const name = containerName(ref, service)
-    const image = render(s.image, env)
+    const image = rendered(s.image)
     if (image !== `${node.registry}/selfbase-${service}:${templateVersion}`) {
       refuse(500, 'image_refused', `${service}: image must be ${node.registry}/selfbase-${service}:${templateVersion}`)
     }
     const hc = s.healthcheck
     const body: Record<string, unknown> = {
       Image: image,
-      Env: Object.entries(s.environment).map(([k, v]) => `${k}=${render(v, env)}`),
-      ...(s.command ? { Cmd: s.command.map((c) => render(c, env)) } : {}),
-      ...(s.user !== undefined ? { User: render(s.user, env) } : {}),
+      Env: Object.entries(s.environment).map(([k, v]) => `${k}=${rendered(v)}`),
+      ...(s.command ? { Cmd: s.command.map(rendered) } : {}),
+      ...(s.user !== undefined ? { User: rendered(s.user) } : {}),
       ...(s.stop_grace_period ? { StopTimeout: Math.ceil(ns(s.stop_grace_period) / 1e9) } : {}),
-      ...(hc ? { Healthcheck: { Test: hc.test.map((t) => render(t, env)), Interval: hc.interval && ns(hc.interval),
+      ...(hc ? { Healthcheck: { Test: hc.test.map(rendered), Interval: hc.interval && ns(hc.interval),
         Timeout: hc.timeout && ns(hc.timeout), Retries: hc.retries, StartPeriod: hc.start_period && ns(hc.start_period) } } : {}),
       Labels: { ...baseLabels(ref, service, templateVersion), ...(service === 'core' ? traefikLabels(ref, hosts, node) : {}) },
       HostConfig: {
@@ -186,9 +218,15 @@ function checkDir(dir: unknown) {
   }
 }
 
+// Jobs run for a project ref, or for the control stack itself ('control'), which only ever backs up.
+export function assertJobRef(ref: unknown, type: unknown) {
+  if (ref !== 'control') assertRef(ref)
+  else if (type !== 'backup') refuse(400, 'invalid_ref', "ref 'control' is only allowed for backup jobs")
+}
+
 export function buildJob(input: JobInput, node: NodeSettings): ContainerSpec {
   const { ref, type } = input
-  if (ref !== 'control') assertRef(ref)
+  assertJobRef(ref, type)
   if (!JOB_TYPES.includes(type)) refuse(400, 'invalid_job_type')
   const cmd = JOB_CMD[type] ?? refuse(501, 'not_implemented', `job type ${type} is not implemented`)
   if (!node.backupHostDir) refuse(409, 'backup_dir_unset', 'no backup host directory is configured')

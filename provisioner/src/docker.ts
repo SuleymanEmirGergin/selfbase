@@ -5,7 +5,7 @@ import { ProvisionError } from './names.ts'
 // 1.45 = Docker 26; Docker 29 still accepts it (its minimum is 1.44)
 const API = '/v1.45'
 const PULL_TIMEOUT_MS = 120_000
-const HOST =(process.env.DOCKER_HOST || 'http://selfbase-socket-proxy:2375').replace(/\/$/, '')
+const HOST = (process.env.DOCKER_HOST || 'http://selfbase-socket-proxy:2375').replace(/\/$/, '')
 
 export async function dockerFetch(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<Response> {
   try {
@@ -46,9 +46,9 @@ export async function ensureImage(image: string): Promise<void> {
 }
 
 // Container logs as text. Containers are never created with a TTY, so the stream is always multiplexed.
-export async function containerLogs(name: string, tail: number): Promise<string> {
+export async function containerLogs(name: string, tail: number, missing = 'service_not_found'): Promise<string> {
   const r = await dockerFetch('GET', `/containers/${name}/logs?stdout=true&stderr=true&tail=${tail}`)
-  if (r.status === 404) throw new ProvisionError(404, 'service_not_found', `${name} does not exist`)
+  if (r.status === 404) throw new ProvisionError(404, missing, `${name} does not exist`)
   if (!r.ok) throw new ProvisionError(502, 'docker_refused', `GET /containers/${name}/logs -> ${r.status}`)
   const buf = Buffer.from(await r.arrayBuffer())
   const out: Buffer[] = []

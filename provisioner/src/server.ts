@@ -9,7 +9,7 @@ import { createHash, timingSafeEqual } from 'node:crypto'
 import { ProvisionError } from './names.ts'
 import { loadSettings } from './settings.ts'
 import { TemplateError, validateTemplate } from './template.ts'
-import { buildProject, type Sizes } from './spec.ts'
+import { buildProject, dryRunEnv, type Sizes } from './spec.ts'
 import * as ops from './ops.ts'
 
 const MAX_BODY = 256 * 1024
@@ -19,7 +19,7 @@ function boot(): { ctx: ops.Ctx; token: Buffer } {
   const tpl = validateTemplate(JSON.parse(readFileSync(process.env.TEMPLATE_PATH || '/app/template.json', 'utf8')))
   const sizes: Sizes = JSON.parse(readFileSync(process.env.SIZES_PATH || '/app/sizes.json', 'utf8'))
   // same dry run as `template.ts --check`: every size must render every service
-  const env = Object.fromEntries([...JSON.stringify(tpl).matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => [m[1], 'check']))
+  const env = dryRunEnv(tpl)
   for (const size of ['micro', 'small', 'medium'] as const) {
     buildProject({ ref: 'checkcheckcheckcheck', templateVersion: node.templateVersion, size, hosts: ['check.invalid'], env,
       subnet: `${node.subnetPool.split('/')[0]}/27` }, tpl, sizes, node)
@@ -70,10 +70,11 @@ const routes: Route[] = [
     return ops.serial(ref, () => ops.remove(ctx, ref, v === 'true'))
   }],
   ['POST', new RegExp(`^/projects/${P}/attach-proxy$`), ([ref]) => ops.serial(ref, () => ops.attachProxy(ctx, ref))],
-  ['POST', new RegExp(`^/projects/${P}/jobs$`), ([ref], _, b) => ops.serial('jobs', () => ops.runJob(ctx, ref, b))],
+  // a job create also holds its ref's lock, so it cannot interleave with that project's delete (always ref, then jobs)
+  ['POST', new RegExp(`^/projects/${P}/jobs$`), ([ref], _, b) => ops.serial(ref, () => ops.serial('jobs', () => ops.runJob(ctx, ref, b)))],
   ['GET', new RegExp(`^/projects/${P}/jobs/${P}$`), ([ref, type]) => ops.serial('jobs', () => ops.jobStatus(ref, type))],
-  ['GET', new RegExp(`^/projects/${P}/services/${P}/logs$`), ([ref, s], q) => ops.serviceLogs(ref, s, q.get('tail'))],
-  ['GET', new RegExp(`^/projects/${P}/services/${P}/stats$`), ([ref, s]) => ops.serviceStats(ref, s)],
+  ['GET', new RegExp(`^/projects/${P}/services/${P}/logs$`), ([ref, s], q) => ops.serviceLogs(ctx, ref, s, q.get('tail'))],
+  ['GET', new RegExp(`^/projects/${P}/services/${P}/stats$`), ([ref, s]) => ops.serviceStats(ctx, ref, s)],
 ]
 
 createServer(async (req, res) => {

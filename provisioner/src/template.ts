@@ -10,6 +10,11 @@
 //   validates the file and builds a project for every size from the sizes.json next to it.
 
 export class TemplateError extends Error {}
+/** A variable the template needs is not in the render env: the caller's input, not the template, is at fault. */
+export class MissingVarError extends TemplateError {}
+const missing = (name: string, why: string): never => {
+  throw new MissingVarError(`${name}: ${why}`)
+}
 
 export type TemplateService = {
   image: string
@@ -27,7 +32,7 @@ export type Template = { services: Record<string, TemplateService>; volumes: str
 const SERVICE_KEYS = new Set(['image', 'command', 'environment', 'volumes', 'depends_on', 'healthcheck', 'init', 'user', 'stop_grace_period'])
 const HEALTH_KEYS = new Set(['test', 'interval', 'timeout', 'retries', 'start_period'])
 const NAME_RE = /^[a-z][a-z0-9_-]*$/
-const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+export const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 const DURATION_RE = /^(\d+(ms|s|m|h))+$/
 const MOUNT_RE = /^([a-z][a-z0-9_-]*):(\/[A-Za-z0-9._/-]*)(:ro)?$/
 
@@ -43,6 +48,19 @@ function onlyKeys(o: Record<string, unknown>, allowed: Set<string>, prefix: stri
 
 function strList(v: unknown, key: string): string[] {
   return Array.isArray(v) && v.every((s) => typeof s === 'string') ? v : fail(key, 'must be a list of strings')
+}
+
+// A rendered value inside code that a shell or interpreter runs (sh -c, node -e) could change the command;
+// arguments of any other program (postgres -c name=${VAR}) stay one argv entry each. Every item before the
+// first exact -c/-e is checked, so wrappers (tini --, su-exec u, busybox, env) cannot hide the interpreter.
+// shortcut: a name-based deny-list; an interpreter under another name (a symlink, a script) passes, so a
+// template with one needs its own check (templates are ours, reviewed with the code).
+const INTERPRETER_RE = /^(.*\/)?(sh|bash|ash|dash|zsh|busybox|node|deno|bun|python[0-9.]*|perl|ruby|php|env|xargs)$/
+function noCodeInterp(argv: string[], key: string): string[] {
+  const end = argv.findIndex((a) => a === '-c' || a === '-e')
+  const head = end < 0 ? argv : argv.slice(0, end)
+  if (head.some((a) => INTERPRETER_RE.test(a)) && argv.some((a) => a.includes('${'))) fail(key, 'an interpreter command must not interpolate')
+  return argv
 }
 
 function duration(v: unknown, key: string): string | undefined {
@@ -65,7 +83,8 @@ export function validateTemplate(json: unknown): Template {
   const services: Record<string, TemplateService> = {}
   for (const [name, raw] of Object.entries(json.services)) {
     const p = `services.${name}`
-    if (!NAME_RE.test(name)) fail(p, 'is not a valid service name')
+    // sb-<ref>-job-<type> is a job container's name
+    if (!NAME_RE.test(name) || name.startsWith('job-')) fail(p, 'is not a valid service name')
     if (!isObj(raw)) fail(p, 'must be a mapping')
     onlyKeys(raw, SERVICE_KEYS, p)
     if (typeof raw.image !== 'string') fail(`${p}.image`, 'is required')
@@ -90,9 +109,9 @@ export function validateTemplate(json: unknown): Template {
       }),
       depends_on: raw.depends_on === undefined ? [] : strList(raw.depends_on, `${p}.depends_on`),
     }
-    if (raw.command !== undefined) svc.command = strList(raw.command, `${p}.command`)
+    if (raw.command !== undefined) svc.command = noCodeInterp(strList(raw.command, `${p}.command`), `${p}.command`)
     if (raw.init !== undefined) svc.init = typeof raw.init === 'boolean' ? raw.init : fail(`${p}.init`, 'must be a boolean')
-    if (raw.user !== undefined) svc.user = typeof raw.user === 'string' ? raw.user : fail(`${p}.user`, 'must be a string')
+    if (raw.user !== undefined) svc.user = typeof raw.user === 'string' && !raw.user.includes('$') ? raw.user : fail(`${p}.user`, 'must be a fixed string')
     svc.stop_grace_period = duration(raw.stop_grace_period, `${p}.stop_grace_period`)
     if (raw.healthcheck !== undefined) {
       const h = raw.healthcheck
@@ -103,6 +122,7 @@ export function validateTemplate(json: unknown): Template {
       if (!['CMD', 'CMD-SHELL', 'NONE'].includes(test[0])) fail(`${hp}.test`, 'must start with CMD, CMD-SHELL or NONE')
       // a rendered value inside a shell string could change the command
       if (test[0] === 'CMD-SHELL' && test.some((t) => t.includes('${'))) fail(`${hp}.test`, 'CMD-SHELL must not interpolate')
+      if (test[0] === 'CMD') noCodeInterp(test.slice(1), `${hp}.test`)
       const retries = h.retries
       if (retries !== undefined && !(Number.isInteger(retries) && (retries as number) >= 0)) fail(`${hp}.retries`, 'must be a whole number')
       svc.healthcheck = { test, interval: duration(h.interval, `${hp}.interval`), timeout: duration(h.timeout, `${hp}.timeout`),
@@ -141,8 +161,8 @@ export function render(value: string, env: Record<string, string>): string {
     if (whole === '$$') return '$'
     const v = Object.hasOwn(env, name) ? env[name] : undefined
     if (op === ':-') return v || arg
-    if (op === ':?') return v || fail(name, arg)
-    return v ?? fail(name, 'is not set')
+    if (op === ':?') return v || missing(name, arg)
+    return v ?? missing(name, 'is not set')
   })
 }
 
@@ -153,11 +173,11 @@ async function check(file: string) {
   const { readFileSync } = await import('node:fs')
   const { dirname, join } = await import('node:path')
   const { parse } = await import('yaml')
-  const { buildProject } = await import('./spec.ts')
+  const { buildProject, dryRunEnv } = await import('./spec.ts')
   try {
     const tpl = validateTemplate(parse(readFileSync(file, 'utf8'), { maxAliasCount: 0 }))
     const sizes = JSON.parse(readFileSync(join(dirname(file), 'sizes.json'), 'utf8'))
-    const env = Object.fromEntries([...JSON.stringify(tpl).matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => [m[1], 'check']))
+    const env = dryRunEnv(tpl)
     const node = { registry: 'registry.invalid/selfbase', templateVersion: 'check', proxyNetwork: 'proxy', entrypointHttp: 'http',
       entrypointHttps: 'https', certResolver: 'le', logSyslogAddr: '', cgroupParent: '', backupHostDir: '',
       subnetPool: '10.207.0.0/16', controlContainer: 'selfbase-control', controlNetwork: 'selfbase' }

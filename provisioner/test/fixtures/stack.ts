@@ -11,7 +11,9 @@ export const REGISTRY = 'selfbase-test.invalid/sb'
 export const IMAGE = `${REGISTRY}/selfbase-core:test`
 export const PROXY_NET = 'selfbase-test-proxy'
 const IMAGES = ['db', 'core', 'job'].map((s) => `${REGISTRY}/selfbase-${s}:test`)
-const env = { ...process.env, PROXY_NETWORK: PROXY_NET }
+export const BACKUP_DIR = '/opt/selfbase/sb-test-backups'
+// compose fills these into socket-proxy.env, as on the server
+const env = { ...process.env, PROXY_NETWORK: PROXY_NET, REGISTRY, BACKUP_HOST_DIR: BACKUP_DIR }
 
 export const docker = (...args: string[]) =>
   execFileSync('docker', args, { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] }).trim()
@@ -25,7 +27,7 @@ export async function up() {
   docker('build', '-q', ...IMAGES.flatMap((t) => ['-t', t]), join(dir, 'fixture-image'))
   if (tryDocker('network', 'inspect', PROXY_NET) === null) docker('network', 'create', PROXY_NET)
   // the fixed backup directory must exist in the daemon's filesystem; a -v bind creates it
-  docker('run', '--rm', '-v', '/tmp/sb-test-backups:/b', IMAGE, 'true')
+  docker('run', '--rm', '-v', `${BACKUP_DIR}:/b`, IMAGE, 'true')
   compose('up', '-d')
   for (let i = 0; i < 60; i++) {
     if (await fetch(`http://127.0.0.1:${PORT}/health`).then((r) => r.ok, () => false)) return
@@ -35,7 +37,7 @@ export async function up() {
 }
 
 export function down() {
-  tryDocker('run', '--rm', '-v', '/tmp:/t', IMAGE, 'rm', '-rf', '/t/sb-test-backups')
+  tryDocker('run', '--rm', '-v', '/opt/selfbase:/t', IMAGE, 'rm', '-rf', '/t/sb-test-backups')
   compose('down', '-v', '--remove-orphans')
   tryDocker('network', 'rm', PROXY_NET)
   tryDocker('rmi', ...IMAGES)
