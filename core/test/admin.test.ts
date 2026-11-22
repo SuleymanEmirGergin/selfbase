@@ -50,6 +50,7 @@ beforeAll(async () => {
     create table ${S}.items (id int primary key, label text not null, big bigint, at timestamptz, data jsonb);
     create table ${S}.victim (id int);
     create table ${S}.nopk (v text);
+    create view ${S}.items_v as select id, label from ${S}.items;
     create table ${S}.docs (id int primary key, j jsonb);
     create table ${S}.floats (id int primary key, f float8, r real);
     insert into ${S}.floats values (1, 'NaN', 'Infinity'), (2, '-Infinity', 1.5);
@@ -226,7 +227,8 @@ describe('tables and rows', () => {
   it('lists tables with columns', async () => {
     const { body } = await json(await call('GET', `/tables?schema=${S}`))
     const items = body.find((t: any) => t.name === 'items')
-    expect(items).toMatchObject({ schema: S, rls_enabled: true })
+    expect(items).toMatchObject({ schema: S, rls_enabled: true, relkind: 'r' })
+    expect(body.find((t: any) => t.name === 'items_v')).toMatchObject({ relkind: 'v', rls_enabled: false })
     expect(typeof items.row_estimate).toBe('number')
     expect(items.columns[0]).toEqual({ name: 'id', type: 'integer', nullable: false, default: null, is_pk: true })
     expect(items.columns[1]).toMatchObject({ name: 'label', type: 'text', is_pk: false })

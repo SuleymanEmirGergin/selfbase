@@ -10,10 +10,11 @@ export const adminError = (status: ContentfulStatusCode, error: string) =>
   new HTTPException(status, { res: Response.json({ error }, { status }) })
 
 export type Column = { name: string; type: string; nullable: boolean; default: string | null; is_pk: boolean }
-export type Relation = { schema: string; name: string; rls_enabled: boolean; row_estimate: number; columns: Column[] }
+/** relkind: r table, p partitioned table, v view, m materialized view, f foreign table (pg_class.relkind). */
+export type Relation = { schema: string; name: string; relkind: string; rls_enabled: boolean; row_estimate: number; columns: Column[] }
 
 const RELATIONS = `
-  select n.nspname as schema, c.relname as name, c.relrowsecurity as rls_enabled,
+  select n.nspname as schema, c.relname as name, c.relkind::text as relkind, c.relrowsecurity as rls_enabled,
     greatest(c.reltuples, 0)::float8 as row_estimate,
     coalesce((select json_agg(json_build_object(
         'name', a.attname, 'type', format_type(a.atttypid, a.atttypmod), 'nullable', not a.attnotnull,
