@@ -1,63 +1,92 @@
 # Supabase -> selfbase migration
 
-Run once, in order, against an empty, freshly bootstrapped selfbase database. Every script reads
-its values from the environment or from `.env` at the repo root and never prints them.
+Run once, in the order below, against an empty, freshly bootstrapped selfbase database. Every script
+reads its values from the environment or from `.env` at the repo root and never prints them.
+
+**`.env` format** (bash and Node scripts read it the same way): one `KEY=value` per line, the value
+taken literally to the end of the line: no quotes, no inline `#` comments, no `$` expansion, no
+`export`. Windows line endings are fine. A variable already set in the environment wins.
 
 | Variable | Used by | What |
 |---|---|---|
 | `SUPABASE_DB_URL` | 01 | Source, session pooler URL (`postgres.<ref>` user) |
 | `SUPABASE_URL` | 04, 05 | `https://<ref>.supabase.co` |
 | `SUPABASE_SERVICE_KEY` | 04 | Service key, only to download storage files |
-| `TARGET_DB_URL` | 02, 03, 05, 06 | selfbase superuser URL (`postgres`) |
+| `TARGET_DB_URL` | 02, 03, 05, 06 | selfbase superuser URL (`postgres`); a `*.supabase.co`/`*.supabase.com` host is refused |
 | `PUBLIC_URL` | 05 | selfbase public origin |
-| `SERVICE_ROLE_KEY` | 06 | Written to the vault secrets the DB functions send |
+| `SERVICE_ROLE_KEY` | 06 | Fallback value for the vault secrets (see 06) |
+| `NOTIFY_DISPATCH_SECRET`, `RADAR_NEWS_CRON_SECRET` | 06 | Optional; the edge functions' values for the two vault secrets |
 | `STORAGE_DIR` | 04 | Host folder that becomes core's storage volume |
 
-`pg_dump`/`psql` 17 run from the `postgres:17` image. 01 and 02 run inside a container, so
-`TARGET_DB_URL` there must be reachable from a container: set `DOCKER_NETWORK` to the compose
-network and use the service name (`db:5432`), or use `host.docker.internal:<port>`. 05 and 06 run on
-the host (they use `pg` from `core/node_modules`, so `npm ci` in `core/` first), so their
+`pg_dump`/`psql` 17 run from the `postgres:17` image, and the URLs are turned into `PG*` variables
+inside the container, so no password appears in a command line. 01, 02 and the 03 pipe run in a
+container, so `TARGET_DB_URL` there must be reachable from a container: set `DOCKER_NETWORK` to the
+compose network and use the service name (`db:5432`), or use `host.docker.internal:<port>`. 05 and
+06 run on the host (they use `pg` from `core/node_modules`, so `npm ci` in `core/` first), so their
 `TARGET_DB_URL` uses `localhost:<port>`.
 
+**Pause writes on the source during step 1.** 01 reads everything from one exported snapshot, but
+if the pooler refuses to export one it says so and the reads are separate.
+
 ```bash
-bash scripts/migrate/01-dump.sh                # -> dump/ (gitignored)
-bash scripts/migrate/02-restore.sh             # extensions, schema + data, row-count check
-node scripts/migrate/03-auth-storage.sql.mjs \
-  | docker run --rm -i --network <net> -e TARGET_DB_URL postgres:17 \
-      bash -c 'psql "$TARGET_DB_URL" -X -q -v ON_ERROR_STOP=1'
-node scripts/migrate/04-files.mjs              # storage files -> STORAGE_DIR
-node scripts/migrate/05-rewrite-urls.mjs --dry-run
-node scripts/migrate/05-rewrite-urls.mjs
-node scripts/migrate/06-realtime-cron.mjs
+# psql against the target, used by steps 3 and 5
+psql_target() { docker run --rm -i --network <net> -e TARGET_DB_URL postgres:17 \
+  bash -c 'psql "$TARGET_DB_URL" -X -q -v ON_ERROR_STOP=1'; }
+
+bash scripts/migrate/01-dump.sh                                   # 1. source -> dump/ (gitignored)
+bash scripts/migrate/02-restore.sh pre                            # 2. extensions, tables, functions, rows
+node scripts/migrate/03-auth-storage.sql.mjs rows | psql_target   # 3. auth users, identities, storage rows
+bash scripts/migrate/02-restore.sh post                           # 4. indexes, constraints (FKs to auth.users), row-count check
+node scripts/migrate/03-auth-storage.sql.mjs policies | psql_target  # 5. storage policies, auth/storage triggers
+node scripts/migrate/04-files.mjs                                 # 6. storage files -> STORAGE_DIR
+node scripts/migrate/05-rewrite-urls.mjs --dry-run                # 7. see what will change
+node scripts/migrate/05-rewrite-urls.mjs                          #    rewrite
+node scripts/migrate/06-realtime-cron.mjs                         # 8. realtime, cron (inactive), vault
+node scripts/migrate/06-realtime-cron.mjs --activate              # 9. at cutover only
 ```
+
+Why this order: app tables have foreign keys to `auth.users`, and those rows come with step 3, so
+constraints (post-data) can only be added after it.
 
 What each step does:
 
-1. **01-dump.sh**: (a) `pg_dump -Fc` of every schema except Supabase's own (`auth, storage,
-   realtime, vault, net, graphql, graphql_public, pgbouncer, extensions, supabase_functions,
-   supabase_migrations, pgsodium, cron, _realtime, _analytics`, `selfbase`, `pg_*`), without
-   extensions, publications and security labels; (b) `auth.users`, `auth.identities`,
-   `storage.buckets`, `storage.objects` as JSON lines; (c) `dump/catalog/*.json`: extensions,
-   storage policies, user triggers on `auth.users`/`storage.objects`, realtime publication tables,
-   `cron.job`, `supabase_migrations.schema_migrations`, row counts per table. A catalog the pooler
-   role cannot read is reported as `NOT READ` and the rest still runs.
-2. **02-restore.sh**: installs the source's extensions (skips `pg_graphql, supabase_vault, pg_net,
+1. **01-dump.sh**: inside one container, a holder session exports a snapshot that every read uses:
+   (a) `pg_dump -Fc` of every schema except Supabase's own (`auth, storage, realtime, vault, net,
+   graphql, graphql_public, pgbouncer, extensions, supabase_functions, supabase_migrations, pgsodium,
+   cron, _realtime, _analytics`, `selfbase`, `pg_*`), without extensions, publications and security
+   labels; (b) `auth.users`, `auth.identities`, `storage.buckets`, `storage.objects` as JSON lines;
+   (c) `dump/catalog/*.json`: extensions, storage policies, user triggers on
+   `auth.users`/`storage.objects`, realtime publication tables, `cron.job`,
+   `supabase_migrations.schema_migrations`, row counts per table. A catalog the pooler role cannot
+   read is reported as `NOT READ` and the rest still runs. Files are owner-only (on Linux/macOS the
+   container runs as you).
+2. **02-restore.sh pre**: installs the source's extensions (skips `pg_graphql, supabase_vault, pg_net,
    pgsodium, pg_stat_statements` and says so; moves relocatable ones to the source's schema), loads
-   (a) with `ON_ERROR_STOP=1` leaving out event triggers, then compares every table's row count with
-   `catalog/counts.json`. A missing Supabase object is fixed with a shim in `db/bootstrap/`, never by
-   editing the dump.
-3. **03**: copies the auth/storage rows into selfbase's tables (common columns only, source
-   triggers off), then recreates the storage policies and the user triggers. Re-runnable.
-4. **04-files.mjs**: downloads each object to `STORAGE_DIR/<bucket>/<name>`; skips files already
-   there; prints downloaded/skipped/failed and exits 1 on any failure.
-5. **05-rewrite-urls.mjs**: `https://<ref>.supabase.co` -> `PUBLIC_URL` in every text, varchar,
-   json and jsonb column of the user schemas (same set as 01). `--dry-run` prints rows per
-   `table.column`; a second dry run after applying prints 0.
-6. **06-realtime-cron.mjs**: `selfbase.enable_realtime` (and the publication) for the realtime
-   tables, `cron.schedule` for each `cron.job` row, and the vault secrets
-   `notification_dispatch_secret` and `radar_news_cron_secret` (value: the env var of the upper-cased
-   name if set, else `SERVICE_ROLE_KEY`; the edge functions' `NOTIFY_DISPATCH_SECRET` /
-   `RADAR_NEWS_CRON_SECRET` must hold the same value).
+   the pre-data and data sections with `ON_ERROR_STOP=1`, leaving out event triggers, and copies
+   the source's migration history into `supabase_migrations.schema_migrations`. A missing Supabase
+   object is fixed with a shim in `db/bootstrap/`, never by editing the dump.
+3. **03 rows**: copies the auth/storage rows into selfbase's tables (common columns only; source-only
+   column names are listed; source triggers off). Every source id must be present afterwards, or it
+   aborts. Re-runnable.
+4. **02-restore.sh post**: loads the post-data section, then compares every table's row count
+   (auth and storage included) with `catalog/counts.json`.
+5. **03 policies**: recreates the storage policies and the user triggers on `auth.users` and
+   `storage.objects`.
+6. **04-files.mjs**: downloads each object to `STORAGE_DIR/<bucket>/<name>`; skips files already
+   there; never follows redirects (the service key stays with Supabase); prints
+   downloaded/skipped/failed and exits 1 on any failure.
+7. **05-rewrite-urls.mjs**: `https://<ref>.supabase.co` -> `PUBLIC_URL` in every text, varchar,
+   text[], varchar[], json and jsonb column (and domains over them) of the user schemas plus `auth`
+   and `storage`, with triggers off. `cron` is not touched. `--dry-run` prints rows per
+   `table.column` and the schemas scanned; a second dry run after applying prints 0.
+8. **06-realtime-cron.mjs**: `selfbase.enable_realtime` (and the publication) for the realtime
+   tables, `cron.schedule` for each `cron.job` row, **registered inactive** so the source and
+   selfbase do not both run the pipelines, and the vault secrets `notification_dispatch_secret` /
+   `radar_news_cron_secret`. Each comes from `NOTIFY_DISPATCH_SECRET` / `RADAR_NEWS_CRON_SECRET` if
+   set, else from `SERVICE_ROLE_KEY` (printed as a warning; the function env must then hold the
+   same value). The script prints which variable it used, never the value.
+9. **06 --activate**: at cutover, after the source's jobs are stopped. Jobs inactive on the source
+   stay inactive; a later run without the flag deactivates them again.
 
 ## Schema replay (dev)
 
@@ -66,4 +95,4 @@ What each step does:
 database (read-only mount). `REPLAY_CONTINUE=1` runs each file in its own transaction and lists all
 failures instead of stopping at the first.
 
-Tests: `node --test scripts/migrate/test/rewrite.test.mjs`.
+Tests: `node --test scripts/migrate/test/rewrite.test.mjs` and `bash scripts/migrate/test/lib.test.sh`.

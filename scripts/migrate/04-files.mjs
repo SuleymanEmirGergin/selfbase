@@ -6,17 +6,12 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { loadEnv, requireEnv } from './05-rewrite-urls.mjs'
 
-const envFile = new URL('../../.env', import.meta.url)
-if (existsSync(envFile)) process.loadEnvFile(envFile)
-const missing = ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'STORAGE_DIR'].filter((n) => !process.env[n])
-if (missing.length) {
-  console.error(`missing env: ${missing.join(', ')}`)
-  process.exit(2)
-}
-const base = new URL(process.env.SUPABASE_URL).origin
-const key = process.env.SUPABASE_SERVICE_KEY
-const root = resolve(process.env.STORAGE_DIR)
+loadEnv()
+const [supabaseUrl, key, storageDir] = requireEnv('SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'STORAGE_DIR')
+const base = new URL(supabaseUrl).origin
+const root = resolve(storageDir)
 const dumpDir = process.env.DUMP_DIR || fileURLToPath(new URL('../../dump', import.meta.url))
 
 // Same rules as core's storage paths: no "..", leading "/", "\", empty segment or NUL; stays under root.
@@ -47,7 +42,8 @@ for (const { bucket_id: bucket, name } of rows) {
   }
   const url = `${base}/storage/v1/object/${encodeURIComponent(bucket)}/${name.split('/').map(encodeURIComponent).join('/')}`
   try {
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${key}`, apikey: key } })
+    // redirect: 'error' keeps the service key from following a redirect to another host
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${key}`, apikey: key }, redirect: 'error' })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     mkdirSync(dirname(path), { recursive: true })
     writeFileSync(`${path}.part`, Buffer.from(await res.arrayBuffer()))

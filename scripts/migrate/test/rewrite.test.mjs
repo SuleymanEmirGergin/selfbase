@@ -1,7 +1,7 @@
 // node --test scripts/migrate/test
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { rewrite } from '../05-rewrite-urls.mjs'
+import { isSupabaseHost, parseEnv, rewrite } from '../05-rewrite-urls.mjs'
 
 const from = 'abcdefghijklmnopqrst.supabase.co'
 const to = 'https://api.example.com'
@@ -36,4 +36,22 @@ test('already rewritten text does not change', () => {
   const once = rewrite('https://abcdefghijklmnopqrst.supabase.co/functions/v1/f', from, to)
   assert.equal(rewrite(once, from, to), once)
   assert.equal(once, 'https://api.example.com/functions/v1/f')
+})
+
+test('text[] literal keeps its shape', () => {
+  assert.equal(
+    rewrite('{https://abcdefghijklmnopqrst.supabase.co/a,"b c"}', from, to),
+    '{https://api.example.com/a,"b c"}',
+  )
+})
+
+test('parseEnv matches lib.sh load_env: literal values, CRLF stripped', () => {
+  const env = parseEnv('# c\r\nA=plain\r\nB=p@ss$wo"rd#x y\r\n C = spaced\r\nexport D=no\r\n\r\n')
+  assert.deepEqual(env, { A: 'plain', B: 'p@ss$wo"rd#x y', C: ' spaced' })
+})
+
+test('Supabase hosts are refused as target', () => {
+  assert.equal(isSupabaseHost('postgres://postgres.abc:p@aws-1-eu-west-2.pooler.supabase.com:5432/postgres'), true)
+  assert.equal(isSupabaseHost('postgres://postgres:p@abcdefghijklmnopqrst.supabase.co:5432/postgres'), true)
+  assert.equal(isSupabaseHost('postgres://postgres:p@localhost:54451/postgres'), false)
 })

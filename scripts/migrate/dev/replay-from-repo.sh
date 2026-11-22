@@ -17,10 +17,13 @@ src="$(cd "$repo/supabase" && (pwd -W 2>/dev/null || pwd))"
 net=()
 [ -n "${DOCKER_NETWORK:-}" ] && net=(--network "$DOCKER_NETWORK")
 
-# MSYS_NO_PATHCONV keeps Git Bash on Windows from rewriting the container paths.
-MSYS_NO_PATHCONV=1 docker run --rm -i "${net[@]}" -e TARGET_DB_URL -e REPLAY_CONTINUE -e PGOPTIONS="-c client_min_messages=warning" -v "$src:/src:ro" postgres:17 bash -s <<'EOF'
+. "$(dirname "$0")/../lib.sh"
+
+# The script goes in on stdin; pgenv keeps the URL and its password out of psql's argv.
+{ declare -f pgenv; cat <<'EOF'
 set -euo pipefail
-run() { psql "$TARGET_DB_URL" -X -q -v ON_ERROR_STOP=1 "$@"; }
+pgenv TARGET_DB_URL
+run() { psql -X -q -v ON_ERROR_STOP=1 "$@"; }
 
 # The baseline is a `pg_dump -n public` and starts with CREATE SCHEMA public, so the public schema
 # initdb made has to go first. It may only hold extension members (vector, pg_trgm, postgis live
@@ -52,13 +55,18 @@ end $f$;
 create event trigger replay_restore_ext on ddl_command_end when tag in ('CREATE SCHEMA')
   execute function selfbase.replay_restore_ext();
 SQL
+# The helpers go on every exit path, not only after a baseline that loaded.
+cleanup() {
+  run -c 'drop event trigger if exists replay_restore_ext' -c 'drop function if exists selfbase.replay_restore_ext()' \
+      -c 'drop table if exists selfbase.replay_public_ext' || true
+}
+trap cleanup EXIT
 
 start=$(date +%s)
 baseline=$(ls /src/baseline/*.sql | sort | tail -n 1)
 echo "replay: baseline $(basename "$baseline")"
 run -f "$baseline" > /dev/null || { echo "replay: FAILED in baseline $(basename "$baseline")" >&2; exit 1; }
-run -c 'drop event trigger replay_restore_ext' -c 'drop function selfbase.replay_restore_ext()' \
-    -c 'drop table selfbase.replay_public_ext'
+cleanup
 
 count=0
 failed=0
@@ -79,3 +87,6 @@ done
 echo "replay: baseline + $count migrations applied, $failed failed, in $(( $(date +%s) - start ))s"
 [ "$failed" = 0 ]
 EOF
+} | MSYS_NO_PATHCONV=1 docker run --rm -i "${net[@]}" -e TARGET_DB_URL -e REPLAY_CONTINUE \
+      -e PGOPTIONS="-c client_min_messages=warning" -v "$src:/src:ro" postgres:17 bash -s
+# (MSYS_NO_PATHCONV keeps Git Bash on Windows from rewriting the container paths.)

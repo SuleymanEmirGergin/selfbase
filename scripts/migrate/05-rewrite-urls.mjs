@@ -1,10 +1,12 @@
 #!/usr/bin/env node
-// Rewrites https://<ref>.supabase.co to PUBLIC_URL in every text/varchar/json/jsonb column of the
-// user schemas of the selfbase database.
+// Rewrites https://<ref>.supabase.co to PUBLIC_URL in every text, varchar, text[], varchar[], json and
+// jsonb column (domains over them included) of the selfbase database, user schemas plus auth and
+// storage (avatar URLs in auth.users meta data, identity_data, object metadata).
 //   node scripts/migrate/05-rewrite-urls.mjs --dry-run   affected rows per table.column, no writes
-//   node scripts/migrate/05-rewrite-urls.mjs             applies (one transaction per column)
+//   node scripts/migrate/05-rewrite-urls.mjs             applies (one transaction per column, triggers off)
 // Env (or .env at the repo root): SUPABASE_URL, PUBLIC_URL, TARGET_DB_URL (reachable from this host).
-import { existsSync } from 'node:fs'
+// Also holds the helpers the other Node scripts share (env reader, target guard, pg connection).
+import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 
@@ -16,14 +18,32 @@ export function rewrite(text, fromHost, toOrigin) {
   return text.replace(re, () => toOrigin)
 }
 
-// Same schemas 01-dump.sh dumps as "user" schemas.
-export const PLATFORM_SCHEMAS = ['auth', 'storage', 'realtime', 'vault', 'net', 'graphql', 'graphql_public',
-  'pgbouncer', 'extensions', 'supabase_functions', 'supabase_migrations', 'pgsodium', 'cron', '_realtime',
-  '_analytics', 'selfbase', 'information_schema']
+// Not scanned: Supabase/selfbase platform schemas. cron is left out on purpose (job commands keep
+// their *.supabase.co URLs; core's queue worker rewrites or blocks those hosts).
+export const SKIPPED_SCHEMAS = ['realtime', 'vault', 'net', 'graphql', 'graphql_public', 'pgbouncer', 'extensions',
+  'supabase_functions', 'supabase_migrations', 'pgsodium', 'cron', '_realtime', '_analytics', 'selfbase',
+  'information_schema']
+
+// Same rules as lib.sh's load_env: KEY=value per line, value literal to end of line, trailing \r
+// dropped, # lines skipped; keys already in the environment win.
+export function parseEnv(text) {
+  const vars = {}
+  for (let line of text.split('\n')) {
+    line = line.replace(/\r$/, '')
+    if (/^\s*(#|$)/.test(line) || !line.includes('=')) continue
+    const i = line.indexOf('=')
+    const key = line.slice(0, i).trim()
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) vars[key] = line.slice(i + 1)
+  }
+  return vars
+}
 
 export function loadEnv() {
   const file = new URL('../../.env', import.meta.url)
-  if (existsSync(file)) process.loadEnvFile(file)
+  if (!existsSync(file)) return
+  for (const [k, v] of Object.entries(parseEnv(readFileSync(file, 'utf8')))) {
+    if (process.env[k] === undefined) process.env[k] = v
+  }
 }
 
 export function requireEnv(...names) {
@@ -35,8 +55,19 @@ export function requireEnv(...names) {
   return names.map((n) => process.env[n])
 }
 
+export const isSupabaseHost = (url) => /\.supabase\.(co|com)$/i.test(new URL(url).hostname)
+
+// The target must be selfbase, never the hosted project being migrated away from.
+export function refuseSupabaseTarget(url) {
+  if (isSupabaseHost(url)) {
+    console.error('TARGET_DB_URL points at a Supabase host; it must be the selfbase database')
+    process.exit(2)
+  }
+}
+
 // pg comes from core/node_modules (cd core && npm ci); no extra dependency for the scripts.
 export async function connect(url) {
+  refuseSupabaseTarget(url)
   let pg
   try {
     pg = createRequire(new URL('../../core/package.json', import.meta.url))('pg')
@@ -66,22 +97,27 @@ async function main() {
   }
   const needle = `https://${fromHost}`
   const db = await connect(dbUrl)
+  // base type: the domain's base for domains, else the column type itself
   const { rows: cols } = await db.query(
     `select n.nspname as schema, c.relname as table, a.attname as column, format_type(a.atttypid, a.atttypmod) as type
        from pg_attribute a
        join pg_class c on c.oid = a.attrelid
        join pg_namespace n on n.oid = c.relnamespace
+       join pg_type t on t.oid = a.atttypid
       where c.relkind = 'r' and a.attnum > 0 and not a.attisdropped and a.attgenerated = ''
-        and a.atttypid in ('text'::regtype, 'varchar'::regtype, 'json'::regtype, 'jsonb'::regtype)
+        and (case when t.typtype = 'd' then t.typbasetype else t.oid end) in
+            ('text'::regtype, 'varchar'::regtype, 'json'::regtype, 'jsonb'::regtype, 'text[]'::regtype, 'varchar[]'::regtype)
         and n.nspname <> all($1) and n.nspname not like 'pg\\_%'
       order by 1, 2, 3`,
-    [PLATFORM_SCHEMAS],
+    [SKIPPED_SCHEMAS],
   )
   let total = 0
   for (const col of cols) {
     const rel = `${db.escapeIdentifier(col.schema)}.${db.escapeIdentifier(col.table)}`
     const ident = db.escapeIdentifier(col.column)
     await db.query('begin')
+    // updated_at, audit and notification triggers must not fire for a URL rewrite
+    await db.query('set local session_replication_role = replica')
     const { rows } = await db.query(
       `select ctid::text as ctid, ${ident}::text as v from ${rel} where strpos(lower(${ident}::text), lower($1)) > 0`,
       [needle],
@@ -99,7 +135,8 @@ async function main() {
     if (changed) console.log(`${col.schema}.${col.table}.${col.column}: ${changed}`)
     total += changed
   }
-  console.log(`${dryRun ? 'would rewrite' : 'rewrote'} ${total} values in ${cols.length} columns`)
+  const schemas = [...new Set(cols.map((c) => c.schema))].join(', ')
+  console.log(`${dryRun ? 'would rewrite' : 'rewrote'} ${total} values in ${cols.length} columns; schemas scanned: ${schemas}`)
   await db.end()
 }
 
