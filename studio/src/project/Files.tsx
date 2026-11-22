@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { api, errMsg } from '../api.ts'
+import { errMsg } from '../api.ts'
+import { useAdmin, useCan } from './context.ts'
 import type { Bucket, FileEntry } from '../api.ts'
 import { Empty, ErrorBox, Icon, Loading, confirmDanger, fmtDate, fmtSize, toast } from '../ui.tsx'
 
@@ -14,6 +15,8 @@ export default function Files() {
   const [newId, setNewId] = useState('')
   const [newPublic, setNewPublic] = useState(false)
   const [tick, setTick] = useState(0)
+  const api = useAdmin()
+  const canWrite = useCan()('project.write')
 
   useEffect(() => {
     setBucketsErr('')
@@ -57,11 +60,11 @@ export default function Files() {
               ))}
             </ul>
           )}
-        <form className="new-bucket" onSubmit={create}>
+        {canWrite && <form className="new-bucket" onSubmit={create}>
           <input aria-label="Yeni bucket adı" placeholder="yeni-bucket" className="mono" required value={newId} onChange={(e) => setNewId(e.target.value)} />
           <label className="check"><input type="checkbox" checked={newPublic} onChange={(e) => setNewPublic(e.target.checked)} />Herkese açık</label>
           <button className="btn sm"><Icon name="plus" size={14} />Bucket oluştur</button>
-        </form>
+        </form>}
       </aside>
       {bucket ? <BucketView key={bucket} bucket={bucket} /> : <section className="page-main">{buckets && <Empty>Soldan bir bucket seçin ya da oluşturun.</Empty>}</section>}
     </div>
@@ -77,6 +80,8 @@ function BucketView({ bucket }: { bucket: string }) {
   const [tick, setTick] = useState(0)
   const input = useRef<HTMLInputElement>(null)
   const reload = () => setTick((t) => t + 1)
+  const api = useAdmin()
+  const canWrite = useCan()('project.write')
 
   useEffect(() => {
     setError('')
@@ -128,10 +133,12 @@ function BucketView({ bucket }: { bucket: string }) {
         </nav>
         <div className="spacer" />
         <button className="icon-btn" onClick={reload} aria-label="Yenile" title="Yenile"><Icon name="refresh" /></button>
-        <input ref={input} type="file" multiple hidden onChange={(e) => upload(e.target.files)} aria-label="Yüklenecek dosyalar" />
-        <button className="btn primary" onClick={() => input.current?.click()} disabled={uploading}>
-          <Icon name="upload" />{uploading ? 'Yükleniyor…' : 'Yükle'}
-        </button>
+        {canWrite && <>
+          <input ref={input} type="file" multiple hidden onChange={(e) => upload(e.target.files)} aria-label="Yüklenecek dosyalar" />
+          <button className="btn primary" onClick={() => input.current?.click()} disabled={uploading}>
+            <Icon name="upload" />{uploading ? 'Yükleniyor…' : 'Yükle'}
+          </button>
+        </>}
       </div>
       <div className="grid-area">
         {error ? <ErrorBox message={error} onRetry={reload} />
@@ -173,7 +180,7 @@ function BucketView({ bucket }: { bucket: string }) {
                           <a className="icon-btn" href={api.fileUrl(bucket, f.path)} download={f.name} aria-label={`${f.name} indir`} title="İndir">
                             <Icon name="download" />
                           </a>
-                          <button className="icon-btn danger" onClick={() => remove(f)} aria-label={`${f.name} sil`} title="Sil"><Icon name="trash" /></button>
+                          {canWrite && <button className="icon-btn danger" onClick={() => remove(f)} aria-label={`${f.name} sil`} title="Sil"><Icon name="trash" /></button>}
                         </div>
                       </td>
                     </tr>

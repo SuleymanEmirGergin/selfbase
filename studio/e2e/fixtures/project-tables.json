@@ -1,0 +1,25 @@
+[
+  {
+    "schema": "public",
+    "name": "notes",
+    "relkind": "r",
+    "rls_enabled": true,
+    "row_estimate": 0,
+    "columns": [
+      {
+        "name": "id",
+        "type": "integer",
+        "nullable": false,
+        "default": "nextval('notes_id_seq'::regclass)",
+        "is_pk": true
+      },
+      {
+        "name": "note",
+        "type": "text",
+        "nullable": false,
+        "default": null,
+        "is_pk": false
+      }
+    ]
+  }
+]

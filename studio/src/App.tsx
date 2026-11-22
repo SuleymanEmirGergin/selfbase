@@ -9,6 +9,7 @@ import { Audit, Capacity, Members, Tokens } from './org/admin.tsx'
 import { ImportProject, NewProject, Projects } from './org/projects.tsx'
 import type { OrgProps } from './org/common.tsx'
 import ProjectArea from './project/index.tsx'
+import { clearProjectMemory } from './project/context.ts'
 
 const TABS = [
   { id: '', label: 'Projeler', icon: 'folder', Screen: Projects },
@@ -19,10 +20,13 @@ const TABS = [
 ] as const
 const OUTSIDE_TABS = { new: NewProject, import: ImportProject } as const
 
-/** Only same-site paths are followed after sign-in. */
+/** Only same-origin targets are followed after sign-in (`/\evil.com` and the like resolve elsewhere and are dropped). */
 const nextPath = () => {
-  const n = new URLSearchParams(location.search).get('next') ?? ''
-  return n.startsWith('/') && !n.startsWith('//') ? n : ''
+  const n = new URLSearchParams(location.search).get('next')
+  if (!n) return ''
+  let u: URL
+  try { u = new URL(n, location.origin) } catch { return '' } // `http://`, `//` and the like do not parse
+  return u.origin === location.origin ? u.pathname + u.search + u.hash : ''
 }
 const homeOf = (me: Me) => (me.organizations[0] ? `/org/${me.organizations[0].slug}` : '/org')
 
@@ -88,7 +92,7 @@ function Routes({ me, signOut, reload }: { me: Me | null | undefined; signOut: (
   if (me === undefined) return <div className="boot"><Loading /></div>
   if (me === null) return <SignIn onSignedIn={reload} />
   if (first === 'sign-in' || first === '') return <div className="boot"><Loading /></div>
-  if (first === 'project') return <ProjectArea />
+  if (first === 'project') return <ProjectArea me={me} onSignOut={signOut} />
 
   const slug = first === 'org' ? second : first in OUTSIDE_TABS ? second : ''
   const tab = first === 'org' ? third : first
@@ -117,8 +121,15 @@ export default function App() {
     reload()
   }, [reload])
 
+  // Every way out of a session (sign-out, a 401 that survived refresh, a failed /me) ends here: the next user on this
+  // browser must not see this one's SQL query and rows.
+  useEffect(() => { if (me === null) clearProjectMemory() }, [me])
+
   const signOut = useCallback(async () => {
     await platform.logout().catch(() => {})
+    // An explicit sign-out keeps no `next`: the next account must not land on this one's page. Replacing the URL
+    // without emitting keeps the redirect effect from adding it back; the render below reads the new path.
+    history.replaceState(null, '', '/sign-in')
     setMe(null)
   }, [])
 

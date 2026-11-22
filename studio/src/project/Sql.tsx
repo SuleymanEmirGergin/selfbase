@@ -1,13 +1,22 @@
-import { useRef, useState } from 'react'
-import { api, errMsg } from '../api.ts'
+import { useEffect, useRef, useState } from 'react'
+import { EditorView, basicSetup } from 'codemirror'
+import { keymap } from '@codemirror/view'
+import { sql as sqlLang } from '@codemirror/lang-sql'
+import { errMsg } from '../api.ts'
 import type { SqlResult } from '../api.ts'
 import { Grid, cellText } from '../Grid.tsx'
 import { Drawer, Empty, ErrorBox, Icon } from '../ui.tsx'
+import { sqlMemo, useAdmin, useProject } from './context.ts'
 
-// -- shortcut: plain textarea, swap for CodeMirror when autocomplete is asked for
-// Last query and result live in module memory: they survive page switches, not a reload (nothing goes to storage).
-let lastQuery = 'select now();'
-let lastResult: SqlResult | null = null
+
+const theme = EditorView.theme({
+  '&': { height: '32vh', minHeight: '120px', backgroundColor: 'var(--surface)', color: 'var(--text)', fontSize: '13px' },
+  '&.cm-focused': { outline: 'none', boxShadow: 'inset 0 0 0 2px var(--accent)' },
+  '.cm-scroller': { fontFamily: 'var(--mono)', lineHeight: '1.6' },
+  '.cm-gutters': { backgroundColor: 'var(--surface)', color: 'var(--dim)', borderRight: '1px solid var(--border)' },
+  '.cm-activeLine, .cm-activeLineGutter': { backgroundColor: 'var(--raised)' },
+  '.cm-cursor': { borderLeftColor: 'var(--text)' },
+})
 
 /** 1-based line and column of a 1-based character position. */
 const lineCol = (text: string, pos: number) => {
@@ -27,23 +36,26 @@ const resultSummary = (r: { columns: string[]; rows: unknown[][]; rowCount: numb
     : 'Tamamlandı'
 
 export default function Sql() {
-  const [query, setQuery] = useState(lastQuery)
-  const [result, setResult] = useState<SqlResult | null>(lastResult)
-  const [ranQuery, setRanQuery] = useState(lastQuery)
+  const api = useAdmin()
+  const mem = sqlMemo(useProject().ref)
+  const [query, setQuery] = useState(mem.query)
+  const [result, setResult] = useState<SqlResult | null>(mem.result)
+  const [ranQuery, setRanQuery] = useState(mem.query)
   const [running, setRunning] = useState(false)
   const [error, setError] = useState('')
   const [inspect, setInspect] = useState<number | null>(null)
-  const editor = useRef<HTMLTextAreaElement>(null)
+  const host = useRef<HTMLDivElement>(null)
+  const editor = useRef<EditorView | null>(null)
 
   const run = async () => {
     if (!query.trim() || running) return
     setRunning(true)
     setError('')
     setInspect(null)
-    lastQuery = query
+    mem.query = query
     try {
       const r = await api.sql(query)
-      lastResult = r
+      mem.result = r
       setResult(r)
       setRanQuery(query)
     } catch (e) {
@@ -53,9 +65,31 @@ export default function Sql() {
     }
   }
 
+  const runRef = useRef(run)
+  runRef.current = run
+  useEffect(() => {
+    const view = new EditorView({
+      parent: host.current!,
+      doc: mem.query,
+      extensions: [
+        keymap.of([{ key: 'Mod-Enter', run: () => { runRef.current(); return true } }]), // before basicSetup: wins over its Mod-Enter
+        basicSetup,
+        sqlLang(),
+        theme,
+        EditorView.contentAttributes.of({ 'aria-label': 'SQL sorgusu' }),
+        EditorView.updateListener.of((u) => { if (u.docChanged) { mem.query = u.state.doc.toString(); setQuery(mem.query) } }),
+      ],
+    })
+    editor.current = view
+    return () => view.destroy()
+  }, [mem])
+
   const goTo = (pos: number) => {
-    editor.current?.focus()
-    editor.current?.setSelectionRange(pos - 1, pos)
+    const view = editor.current
+    if (!view) return
+    const len = view.state.doc.length
+    view.dispatch({ selection: { anchor: Math.min(pos - 1, len), head: Math.min(pos, len) }, scrollIntoView: true })
+    view.focus()
   }
 
   const ok = result && !('error' in result) ? result : null
@@ -70,11 +104,7 @@ export default function Sql() {
         <span className="muted small hide-sm"><kbd>Ctrl</kbd>+<kbd>Enter</kbd></span>
         <button className="btn primary" onClick={run} disabled={running}><Icon name="chevron" />{running ? 'Çalışıyor…' : 'Çalıştır'}</button>
       </div>
-      <div className="sql-editor">
-        <textarea ref={editor} className="mono" aria-label="SQL sorgusu" spellCheck={false} value={query}
-          onChange={(e) => { setQuery(e.target.value); lastQuery = e.target.value }}
-          onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); run() } }} />
-      </div>
+      <div className="sql-editor" ref={host} />
       <div className="result-bar" aria-live="polite">
         {ok && (
           <>

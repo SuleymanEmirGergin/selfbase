@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { FormEvent, InputHTMLAttributes, ReactNode } from 'react'
 import { ApiError, errMsg, platform } from './api.ts'
 import { Link, navigate } from './router.tsx'
@@ -89,7 +89,9 @@ export const AcceptInvite = ({ token }: { token: string }) => (
 
 export function ResetPassword() {
   // A recovery link ends here with the session in the fragment (GoTrue's implicit flow); it never reaches a server.
-  const hash = new URLSearchParams(location.hash.slice(1))
+  // Read once, then stripped from the address bar (history, copy-paste) right away.
+  const [hash] = useState(() => new URLSearchParams(location.hash.slice(1)))
+  useEffect(() => { if (location.hash) history.replaceState(null, '', location.pathname + location.search) }, [])
   const accessToken = hash.get('type') === 'recovery' ? hash.get('access_token') : null
   const [email, setEmail] = useState('')
   const [done, setDone] = useState('')
@@ -100,7 +102,6 @@ export function ResetPassword() {
     return (
       <NewPasswordCard title="Yeni parola" label="Parolayı kaydet" onSave={async (password) => {
         await platform.setPassword(accessToken, password)
-        history.replaceState(null, '', location.pathname) // drop the token from the address bar
         setDone('saved')
       }} />
     )
@@ -108,7 +109,10 @@ export function ResetPassword() {
   return (
     <Card title="Parolayı sıfırla" onSubmit={recover.submit}
       lead={done ? 'Bu adres kayıtlıysa sıfırlama bağlantısı gönderildi.' : 'Hesabınızın e-posta adresini yazın; sıfırlama bağlantısı gönderilir.'}>
-      {hash.get('error_description') && <div className="error-box" role="alert">{hash.get('error_description')}</div>}
+      {/* the fragment's own error text is attacker-controllable, so only a fixed message is shown */}
+      {(hash.has('error') || hash.has('error_description')) && (
+        <div className="error-box" role="alert">Bağlantı geçersiz ya da süresi dolmuş. Yeni bir sıfırlama bağlantısı isteyin.</div>
+      )}
       <Field label="E-posta" type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus />
       {recover.error && <div className="error-box" role="alert">{recover.error}</div>}
       <button className="btn primary block" disabled={recover.busy}>Bağlantı gönder</button>

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { api, errMsg } from '../api.ts'
+import { errMsg } from '../api.ts'
+import { useAdmin, useCan } from './context.ts'
 import type { Policy, Relation } from '../api.ts'
 import { Drawer, Empty, ErrorBox, Icon, Loading, confirmDanger, toast } from '../ui.tsx'
 import { RlsBadge, SchemaSelect, hasRls } from './Tables.tsx'
@@ -15,6 +16,8 @@ export default function Policies() {
   const [adding, setAdding] = useState<string | null>(null)
   const [tick, setTick] = useState(0)
   const reload = () => setTick((t) => t + 1)
+  const api = useAdmin()
+  const canWrite = useCan()('project.write')
 
   useEffect(() => {
     let live = true // a late response for the previous schema must not show (or be edited) under the new one
@@ -89,12 +92,14 @@ export default function Policies() {
                       <RlsBadge rel={t} />
                       <span className="muted small">{ps.length} policy</span>
                       <div className="spacer" />
-                      <button role="switch" aria-checked={t.rls_enabled} className="switch" onClick={() => setRls(t, !t.rls_enabled)}
-                        aria-label={`${t.name} için RLS`}>
-                        <span className="switch-track"><span className="switch-thumb" /></span>
-                        {t.rls_enabled ? 'RLS açık' : 'RLS kapalı'}
-                      </button>
-                      <button className="btn sm" onClick={() => setAdding(t.name)}><Icon name="plus" size={14} />Policy ekle</button>
+                      {canWrite && <>
+                        <button role="switch" aria-checked={t.rls_enabled} className="switch" onClick={() => setRls(t, !t.rls_enabled)}
+                          aria-label={`${t.name} için RLS`}>
+                          <span className="switch-track"><span className="switch-thumb" /></span>
+                          {t.rls_enabled ? 'RLS açık' : 'RLS kapalı'}
+                        </button>
+                        <button className="btn sm" onClick={() => setAdding(t.name)}><Icon name="plus" size={14} />Policy ekle</button>
+                      </>}
                     </header>
                     {ps.length ? (
                       <ul className="policies">
@@ -106,9 +111,11 @@ export default function Policies() {
                               {!p.permissive && <span className="chip warn">RESTRICTIVE</span>}
                               <span className="mono small muted">{p.roles.join(', ')}</span>
                               <div className="spacer" />
-                              <button className="icon-btn danger" onClick={() => drop(p)} aria-label={`${p.name} policy'sini sil`} title="Sil">
-                                <Icon name="trash" />
-                              </button>
+                              {canWrite && (
+                                <button className="icon-btn danger" onClick={() => drop(p)} aria-label={`${p.name} policy'sini sil`} title="Sil">
+                                  <Icon name="trash" />
+                                </button>
+                              )}
                             </div>
                             <dl className="policy-exprs">
                               <dt>USING</dt><dd>{p.using ? <code>{p.using}</code> : <span className="muted">—</span>}</dd>
@@ -144,6 +151,7 @@ function PolicyDrawer({ tables, table, onClose, onSaved }: {
   const schema = tables.find((t) => t.name === f.table)!.schema
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const api = useAdmin()
   const noUsing = f.command === 'INSERT'
   const noCheck = f.command === 'SELECT' || f.command === 'DELETE'
 

@@ -1,0 +1,12 @@
+[
+  {
+    "name": "anon",
+    "api_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiJ9.anon-signature-for-tests",
+    "type": "legacy"
+  },
+  {
+    "name": "service_role",
+    "api_key": "eyJhbGciOiJIUzI1NiIs••••••••",
+    "type": "legacy"
+  }
+]

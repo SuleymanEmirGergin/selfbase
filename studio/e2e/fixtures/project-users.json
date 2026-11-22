@@ -1,0 +1,19 @@
+{
+  "users": [
+    {
+      "id": "7c2d0000-0000-4000-8000-000000000001",
+      "email": "ada@example.test",
+      "phone": "",
+      "email_confirmed_at": "2026-11-21T08:00:00Z",
+      "last_sign_in_at": null,
+      "created_at": "2026-11-21T07:59:00Z",
+      "banned_until": null,
+      "identities": [
+        {
+          "provider": "email"
+        }
+      ]
+    }
+  ],
+  "total": 1
+}

@@ -1,0 +1,88 @@
+{
+  "id": "archiveprojectrefccc",
+  "ref": "archiveprojectrefccc",
+  "organization_id": "8a0f2c1e-0000-4000-8000-0000000000a1",
+  "name": "archive",
+  "region": "main",
+  "status": "INACTIVE",
+  "created_at": "2026-11-20T10:00:00Z",
+  "database": {
+    "host": "db",
+    "version": "17",
+    "postgres_engine": "17",
+    "release_channel": "ga"
+  },
+  "size": "micro",
+  "template_version": "2.1.0",
+  "current_template_version": "2.1.0",
+  "urls": {
+    "api": "https://archiveprojectrefccc.example.test",
+    "legacy": []
+  },
+  "certificate": "ok",
+  "smtp_configured": true,
+  "services": [
+    {
+      "service": "db",
+      "exists": true,
+      "state": "exited",
+      "health": "none",
+      "specHash": "3f9a1c",
+      "templateVersion": "2.0.0",
+      "memLimitMb": 512,
+      "proxyAttached": false,
+      "memUsageMb": null
+    },
+    {
+      "service": "rest",
+      "exists": true,
+      "state": "exited",
+      "health": "none",
+      "specHash": "3f9a1c",
+      "templateVersion": "2.0.0",
+      "memLimitMb": 128,
+      "proxyAttached": false,
+      "memUsageMb": null
+    },
+    {
+      "service": "core",
+      "exists": true,
+      "state": "exited",
+      "health": "none",
+      "specHash": "3f9a1c",
+      "templateVersion": "2.0.0",
+      "memLimitMb": 256,
+      "proxyAttached": true,
+      "memUsageMb": null
+    },
+    {
+      "service": "fn",
+      "exists": true,
+      "state": "exited",
+      "health": "none",
+      "specHash": "3f9a1c",
+      "templateVersion": "2.0.0",
+      "memLimitMb": 256,
+      "proxyAttached": false,
+      "memUsageMb": null
+    },
+    {
+      "service": "pooler",
+      "exists": true,
+      "state": "exited",
+      "health": "none",
+      "specHash": "3f9a1c",
+      "templateVersion": "2.0.0",
+      "memLimitMb": 32,
+      "proxyAttached": false,
+      "memUsageMb": null
+    }
+  ],
+  "last_job": {
+    "id": "5b7e0c3d-0000-4000-8000-0000000000e2",
+    "type": "project.pause",
+    "status": "succeeded",
+    "step": 1,
+    "error": null
+  }
+}

@@ -427,4 +427,9 @@ a.btn.primary { color: var(--accent-fg); }
 @media (max-width: 760px) {
   .org-switch { display: none; }
   .menu-open .org-switch { display: flex; }
+  /* list tables become stacked rows instead of scrolling sideways */
+  .list-table, .list-table tbody { display: block; min-width: 0; }
+  .list-table thead { display: none; }
+  .list-table tr { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  .list-table td { display: block; border: 0; padding: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 }
