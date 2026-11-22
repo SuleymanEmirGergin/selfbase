@@ -27,7 +27,10 @@ npm run acceptance -w acceptance      # configured only by the variables below
   unknown function is 404; `/admin/*` and `/panel/` on the project host are 404; Management API get project, health,
   api-keys (anon in full, service_role masked), pause → 540 → restore → 200. It stops before any write when
   `GET /platform/projects/{ref}` does not report `smtp_configured: false`. Every table, policy, bucket, object, user
-  and mail-log row it makes starts with the run prefix (`acc_…`, in `last-run.json`) and is removed in `afterAll`.
+  and mail-log row it makes starts with the run prefix (`acc_…`, in `last-run.json`; users and mail rows with `acc_….`)
+  and is removed in `afterAll`. That cleanup runs only once the SMTP check has passed. Before it starts, a project
+  that a failed pause/restore case left paused is restored (up to 240 s). Each step runs on its own, every failure is
+  listed, and the last case, `cleanup: nothing with the run prefix is left`, counts what remains.
 - `live`: no sign-up, no schema change. Health, `/rest/v1/` with the anon key, one object of a public bucket when
   there is one, a realtime connection (ping/pong), the hidden paths, Management API get, health and masked keys, and
   the sign-in above. The only writes are that sign-in's session and its sign-out.

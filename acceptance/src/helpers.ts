@@ -69,7 +69,7 @@ export async function mgmt(method: string, path: string, body?: unknown) {
 /** SQL through the Management API (`/database/query`); rows as objects. */
 export async function sql(query: string): Promise<Record<string, any>[]> {
   const r = await mgmt('POST', `/v1/projects/${env.ref}/database/query`, { query })
-  if (r.status !== 201) throw new Error(`database/query -> ${r.status}: ${r.text.slice(0, 300)}`)
+  if (r.status !== 201) throw new Error(`database/query -> ${r.status}: ${r.text.slice(0, NOTE)}`)
   return r.json
 }
 /** A SQL string literal. */
@@ -92,6 +92,10 @@ export async function waitFor<T>(what: string, fn: () => Promise<T | false | und
 
 // ---- one summary line per case, and last-run.json ----
 
+/** Failure notes and response excerpts are capped at this many characters. */
+export const NOTE = 300
+export const firstLine = (e: unknown) => String((e as Error)?.message ?? e).split('\n')[0].slice(0, NOTE)
+
 type Result = { status: 'passed' | 'failed' | 'skipped'; ms: number; note?: string }
 const started = Date.now()
 const declared: string[] = []
@@ -112,10 +116,25 @@ export function kase(name: string, fn: (skip: (why: string) => never) => Promise
       await fn(skip)
       results.set(name, { status: 'passed', ms: performance.now() - t0 })
     } catch (e) {
-      if (!skipped) results.set(name, { status: 'failed', ms: performance.now() - t0, note: String((e as Error).message).split('\n')[0].slice(0, 200) })
+      if (!skipped) results.set(name, { status: 'failed', ms: performance.now() - t0, note: firstLine(e) })
       throw e
     }
   })
+}
+
+/** A case that runs in afterAll (after the cleanup): declared now, so it is listed as not run when it never runs. */
+export function laterCase(name: string) {
+  declared.push(name)
+  return async (fn: () => Promise<void>): Promise<string | undefined> => {
+    const t0 = performance.now()
+    try {
+      await fn()
+      results.set(name, { status: 'passed', ms: performance.now() - t0 })
+    } catch (e) {
+      results.set(name, { status: 'failed', ms: performance.now() - t0, note: firstLine(e) })
+      return `${name}: ${firstLine(e)}`
+    }
+  }
 }
 
 /** Prints one line per case and writes acceptance/last-run.json (git-ignored). */
@@ -130,6 +149,7 @@ export function summary(extra: Record<string, unknown> = {}) {
   const duration_ms = Date.now() - started
   // straight to stdout: vitest's default reporter hides console output of passing runs
   process.stdout.write([`acceptance ${env.mode} on ${env.ref}:`, ...(extra.aborted ? [`ABORTED: ${extra.aborted}`] : []), ...lines,
+    ...((extra.cleanup_failures as string[] | undefined) ?? []).map((f) => `CLEANUP FAILED: ${f}`),
     `${counts.passed} passed, ${counts.failed} failed, ${counts.skipped} skipped, ${counts.not_run} not run in ${(duration_ms / 1000).toFixed(1)} s`].join('\n') + '\n')
   writeFileSync(new URL('../last-run.json', import.meta.url), JSON.stringify({ mode: env.mode, project_ref: env.ref, ...extra, counts, duration_ms,
     cases: declared.map((name) => ({ name, ...(results.get(name) ?? { status: 'not_run', ms: 0 }) })) }, null, 2) + '\n')
@@ -143,21 +163,22 @@ export async function hiddenPaths() {
 
 export async function mgmtGet() {
   const p = await mgmt('GET', `/v1/projects/${env.ref}`)
-  expect(p.status, p.text.slice(0, 200)).toBe(200)
+  expect(p.status, p.text.slice(0, NOTE)).toBe(200)
   expect(p.json.ref).toBe(env.ref)
   expect(p.json.status).toBe('ACTIVE_HEALTHY')
 }
 
 export async function mgmtHealth() {
   const h = await mgmt('GET', `/v1/projects/${env.ref}/health?services=${HEALTH_SERVICES.join(',')}`)
-  expect(h.status, h.text.slice(0, 200)).toBe(200)
+  expect(h.status, h.text.slice(0, NOTE)).toBe(200)
   expect(h.json.map((s: { name: string; healthy: boolean }) => [s.name, s.healthy])).toEqual(HEALTH_SERVICES.map((n) => [n, true]))
 }
 
 /** anon in full (it ships in every app), service_role masked. Booleans only: a failure never prints a key. */
 export async function mgmtKeys() {
   const k = await mgmt('GET', `/v1/projects/${env.ref}/api-keys`)
-  expect(k.status).toBe(200)
+  // status and error code only: this body carries keys
+  expect(k.status, `api-keys -> ${k.status} ${k.json?.error ?? ''}`).toBe(200)
   const key = (name: string): string => k.json.find((x: { name: string }) => x.name === name)?.api_key ?? ''
   expect(key('anon') === env.anon, 'anon is the project key, in full').toBe(true)
   const svc = key('service_role')

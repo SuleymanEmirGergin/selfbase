@@ -5,7 +5,7 @@
 import { randomBytes } from 'node:crypto'
 import { afterAll, beforeAll, describe, expect } from 'vitest'
 import type { SupabaseClient } from '../../client/src/index.ts'
-import { client, env, hiddenPaths, http, kase, lit, mgmt, mgmtGet, mgmtHealth, mgmtKeys, sql, summary, waitFor } from './helpers.ts'
+import { client, env, firstLine, hiddenPaths, http, kase, laterCase, lit, mgmt, mgmtGet, mgmtHealth, mgmtKeys, sql, summary, waitFor } from './helpers.ts'
 
 const prefix = `acc_${Date.now().toString(36)}${randomBytes(2).toString('hex')}`
 const T = `${prefix}_notes`
@@ -13,9 +13,12 @@ const PUB = `${prefix}_pub`
 const PRIV = `${prefix}_priv`
 const POLICIES = ['own', 'pub insert', 'pub select', 'priv insert', 'priv select'].map((p) => `${prefix} ${p}`)
 const PASSWORD = `acc-${randomBytes(12).toString('base64url')}`
+// the '.' after the prefix is the boundary the cleanup matches users and mail_log rows on
 const email = (who: string) => `${prefix}.${who}@example.test`
+const USERS = `${prefix}.*@example.test`
 
 let aborted: string | undefined
+let gatePassed = false
 let A: SupabaseClient
 let B: SupabaseClient
 const uploaded: [bucket: string, path: string][] = []
@@ -47,9 +50,11 @@ describe.skipIf(env.mode !== 'full')('full', () => {
     const p = await mgmt('GET', `/platform/projects/${env.ref}`)
     if (p.status !== 200) throw new Error(`GET /platform/projects/${env.ref} -> ${p.status}`)
     if (p.json.smtp_configured !== false) {
-      aborted = `smtp_configured is ${p.json.smtp_configured}: full mode needs a project without SMTP; nothing was written`
+      aborted = `smtp_configured is ${p.json?.smtp_configured}: full mode needs a project without SMTP; nothing was written`
       throw new Error(aborted)
     }
+    // the only place it is set: afterAll touches the project only after this
+    gatePassed = true
     await sql(`
       create table public."${T}" (id uuid primary key default gen_random_uuid(), owner uuid not null default auth.uid(), body text);
       alter table public."${T}" enable row level security;
@@ -66,23 +71,56 @@ describe.skipIf(env.mode !== 'full')('full', () => {
   })
 
   afterAll(async () => {
+    // every step on its own, so one failure does not skip the rest; all failures are reported at the end
+    const failures: string[] = []
+    const step = async (what: string, fn: () => Promise<unknown>) => {
+      try {
+        await fn()
+      } catch (e) {
+        failures.push(`${what}: ${firstLine(e)}`)
+      }
+    }
     try {
-      if (aborted) return
-      await A?.removeAllChannels()
-      await B?.removeAllChannels()
+      if (!gatePassed) return
+      await step('close A channels', async () => A?.removeAllChannels())
+      await step('close B channels', async () => B?.removeAllChannels())
+      if (!(await running())) {
+        failures.push(`project not ACTIVE_HEALTHY after a restore attempt; left with the run prefix: table ${T}; policies ${POLICIES.join(', ')}; `
+          + `buckets ${PUB}, ${PRIV}; objects ${uploaded.map(([b, p]) => `${b}/${p}`).join(', ') || 'none'}; users and mail_log rows of ${USERS}`)
+        return
+      }
       // through the storage API, so the files go too; then the rows SQL made
       const svc = client(env.service)
-      for (const [bucket, path] of uploaded) await svc.storage.from(bucket).remove([path])
-      await sql(`
-        drop table if exists public."${T}";
-        ${POLICIES.slice(1).map((p) => `drop policy if exists "${p}" on storage.objects;`).join('\n')}
-        delete from storage.objects where bucket_id in (${lit(PUB)}, ${lit(PRIV)});
-        delete from storage.buckets where id in (${lit(PUB)}, ${lit(PRIV)});
-        delete from auth.users where starts_with(email, ${lit(prefix)});
-        delete from selfbase.mail_log where starts_with(to_email, ${lit(prefix)});`)
+      for (const [bucket, path] of uploaded) {
+        await step(`remove ${bucket}/${path}`, async () => {
+          const r = await svc.storage.from(bucket).remove([path])
+          if (r.error) throw new Error(r.error.message)
+        })
+      }
+      for (const statement of [
+        `drop table if exists public."${T}"`,
+        ...POLICIES.slice(1).map((p) => `drop policy if exists "${p}" on storage.objects`),
+        `delete from storage.objects where bucket_id in (${lit(PUB)}, ${lit(PRIV)})`,
+        `delete from storage.buckets where id in (${lit(PUB)}, ${lit(PRIV)})`,
+        `delete from auth.users where starts_with(email, ${lit(`${prefix}.`)})`,
+        `delete from selfbase.mail_log where starts_with(to_email, ${lit(`${prefix}.`)})`,
+      ]) await step(statement, () => sql(statement))
+      const left = await nothingLeft(async () => {
+        const [c] = await sql(`select
+          (select count(*) from pg_class where starts_with(relname, ${lit(prefix)})) as relations,
+          (select count(*) from pg_policies where starts_with(policyname, ${lit(prefix)})) as policies,
+          (select count(*) from storage.buckets where starts_with(id, ${lit(prefix)})) as buckets,
+          (select count(*) from storage.objects where starts_with(bucket_id, ${lit(prefix)})) as objects,
+          (select count(*) from auth.users where starts_with(email, ${lit(`${prefix}.`)})) as users,
+          (select count(*) from selfbase.mail_log where starts_with(to_email, ${lit(`${prefix}.`)})) as mail_log`)
+        const nonZero = Object.entries(c).filter(([, n]) => Number(n) !== 0)
+        if (nonZero.length) throw new Error(`left: ${nonZero.map(([k, n]) => `${k} ${n}`).join(', ')}`)
+      })
+      if (left) failures.push(left)
     } finally {
-      summary({ prefix, ...(aborted ? { aborted } : {}) })
+      summary({ prefix, ...(aborted ? { aborted } : {}), ...(failures.length ? { cleanup_failures: failures } : {}) })
     }
+    if (failures.length) throw new Error(`cleanup: ${failures.join(' | ')}`)
   })
 
   kase('auth: sign-up, mailed confirmation link, verify, sign-in', async () => {
@@ -173,4 +211,25 @@ describe.skipIf(env.mode !== 'full')('full', () => {
     await waitFor('200 again', async () => (await http('/health', {}, 5000).catch(() => null))?.status === 200, 120_000, 1000)
     await waitFor('ACTIVE_HEALTHY', async () => (await mgmt('GET', `/v1/projects/${env.ref}`)).json?.status === 'ACTIVE_HEALTHY', 120_000, 1000)
   })
+
+  // runs in afterAll, after the cleanup
+  const nothingLeft = laterCase('cleanup: nothing with the run prefix is left')
 })
+
+/**
+ * Waits (bounded) for ACTIVE_HEALTHY so the cleanup can reach the database; a project left paused by a failed or
+ * timed-out pause/restore case is restored first. false when it does not come back in time.
+ */
+async function running(): Promise<boolean> {
+  const path = `/v1/projects/${env.ref}`
+  try {
+    await waitFor('ACTIVE_HEALTHY for the cleanup', async () => {
+      const s = (await mgmt('GET', path)).json?.status
+      if (s === 'INACTIVE' || s === 'RESTORE_FAILED') await mgmt('POST', `${path}/restore`)
+      return s === 'ACTIVE_HEALTHY'
+    }, 240_000, 2000)
+    return true
+  } catch {
+    return false
+  }
+}

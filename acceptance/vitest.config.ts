@@ -6,6 +6,7 @@ export default defineConfig({
     // the cases of a mode share state and run in order; pause and restore alone take about half a minute
     fileParallelism: false,
     testTimeout: 180_000,
-    hookTimeout: 120_000,
+    // full's afterAll may restore a project a failed case left paused (up to 240 s) before it cleans up
+    hookTimeout: 420_000,
   },
 })
