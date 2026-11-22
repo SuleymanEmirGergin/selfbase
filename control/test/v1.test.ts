@@ -129,18 +129,24 @@ describe('/v1/projects', () => {
 })
 
 describe('/v1/projects/{ref}/api-keys', () => {
-  test('without reveal no full key is shown', async () => {
+  test('without reveal anon is in full (the CLI reads it here) and service_role is masked', async () => {
     const text = await (await withToken(reader.token, 'GET', `/v1/projects/${p.ref}/api-keys`)).text()
     const keys = JSON.parse(text)
     expect(keys.map((k: any) => [k.name, k.type])).toEqual([['anon', 'legacy'], ['service_role', 'legacy']])
-    expect(text).not.toContain(p.secrets.ANON_KEY)
+    expect(keys[0].api_key).toBe(p.secrets.ANON_KEY)
     expect(text).not.toContain(p.secrets.SERVICE_ROLE_KEY)
+    expect((await pool.query(`select 1 from control.audit_log where action like '%api-keys%'`)).rowCount).toBe(0)
   })
 
-  test('reveal=true needs project.keys', async () => {
+  test('reveal=true needs project.keys and writes an audit row without the key', async () => {
     expect((await withToken(reader.token, 'GET', `/v1/projects/${p.ref}/api-keys?reveal=true`)).status).toBe(403)
     const keys = await (await withToken(dev.token, 'GET', `/v1/projects/${p.ref}/api-keys?reveal=true`)).json()
     expect(keys.map((k: any) => k.api_key)).toEqual([p.secrets.ANON_KEY, p.secrets.SERVICE_ROLE_KEY])
+    const rows = (await pool.query(`select * from control.audit_log where action like '%api-keys%'`)).rows
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ actor: 'dev@example.test', project_id: p.id, org_id: acme.id, target: 'service_role',
+      action: 'GET /v1/projects/:ref/api-keys' })
+    expect(JSON.stringify(rows)).not.toContain(p.secrets.SERVICE_ROLE_KEY)
   })
 })
 

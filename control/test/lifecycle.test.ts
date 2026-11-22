@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from 'vi
 import { config } from '../src/config.ts'
 import { pool } from '../src/db.ts'
 import { newRef } from '../src/ids.ts'
-import { addDomain } from '../src/hosts.ts'
+import { addDomain, removeDomain } from '../src/hosts.ts'
 import { createProject, enqueue, startWorkers } from '../src/jobs/index.ts'
 import { probeCertificate } from '../src/cert.ts'
 import { AdmissionError } from '../src/admission.ts'
@@ -163,7 +163,24 @@ test('pause then restore', async () => {
   row = await project(p.id)
   expect(row.status).toBe('ACTIVE_HEALTHY')
   expect(row.paused_at).toBeNull()
-  expect(fake.callsOf('start')).toHaveLength(1)
+  // restore goes through ensure (which starts stopped containers), so changes made while paused apply
+  expect(fake.callsOf('ensure')).toHaveLength(2)
+  expect(fake.state(p.ref).services.every((s) => s.state === 'running')).toBe(true)
+})
+
+test('a domain removed while paused is gone from the router after restore', async () => {
+  const { project: p, jobId } = await create()
+  workers()
+  await finished(jobId)
+  await addDomain(pool, p.id, 'api.example.com', 'custom')
+  await finished(await enqueue(pool, { type: 'project.apply', projectId: p.id, payload: { recreate: ['core'] }, createdBy: null }))
+  expect(fake.callsOf('ensure').at(-1)!.args[0].hosts).toEqual([`${p.ref}.example.test`, 'api.example.com'])
+  expect((await finished(await enqueue(pool, { type: 'project.pause', projectId: p.id, payload: {}, createdBy: null }))).status).toBe('succeeded')
+  await removeDomain(pool, p.id, 'api.example.com')
+  const before = fake.callsOf('ensure').length
+  expect((await finished(await enqueue(pool, { type: 'project.restore', projectId: p.id, payload: {}, createdBy: null }))).status).toBe('succeeded')
+  expect(fake.callsOf('ensure')).toHaveLength(before + 1)
+  expect(fake.callsOf('ensure').at(-1)!.args[0].hosts).toEqual([`${p.ref}.example.test`])
 })
 
 test('restore over budget is refused and the project stays INACTIVE', async () => {

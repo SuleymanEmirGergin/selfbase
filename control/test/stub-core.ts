@@ -26,6 +26,7 @@ export async function stubCore() {
         return res.end(JSON.stringify({ error: { message: 'syntax error at or near "selec"', position: 1, hint: null } }))
       }
       if (req.url?.startsWith('/admin/files/')) res.setHeader('content-disposition', 'attachment; filename="x.bin"')
+      if (req.url === '/admin/moved') res.writeHead(302, { location: 'http://sb-internal-core:8081/admin/elsewhere' })
       res.end(JSON.stringify({ ok: true, bytes }))
     })
   })

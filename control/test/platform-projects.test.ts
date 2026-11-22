@@ -176,7 +176,8 @@ describe('logs', () => {
   })
 })
 
-test('capacity numbers add up', async () => {
+// one organization on the server: the listed projects are all of them, so their caps sum to used_mb
+test('capacity numbers add up (single organization)', async () => {
   const c = await (await withToken(dev.token, 'GET', '/platform/capacity')).json()
   const running = c.projects.filter((x: any) => x.status !== 'INACTIVE' && x.status !== 'REMOVED')
   expect(c.used_mb).toBe(running.reduce((s: number, x: any) => s + x.cap_mb, 0))

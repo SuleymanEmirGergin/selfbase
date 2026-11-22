@@ -19,7 +19,8 @@ const HOP = ['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding'
 // the caller's credentials and identity never reach the project; content-length is recomputed by fetch
 const DROP_REQUEST = new Set([...HOP, 'authorization', 'proxy-authorization', 'cookie', 'host', 'origin', 'referer', 'x-selfbase-actor',
   'content-length', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'x-real-ip'])
-const DROP_RESPONSE = new Set([...HOP, 'set-cookie'])
+// location would name core's internal address
+const DROP_RESPONSE = new Set([...HOP, 'set-cookie', 'location'])
 const HEADERS_MS = 120_000
 const DEFAULT_UPLOAD = 50 * 1024 * 1024
 
@@ -49,7 +50,10 @@ function actionFor(method: string, pathname: string): Action {
   } catch {
     throw new ApiError(400, 'invalid_path', 'the path is not valid')
   }
-  if (path.toLowerCase().replace(/\/{2,}/g, '/').replace(/\/+$/, '') === '/admin/sql') return 'project.sql'
+  const canon = path.toLowerCase().replace(/\/{2,}/g, '/').replace(/\/+$/, '')
+  // the auth schema holds password hashes and tokens: reading its rows is as much as running SQL (/admin/users,
+  // which leaves them out, stays a read)
+  if (canon === '/admin/sql' || canon.startsWith('/admin/rows/auth/')) return 'project.sql'
   return method === 'GET' || method === 'HEAD' ? 'project.read' : 'project.write'
 }
 

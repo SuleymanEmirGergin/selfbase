@@ -63,6 +63,35 @@ describe('admin forwarding', () => {
     expect(core.seen.length).toBe(n)
   })
 
+  test('rows of the auth schema (password hashes) need developer, however the path is spelled', async () => {
+    const n = core.seen.length
+    for (const path of ['/rows/auth/users', '/rows/AUTH/users', '/rows/%61uth/users', '//rows//auth/identities'])
+      expect((await withToken(reader.token, 'GET', `${A()}${path}`)).status, path).toBe(403)
+    expect(core.seen.length).toBe(n)
+    expect((await withToken(dev.token, 'GET', `${A()}/rows/auth/users`)).status).toBe(200)
+    // the Users screen's own route stays open to read_only; other schemas too
+    expect((await withToken(reader.token, 'GET', `${A()}/users?search=`)).status).toBe(200)
+    expect((await withToken(reader.token, 'GET', `${A()}/rows/public/authors`)).status).toBe(200)
+  })
+
+  test('a member of another organization gets 404 on the admin API', async () => {
+    const other = await org('other-org')
+    const stranger = await user('stranger@example.test')
+    await join(other.id, stranger.id, 'owner')
+    const n = core.seen.length
+    const real = await withToken(stranger.token, 'GET', `${A()}/schemas`)
+    const missing = await withToken(stranger.token, 'GET', '/platform/projects/zzzzzzzzzzzzzzzzzzzz/admin/schemas')
+    expect([real.status, missing.status]).toEqual([404, 404])
+    expect(await real.json()).toEqual(await missing.json())
+    expect(core.seen.length).toBe(n)
+  })
+
+  test('core\'s location header is not passed on', async () => {
+    const res = await withToken(dev.token, 'GET', `${A()}/moved`)
+    expect(res.status).toBe(302)
+    expect(res.headers.get('location')).toBeNull()
+  })
+
   test('a path cannot leave /admin', async () => {
     const res = await withToken(dev.token, 'GET', `${A()}/%2e%2e/rest/v1/`)
     expect(res.status).toBe(404)
@@ -122,8 +151,16 @@ describe('hosts', () => {
       expect(res.status, path).toBe(540)
       expect(await res.json()).toEqual({ message: 'project paused' })
     }
-    // a running project's host and a stranger's are the same 404
-    for (const h of [`${p.ref}.${config.baseDomain}`, 'evil.example.com', `${paused.ref}.${config.baseDomain}.evil.com`]) {
+    // every status where the project is not meant to serve, not only INACTIVE
+    for (const status of ['PAUSING', 'PAUSE_FAILED', 'RESTORING', 'RESTORE_FAILED']) {
+      const q = await project(acme2.id, { status })
+      expect((await app.request('/', { headers: { host: `${q.ref}.${config.baseDomain}` } })).status, status).toBe(540)
+    }
+    const removed = await project(acme2.id, { status: 'REMOVED' })
+    const coming = await project(acme2.id, { status: 'COMING_UP' })
+    // a running project's host, a removed one's and a stranger's are the same 404
+    for (const h of [`${p.ref}.${config.baseDomain}`, `${removed.ref}.${config.baseDomain}`, `${coming.ref}.${config.baseDomain}`,
+      'evil.example.com', `${paused.ref}.${config.baseDomain}.evil.com`]) {
       const res = await app.request('/platform/login', { method: 'POST', headers: { host: h } })
       expect(res.status, h).toBe(404)
       expect(await res.json()).toEqual({ message: 'not found' })

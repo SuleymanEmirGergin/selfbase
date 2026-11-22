@@ -3,6 +3,7 @@
 import { Hono } from 'hono'
 import type { Context, Handler } from 'hono'
 import { AdmissionError } from '../admission.ts'
+import { writeAudit } from '../audit.ts'
 import { pool } from '../db.ts'
 import { ApiError } from '../errors.ts'
 import { adminSql } from '../forward.ts'
@@ -80,8 +81,14 @@ op(v1, 'get', '/projects/:ref/health', 'v1-get-services-health', async (c) => {
 op(v1, 'get', '/projects/:ref/api-keys', 'v1-get-project-api-keys', async (c: Context<Env>) => {
   const reveal = c.req.query('reveal') === 'true'
   const keys = await legacyKeys(await projectFor(c, reveal ? 'project.keys' : 'project.read'))
-  const show = (k: string) => (reveal ? k : mask(k))
-  return c.json([{ name: 'anon', api_key: show(keys.anon), type: 'legacy' }, { name: 'service_role', api_key: show(keys.service_role), type: 'legacy' }])
+  if (reveal) {
+    // a GET is not audited by the middleware; this one hands out service_role (the name is recorded, never the key)
+    c.set('audit', { ...c.get('audit'), target: 'service_role' })
+    await writeAudit(c, { status: 200, reveal: true })
+  }
+  // anon is public (the CLI reads it here); service_role only with reveal
+  return c.json([{ name: 'anon', api_key: keys.anon, type: 'legacy' },
+    { name: 'service_role', api_key: reveal ? keys.service_role : mask(keys.service_role), type: 'legacy' }])
 })
 
 op(v1, 'post', '/projects/:ref/database/query', 'v1-run-a-query', async (c) => {

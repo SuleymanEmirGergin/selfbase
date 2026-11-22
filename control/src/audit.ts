@@ -34,13 +34,18 @@ export const audit = createMiddleware<Env>(async (c, next) => {
     if (body && typeof body === 'object' && !Array.isArray(body)) bodyKeys = Object.keys(body)
   }
   await next()
+  await writeAudit(c, { status: c.res.status, body_keys: bodyKeys })
+})
+
+/** The row for this request, from c.get('audit'); reads that disclose a secret call it themselves (GETs are not audited). */
+export async function writeAudit(c: Context<Env>, details: Record<string, unknown>): Promise<void> {
   const scope = c.get('audit') ?? {}
   await pool
     .query(
       `insert into control.audit_log (actor, org_id, project_id, action, target, ip, details) values ($1, $2, $3, $4, $5, $6, $7)`,
       [c.get('user')?.email ?? 'anonymous', scope.orgId ?? null, scope.projectId ?? null, `${c.req.method} ${apiRoute(c) ?? c.req.path}`,
-        scope.target ?? null, clientIp(c), { status: c.res.status, body_keys: bodyKeys }],
+        scope.target ?? null, clientIp(c), details],
     )
-    // the answer already happened; a lost row is logged, without the request's data
+    // the answer already happened (or is about to); a lost row is logged, without the request's data
     .catch((e: Error) => console.error(`audit: ${e.message}`))
-})
+}
