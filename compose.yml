@@ -54,6 +54,9 @@ services:
       AUTH_CONFIRM_EMAIL: ${AUTH_CONFIRM_EMAIL:-true}
       AUTH_PHONE_ENABLED: ${AUTH_PHONE_ENABLED:-false}
       AUTH_MIN_PASSWORD: ${AUTH_MIN_PASSWORD:-6}
+      AUTH_OTP_EXPIRY: ${AUTH_OTP_EXPIRY:-3600}
+      AUTH_EMAIL_INTERVAL: ${AUTH_EMAIL_INTERVAL:-60}
+      AUTH_SMS_HOOK_SECRET: ${AUTH_SMS_HOOK_SECRET:-}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-}
       SMTP_USER: ${SMTP_USER:-}
@@ -61,9 +64,13 @@ services:
       SMTP_FROM: ${SMTP_FROM:-}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_AUTH_URL: ${GOOGLE_AUTH_URL:-https://accounts.google.com/o/oauth2/v2/auth}
+      GOOGLE_TOKEN_URL: ${GOOGLE_TOKEN_URL:-https://oauth2.googleapis.com/token}
+      GOOGLE_USERINFO_URL: ${GOOGLE_USERINFO_URL:-https://openidconnect.googleapis.com/v1/userinfo}
       PANEL_ADMIN_EMAIL: ${PANEL_ADMIN_EMAIL:-}
       PANEL_ADMIN_PASSWORD_HASH: ${PANEL_ADMIN_PASSWORD_HASH:-}
       STORAGE_DIR: ${STORAGE_DIR:-/data/storage}
+      STORAGE_MAX_UPLOAD_BYTES: ${STORAGE_MAX_UPLOAD_BYTES:-52428800}
       FUNCTIONS_DIR: ${FUNCTIONS_DIR:-}
       PGRST_URL: ${PGRST_URL:-http://rest:3000}
       FN_URL: ${FN_URL:-http://fn:8000}
@@ -95,6 +102,7 @@ services:
       SUPABASE_DB_URL: postgres://postgres:${POSTGRES_PASSWORD}@db:5432/postgres
       JWT_SECRET: ${JWT_SECRET}
       FUNCTIONS_DIR: /supabase/functions
+      FN_IMPORT_TIMEOUT_MS: ${FN_IMPORT_TIMEOUT_MS:-30000}
     volumes:
       - ${SUPABASE_DIR:-./fn/empty}:/supabase:ro
       - ./client/dist:/client:ro
