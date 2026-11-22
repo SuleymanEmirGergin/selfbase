@@ -1,0 +1,78 @@
+# Fixture in the shape of the v2 template (Task 5): the strict subset the provisioner accepts.
+services:
+  db:
+    image: ${REGISTRY}/selfbase-db:${TEMPLATE_VERSION}
+    command: ["postgres", "-c", "shared_buffers=${DB_SHARED_BUFFERS}", "-c", "max_connections=${DB_MAX_CONNECTIONS}"]
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      AUTHENTICATOR_PASSWORD: ${AUTHENTICATOR_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-h", "localhost"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    stop_grace_period: 1m
+
+  rest:
+    image: ${REGISTRY}/selfbase-rest:${TEMPLATE_VERSION}
+    environment:
+      PGRST_DB_URI: postgres://authenticator:${AUTHENTICATOR_PASSWORD}@db:5432/postgres
+      PGRST_DB_SCHEMAS: ${PGRST_DB_SCHEMAS:-public}
+      PGRST_DB_MAX_ROWS: ${PGRST_DB_MAX_ROWS:-1000}
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+    depends_on: [db]
+    healthcheck:
+      test: ["CMD", "postgrest", "--ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  core:
+    image: ${REGISTRY}/selfbase-core:${TEMPLATE_VERSION}
+    init: true
+    environment:
+      DB_HOST: db
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      ADMIN_TOKEN: ${ADMIN_TOKEN}
+      ADMIN_PORT: 8081
+      PUBLIC_URL: ${PUBLIC_URL}
+      SITE_URL: ${SITE_URL}
+      STORAGE_DIR: /data/storage
+    volumes:
+      - storage:/data/storage
+    depends_on: [db, rest]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  fn:
+    image: ${REGISTRY}/selfbase-fn:${TEMPLATE_VERSION}
+    environment:
+      SUPABASE_URL: http://core:8080
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
+      FUNCTIONS_DIR: /supabase/functions
+      FN_IMPORT_TIMEOUT_MS: ${FN_IMPORT_TIMEOUT_MS:-30000}
+    volumes:
+      - functions:/supabase:ro
+      - denocache:/deno-dir
+    depends_on: [core]
+
+  pooler:
+    image: ${REGISTRY}/selfbase-pooler:${TEMPLATE_VERSION}
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POOL_SIZE: ${POOL_SIZE}
+    depends_on: [db]
+    user: "70:70"
+
+volumes:
+  pgdata:
+  storage:
+  functions:
+  denocache:

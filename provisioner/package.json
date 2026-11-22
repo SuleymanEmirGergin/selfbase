@@ -4,10 +4,12 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.ts",
+    "test": "node --test test/template.test.ts test/spec.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "yaml": "^2.9.1"
   }
 }
