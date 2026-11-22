@@ -79,11 +79,23 @@ services:
       timeout: 3s
       retries: 10
 
-  # Placeholder until the function host task replaces it: answers 404 on :8000.
+  # Deno function host. FUNCTIONS_DIR is the host path of supabase/functions; config.toml sits next to it.
   fn:
-    image: denoland/deno:alpine-2.1.4
+    build: ./fn
     restart: unless-stopped
-    command: ["deno", "eval", "Deno.serve({ port: 8000 }, () => new Response('Not Found', { status: 404 }))"]
+    env_file:
+      - path: fn.env
+        required: false
+    environment:
+      SUPABASE_URL: http://core:8080
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
+      SUPABASE_DB_URL: postgres://postgres:${POSTGRES_PASSWORD}@db:5432/postgres
+      JWT_SECRET: ${JWT_SECRET}
+    volumes:
+      - ${FUNCTIONS_DIR:?set FUNCTIONS_DIR}:/functions:ro
+      - ${FUNCTIONS_DIR}/../config.toml:/config.toml:ro
+      - ./client/dist:/client:ro
     healthcheck:
       test: ["CMD", "nc", "-z", "127.0.0.1", "8000"]
       interval: 10s

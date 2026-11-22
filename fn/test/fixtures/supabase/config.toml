@@ -1,0 +1,16 @@
+project_id = "fixture"
+
+[functions.private]
+verify_jwt = true
+
+[functions.public]
+verify_jwt = false
+
+[functions.hello]
+verify_jwt = false
+
+[functions.broken]
+verify_jwt = false
+
+[functions.uses-client]
+verify_jwt = false
