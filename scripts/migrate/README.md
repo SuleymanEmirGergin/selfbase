@@ -104,3 +104,17 @@ database (read-only mount). `REPLAY_CONTINUE=1` runs each file in its own transa
 failures instead of stopping at the first.
 
 Tests: `node --test scripts/migrate/test/rewrite.test.mjs` and `bash scripts/migrate/test/lib.test.sh`.
+
+## After the migration: sync and backup
+
+- `node scripts/sync.mjs --repo <corteqsemir> --baseline` once right after the migration, then
+  `node scripts/sync.mjs --repo <corteqsemir>` whenever the team adds migrations (`--dry-run` lists
+  first; `--mark-applied <file>` records a file applied by hand). Same `TARGET_DB_URL` rules as 02.
+  Details in the header of `scripts/sync.mjs`.
+- The compose `backup` service writes `/backups/<UTC timestamp>/` (database, roles, storage) every
+  day at 03:15 UTC; `docker compose run --rm backup /scripts/backup.sh` makes one now.
+- `scripts/restore.sh <timestamp> --yes-overwrite` restores over the running stack. It does not
+  remove objects created after the backup and puts the migration ledger back to the backup's state
+  (sync then fails on "already exists" until those objects are dropped or marked with
+  `--mark-applied`). The safer path, restoring into a new database and switching over, is spelled
+  out command by command in the header of `scripts/restore.sh`.

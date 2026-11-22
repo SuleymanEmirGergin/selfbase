@@ -3,12 +3,18 @@
 // The backup round trip additionally needs the full stack (compose.yml), see the "backup" suite below.
 import { beforeEach, describe, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { scan } from '../sync.mjs'
+import { LOCK_KEY, scan } from '../sync.mjs'
+
+async function waitFor(cond) {
+  for (let i = 0; i < 60; i++) { if (cond()) return; await sleep(500) }
+  throw new Error('timed out')
+}
 
 const root = fileURLToPath(new URL('../..', import.meta.url))
 const script = fileURLToPath(new URL('../sync.mjs', import.meta.url))
@@ -49,6 +55,7 @@ describe('sync', () => {
     assert.equal(r.status, 1, r.stderr)
     assert.match(r.stderr, new RegExp(`FAILED ${M2}`))
     assert.match(r.stderr, /relation "t13.missing" does not exist/)
+    assert.match(r.stderr, /PostgREST schema reload sent/) // M1 was applied in this run
     assert.match(r.stderr, new RegExp(`${M2}:3: ERROR`)) // file line of the failing statement
     assert.equal(applied(), M1)
     assert.equal(sql("select to_regclass('t13.b') is null"), 't') // the failed file left nothing
@@ -62,7 +69,8 @@ describe('sync', () => {
     r = sync(d)
     assert.equal(r.status, 0, r.stderr)
     assert.match(r.stdout, /applied 20260102000000_two\.sql/)
-    assert.match(r.stdout, /1 migrations applied; PostgREST schema reload sent/)
+    assert.match(r.stdout, /1 migrations applied/)
+    assert.match(r.stderr, /PostgREST schema reload sent/)
     assert.match(r.stdout, /selfbase\.enable_realtime/)
     assert.equal(sql('select count(*) from t13.a'), '1')
     assert.equal(applied(), `${M1},${M2}`)
@@ -81,11 +89,92 @@ describe('sync', () => {
     const d = repo({ [M1]: ok1, [M2]: 'create table t13.c (id int);\ncommit;\ncreate table t13.d (id int);\n' })
     const r = sync(d)
     assert.equal(r.status, 1)
-    assert.match(r.stderr, new RegExp(`REFUSED ${M2}: has statements other than SELECT after its COMMIT`))
-    assert.equal(applied(), M1)
+    assert.match(r.stderr, new RegExp(`REFUSED ${M2}: has a statement after its COMMIT .*move it inside the transaction, before the COMMIT`))
+    assert.equal(applied(), M1) // the earlier file of the same run stays applied and recorded
+    assert.equal(sql('select count(*) from t13.a'), '1')
+    assert.match(r.stderr, /PostgREST schema reload sent/)
     assert.equal(sql("select to_regclass('t13.c') is null"), 't')
     const dry = sync(d, '--dry-run')
     assert.match(dry.stdout, /REFUSED/)
+  })
+
+  test('a wrapper whose body fails leaves no record and no objects', () => {
+    const d = repo({ [M1]: 'begin;\ncreate table t13.w (id int);\nselect 1/0;\ncommit;\n' })
+    const r = sync(d)
+    assert.equal(r.status, 1)
+    assert.match(r.stderr, /division by zero/)
+    assert.equal(applied(), '')
+    assert.equal(sql("select to_regclass('t13.w') is null"), 't')
+    assert.doesNotMatch(r.stderr, /reload/) // nothing was applied
+  })
+
+  test('a wrapper BEGIN with options opens the transaction, so the options take effect', () => {
+    const d = repo({ [M1]: 'begin isolation level serializable;\n' +
+      "create table t13.iso as select current_setting('transaction_isolation') as v;\ncommit;\n" })
+    assert.equal(sync(d).status, 0)
+    assert.equal(sql('select v from t13.iso'), 'serializable')
+    assert.equal(applied(), M1)
+  })
+
+  test('a file without a version prefix and a file with a BOM are applied and recorded', () => {
+    const d = repo({ 'zz_manual.sql': 'create table t13.z (id int);', [M1]: `﻿${ok1}` })
+    const r = sync(d)
+    assert.equal(r.status, 0, r.stderr)
+    assert.equal(applied(), `${M1},zz_manual.sql`)
+    assert.equal(sql('select count(*) from supabase_migrations.schema_migrations'), '1')
+  })
+
+  test('a second concurrent sync exits with a clear message', async () => {
+    const holder = spawn('docker', ['compose', '-p', P, '-f', 'compose.test.yml', 'exec', '-T', 'db', 'psql', '-U', 'postgres', '-Xq',
+      '-c', `select pg_advisory_lock(${LOCK_KEY})`, '-c', 'select pg_sleep(60)'], { cwd: root, stdio: 'ignore' })
+    try {
+      await waitFor(() => sql(`select count(*) from pg_locks where locktype = 'advisory' and objid = ${LOCK_KEY}`) === '1')
+      const r = sync(repo({ [M1]: ok1 }))
+      assert.equal(r.status, 1)
+      assert.match(r.stderr, /another sync is running against this database/)
+      assert.equal(sql("select to_regclass('t13.a') is null"), 't')
+    } finally {
+      holder.kill()
+      sql(`select pg_terminate_backend(pid) from pg_locks where locktype = 'advisory' and objid = ${LOCK_KEY}`)
+    }
+  })
+
+  test('--mark-applied records one named file without running it', () => {
+    const d = repo({ [M1]: 'select 1/0;', [M2]: ok1 })
+    let r = sync(d, '--mark-applied', M1)
+    assert.equal(r.status, 0, r.stderr)
+    assert.equal(applied(), M1)
+    assert.equal(sync(d, '--mark-applied', 'nope.sql').status, 2)
+    r = sync(d)
+    assert.equal(r.status, 0, r.stderr)
+    assert.equal(applied(), `${M1},${M2}`)
+  })
+
+  test('--baseline with two files sharing a version marks only the one the history names, or neither', () => {
+    const A = '20260101000000_alpha.sql'
+    const B = '20260101000000_beta.sql'
+    const C = '20260102000000_gamma.sql'
+    const D = '20260102000000_delta.sql'
+    sql("insert into supabase_migrations.schema_migrations (version, name) values ('20260101000000', 'beta'), ('20260102000000', null)")
+    const d = repo({ [A]: 'select 1/0;', [B]: 'select 1/0;', [C]: 'select 1/0;', [D]: 'select 1/0;' })
+    const r = sync(d, '--baseline')
+    assert.equal(r.status, 0, r.stderr)
+    assert.match(r.stdout, /marked 1 migrations as applied/)
+    assert.equal(applied(), B)
+    assert.match(r.stdout, /these 3 migrations need a manual decision/)
+    for (const f of [A, C, D]) assert.match(r.stdout, new RegExp(`${f} {2}-> {2}node scripts/sync\\.mjs --repo .* --mark-applied ${f}`))
+  })
+
+  test('--baseline-all also works when the history matches no file', () => {
+    sql("insert into supabase_migrations.schema_migrations (version, name) values ('19990101000000', 'old')")
+    const d = repo({ [M1]: ok1 })
+    let r = sync(d, '--baseline')
+    assert.equal(r.status, 2)
+    assert.match(r.stderr, /has 1 rows but none matches a file here/)
+    r = sync(d, '--baseline-all')
+    assert.equal(r.status, 0, r.stderr)
+    assert.match(r.stderr, /ASSUMPTION/)
+    assert.equal(applied(), M1)
   })
 
   test('--dry-run lists and changes nothing', () => {
@@ -165,14 +254,19 @@ describe('backup', { skip: !BP && 'set BACKUP_TEST_PROJECT to a running compose.
     db('drop table if exists public.t13_keep; create table public.t13_keep (id int primary key, v text); ' +
       "insert into public.t13_keep values (1, 'a'), (2, 'b')")
     ok(core('mkdir -p /data/storage/t13 && echo hello > /data/storage/t13/f.txt'))
+    db("select cron.unschedule(jobid) from cron.job where jobname = 't13'; select cron.schedule('t13', '0 4 * * *', 'select 1')")
     const ts = backup()
-    assert.match(inBackup(`cat /backups/${ts}/MANIFEST`), /^db\.dump \d+ [0-9a-f]{64}\nstorage\.tar\.gz \d+ [0-9a-f]{64}$/)
+    assert.match(inBackup(`cat /backups/${ts}/MANIFEST`), /^db\.dump \d+ [0-9a-f]{64}\nglobals\.sql \d+ [0-9a-f]{64}\nstorage\.tar\.gz \d+ [0-9a-f]{64}$/)
+    assert.match(inBackup(`head -c 300 /backups/${ts}/globals.sql`), /PostgreSQL database cluster dump/)
     db("delete from public.t13_keep where id = 2; update public.t13_keep set v = 'x'")
     ok(core('rm /data/storage/t13/f.txt && echo new > /data/storage/t13/new.txt'))
 
     let r = restore(ts)
     assert.equal(r.status, 2)
     assert.match(r.stderr, /--yes-overwrite/)
+    assert.match(r.stdout, /does NOT remove objects created after the backup/)
+    assert.match(r.stdout, /1 storage files added since the backup would be deleted/)
+    db("update cron.job set active = false where jobname = 't13'")
     assert.equal(db("select string_agg(id || v, ',' order by id) from public.t13_keep"), '1x')
 
     r = restore(ts, '--yes-overwrite')
@@ -181,6 +275,7 @@ describe('backup', { skip: !BP && 'set BACKUP_TEST_PROJECT to a running compose.
     ok(dc('start', 'rest', 'core', 'fn'))
     assert.equal(db("select string_agg(id || v, ',' order by id) from public.t13_keep"), '1a,2b')
     assert.equal(ok(core('cat /data/storage/t13/f.txt')), 'hello')
+    assert.equal(db("select active from cron.job where jobname = 't13'"), 't') // the backup's job state is back
     assert.notEqual(core('test -e /data/storage/t13/new.txt').status, 0)
   })
 
@@ -197,10 +292,12 @@ describe('backup', { skip: !BP && 'set BACKUP_TEST_PROJECT to a running compose.
   })
 
   test('retention deletes old backups but keeps the newest', () => {
-    inBackup('mkdir -p /backups/20200101-000000 && touch /backups/20200101-000000/MANIFEST')
-    const ts = backup()
-    let list = inBackup('ls /backups')
-    assert.doesNotMatch(list, /20200101-000000/)
+    inBackup('mkdir -p /backups/20200101-000000 /backups/20991231-000000 /backups/.tmp-20200101-000000 && ' +
+      "touch /backups/20200101-000000/MANIFEST && touch -d '2 days ago' /backups/.tmp-20200101-000000")
+    const ts = backup() // a timestamp dir without a MANIFEST (20991231-000000) must not fail it
+    let list = inBackup('ls -A /backups')
+    assert.doesNotMatch(list, /20200101-000000/) // the old backup and the stale temp dir are gone
+    inBackup('rm -rf /backups/20991231-000000')
     assert.match(list, new RegExp(ts))
     const ts2 = backup('-e', 'BACKUP_RETENTION_DAYS=0')
     list = inBackup('ls /backups').split('\n')
@@ -208,12 +305,34 @@ describe('backup', { skip: !BP && 'set BACKUP_TEST_PROJECT to a running compose.
   })
 })
 
+test('scan: psql shapes that would run differently are refused', () => {
+  assert.match(scan('\\if false\ncommit;\n\\endif\nbegin;\nselect 1;\ncommit;\n').error, /meta-command \\if false/)
+  assert.match(scan('begin;\nselect 1 as x \\gset\ncommit;\ncreate table t (a int);\n').error, /\\gset after SQL on the same line/)
+  assert.match(scan('\\set c commit\nbegin;\nselect 1;\n').error, /meta-command \\set c commit/)
+  assert.match(scan('begin;\nselect 1;\n:c;\ncreate table t (a int);\n').error, /psql variable reference ":c;"/)
+  assert.match(scan("select :'x';").error, /psql variable reference/)
+  assert.match(scan('select :"x";').error, /psql variable reference/)
+  assert.match(scan('\\set ON_ERROR_STOP off\nselect 1;\n').error, /meta-command \\set ON_ERROR_STOP off/)
+  assert.match(scan('\\echo `rm -rf /`\n').error, /backtick/)
+  // Postgres nests block comments: this COMMIT is inside the comment
+  assert.deepEqual(scan('begin;\n/* a /* b */ commit; -- */\nselect 1;\n'), { commitAt: -1, ownBegin: true })
+  assert.match(scan('begin;\nselect 1;\ncommit;\nselect 2;\n').error,
+    /statement after its COMMIT \("select 2"\); move it inside the transaction, before the COMMIT/)
+  assert.match(scan('select 1;\nbegin isolation level serializable;\nselect 2;\ncommit;\n').error, /BEGIN with options/)
+  assert.equal(scan('begin isolation level serializable;\nselect 2;\ncommit;\n').ownBegin, true)
+})
+
+test('scan: casts, slices and time literals are not psql variables', () => {
+  assert.equal(scan("select '12:30'::time, (array[1,2,3])[1:2], x::text from t;").error, undefined)
+  assert.equal(scan('\\set ON_ERROR_STOP on\n\\SET  on_error_stop  ON\nselect f(a := 1);\n').error, undefined)
+})
+
 test('scan: dollar bodies, comments and strings do not count as transaction control', () => {
-  assert.deepEqual(scan("do $$ begin commit; end $$; -- commit;\nselect 'begin;';"), { commitAt: -1 })
+  assert.deepEqual(scan("do $$ begin commit; end $$; -- commit;\nselect 'begin;';"), { commitAt: -1, ownBegin: false })
   assert.equal(scan('begin;\nselect 1;\nend;\n').commitAt, 'begin;\nselect 1;\n'.length)
   assert.match(scan('create index concurrently i on t (a);').error, /cannot run inside a transaction/)
   assert.match(scan('begin; select 1; commit; begin; select 2; commit;').error, /more than one/)
   assert.match(scan('select 1; rollback;').error, /ROLLBACK/)
   assert.match(scan('\\i other.sql\n').error, /meta-command \\i/)
-  assert.deepEqual(scan("\\set ON_ERROR_STOP on\nbegin;\nselect 1;\ncommit;\n\\echo 'x'\nselect 2;\n").error, undefined)
+  assert.deepEqual(scan("\\set ON_ERROR_STOP on\nbegin;\nselect 1;\ncommit;\n\\echo 'x'\n").error, undefined)
 })

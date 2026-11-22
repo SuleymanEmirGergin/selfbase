@@ -108,6 +108,7 @@ services:
   # One-shot: docker compose run --rm backup /scripts/backup.sh   Restore: scripts/restore.sh <timestamp>
   backup:
     image: postgres:17
+    init: true # bash in --daily mode would ignore SIGTERM as PID 1
     restart: unless-stopped
     command: ["bash", "/scripts/backup.sh", "--daily"]
     environment:
