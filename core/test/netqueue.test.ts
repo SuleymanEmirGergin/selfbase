@@ -2,21 +2,20 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { createServer } from 'node:http'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { SignJWT } from 'jose'
 import { pool } from '../src/db.ts'
 import { startNetQueue, stopNetQueue } from '../src/netqueue/index.ts'
 import { rewriteUrl } from '../src/netqueue/worker.ts'
 
 type Hit = { method?: string; url?: string; headers: IncomingMessage['headers']; body: string }
 /** Local stand-in server that records each request and answers with `status`. */
-async function fake(status: number) {
+async function fake(status: number, headers: Record<string, string> = {}) {
   const hits: Hit[] = []
   const srv = createServer((req: IncomingMessage, res: ServerResponse) => {
     let body = ''
     req.on('data', (d) => (body += d))
     req.on('end', () => {
       hits.push({ method: req.method, url: req.url, headers: req.headers, body })
-      res.writeHead(status).end()
+      res.writeHead(status, headers).end()
     })
   })
   await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r))
@@ -45,6 +44,8 @@ const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) 
 })
 
 beforeAll(async () => {
+  // Rows left by other tests or earlier runs are not ours to send.
+  await pool.query(`update selfbase.http_queue set status = 'skipped' where status = 'pending'`)
   fn = await fake(200)
   core = await fake(200)
   await startNetQueue({ fnUrl: fn.url, coreUrl: core.url, retryDelayMs: 10 })
@@ -63,16 +64,26 @@ describe('netqueue', () => {
     expect(rewriteUrl('https://abc.supabase.co/rest/v1/t?select=*', bases)).toBe('http://core:8080/rest/v1/t?select=*')
     expect(rewriteUrl('https://example.com/hook', bases)).toBe('https://example.com/hook')
     expect(() => rewriteUrl('https://abc.supabase.co/other', bases)).toThrow(/blocked/)
+    // host normalisation: case, trailing dot, IDNA full stop
+    expect(rewriteUrl('https://ABC.Supabase.CO/functions/v1/x', bases)).toBe('http://fn:8000/x')
+    expect(rewriteUrl('https://abc.supabase.co./functions/v1/x', bases)).toBe('http://fn:8000/x')
+    expect(() => rewriteUrl('https://abc.supabase.co./other', bases)).toThrow(/blocked/)
+    expect(() => rewriteUrl('https://abc.supabase.co%E3%80%82/other', bases)).toThrow(/blocked/)
+    // userinfo is not the host
+    expect(rewriteUrl('https://abc.supabase.co@evil.example/x', bases)).toBe('https://abc.supabase.co@evil.example/x')
+    expect(() => rewriteUrl('https://evil.example@abc.supabase.co/other', bases)).toThrow(/blocked/)
+    expect(rewriteUrl('https://evil.example@abc.supabase.co/rest/v1/t', bases)).toBe('http://core:8080/rest/v1/t')
+    // only http(s)
+    expect(() => rewriteUrl('ftp://example.com/x', bases)).toThrow(/blocked/)
+    expect(() => rewriteUrl('file:///etc/passwd', bases)).toThrow(/blocked/)
   })
 
-  it('sends a supabase.co function call to FN_URL with the service role key', async () => {
-    const oldKey = await new SignJWT({ iss: 'supabase', role: 'service_role' }).setProtectedHeader({ alg: 'HS256' })
-      .sign(new TextEncoder().encode('some-other-projects-secret-0123456789'))
-    const id = await post('https://abc.supabase.co/functions/v1/x', { Authorization: `Bearer ${oldKey}` })
+  it('sends a supabase.co function call to FN_URL with headers as stored', async () => {
+    const id = await post('https://abc.supabase.co/functions/v1/x', { Authorization: 'Bearer stored-key', 'x-extra': 'y' })
     expect(await settled(id)).toMatchObject({ status: 'done', attempts: 1 })
     expect(fn.hits).toHaveLength(1)
     expect(fn.hits[0]).toMatchObject({ method: 'POST', url: '/x', body: '{"a":1}' })
-    expect(fn.hits[0].headers.authorization).toBe(`Bearer ${process.env.SERVICE_ROLE_KEY}`)
+    expect(fn.hits[0].headers).toMatchObject({ authorization: 'Bearer stored-key', 'x-extra': 'y' })
     expect(fetchSpy.mock.calls.every(([u]) => !String(u).includes('supabase.co'))).toBe(true)
   })
 
@@ -80,6 +91,30 @@ describe('netqueue', () => {
     const id = await post('https://abc.supabase.co/başka')
     expect(await settled(id)).toMatchObject({ status: 'blocked', attempts: 0 })
     expect(fetchSpy.mock.calls.every(([u]) => !String(u).includes('supabase.co'))).toBe(true)
+  })
+
+  it('does not follow redirects', async () => {
+    const target = await fake(200)
+    const redir = await fake(302, { location: `${target.url}/landed` })
+    try {
+      const id = await post(`${redir.url}/hop`)
+      expect(await settled(id)).toEqual({ status: 'failed', attempts: 3, last_error: 'HTTP 302' })
+      expect(redir.hits).toHaveLength(3)
+      expect(target.hits).toEqual([])
+    } finally {
+      await Promise.all([target, redir].map((f) => new Promise((r) => f.srv.close(r))))
+    }
+  })
+
+  it('a row with a bad header does not hold up the next row', async () => {
+    const before = fn.hits.length
+    const bad = await post('https://abc.supabase.co/functions/v1/bad', { Authorization: null })
+    const good = await post('https://abc.supabase.co/functions/v1/good')
+    expect((await settled(bad)).status).toMatch(/done|failed/)
+    expect(await settled(good)).toMatchObject({ status: 'done' })
+    const hits = fn.hits.slice(before)
+    expect(hits.map((h) => h.url)).toContain('/good')
+    expect(hits.find((h) => h.url === '/bad')?.headers.authorization).toBeUndefined()
   })
 
   it('marks a request failed after 3 attempts against a 500 target', async () => {

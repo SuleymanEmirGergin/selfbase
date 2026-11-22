@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { createServer } from 'node:http'
+import { connect as tcpConnect } from 'node:net'
 import type { AddressInfo } from 'node:net'
 import { randomUUID } from 'node:crypto'
 import WebSocket from 'ws'
@@ -91,10 +92,93 @@ describe('realtime', () => {
     const a = await connect(await user(A))
     await a.subscribe({ ref: 'f', table: 'rt_msgs', event: 'INSERT', filter: 'post_id=eq.5' })
     await pool.query(`insert into public.rt_msgs (recipient, post_id) values ($1, 4), ($1, 5)`, [A])
+    // deliveries per connection are in order, so row 4 has been handled once row 5 arrives
     await a.waitFor((m) => m.type === 'change')
-    await sleep(300)
     const changes = a.msgs.filter((m) => m.type === 'change')
     expect(changes.map((m) => m.new.post_id)).toEqual([5])
+  })
+
+  it('rejects a filter on a missing column; eq.null matches nothing', async () => {
+    const A = randomUUID()
+    const a = await connect(await user(A))
+    await a.subscribe({ ref: 'nc', table: 'rt_msgs', event: 'INSERT', filter: 'nope=eq.1' })
+    expect(a.msgs.find((m) => m.ref === 'nc')).toMatchObject({ type: 'error' })
+    await a.subscribe({ ref: 'nul', table: 'rt_msgs', event: 'INSERT', filter: 'post_id=eq.null' })
+    await a.subscribe({ ref: 'all', table: 'rt_msgs', event: 'INSERT' })
+    await pool.query(`insert into public.rt_msgs (recipient, post_id) values ($1, null)`, [A])
+    await a.waitFor((m) => m.type === 'change' && m.ref === 'all')
+    expect(a.msgs.filter((m) => m.type === 'change').map((m) => m.ref)).toEqual(['all'])
+  })
+
+  it('fans one change out to every matching ref of a connection', async () => {
+    const A = randomUUID()
+    const a = await connect(await user(A))
+    for (const ref of ['m1', 'm2', 'm3']) await a.subscribe({ ref, table: 'rt_msgs', event: ref === 'm3' ? '*' : 'INSERT' })
+    await pool.query(`insert into public.rt_msgs (recipient) values ($1)`, [A])
+    await a.waitFor((m) => m.type === 'change' && m.ref === 'm3')
+    expect(a.msgs.filter((m) => m.type === 'change').map((m) => m.ref).sort()).toEqual(['m1', 'm2', 'm3'])
+  })
+
+  it('caps subscriptions at 100 per connection', async () => {
+    const a = await connect(await user(randomUUID()))
+    for (let i = 0; i < 100; i++) a.ws.send(JSON.stringify({ type: 'subscribe', ref: `s${i}`, schema: 'public', table: 'rt_msgs', event: 'INSERT' }))
+    await a.subscribe({ ref: 's100', table: 'rt_msgs', event: 'INSERT' })
+    expect(a.msgs.filter((m) => m.type === 'subscribed')).toHaveLength(100)
+    expect(a.msgs.find((m) => m.ref === 's100')).toMatchObject({ type: 'error' })
+  })
+
+  it('delivers an UPDATE', async () => {
+    const A = randomUUID()
+    const { rows } = await pool.query(`insert into public.rt_msgs (recipient, body) values ($1, 'v1') returning id`, [A])
+    const a = await connect(await user(A))
+    await a.subscribe({ ref: 'u', table: 'rt_msgs', event: 'UPDATE' })
+    await pool.query(`update public.rt_msgs set body = 'v2' where id = $1`, [rows[0].id])
+    expect(await a.waitFor((m) => m.type === 'change')).toMatchObject({
+      ref: 'u', eventType: 'UPDATE', new: { id: Number(rows[0].id), body: 'v2' }, old: {},
+    })
+  })
+
+  it('survives a malformed frame and an oversized message', async () => {
+    // unmasked client frame: a protocol error on the server side
+    const raw = tcpConnect(Number(new URL(base).port), '127.0.0.1')
+    raw.on('error', () => {}) // the server resets the connection
+    await new Promise((r) => raw.once('connect', r))
+    const token = await user(randomUUID())
+    raw.write(`GET /realtime/v1?token=${token} HTTP/1.1
+
+Host: x
+
+Upgrade: websocket
+
+Connection: Upgrade
+
+` +
+      `Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+
+Sec-WebSocket-Version: 13
+
+
+
+`)
+    await new Promise((r) => raw.once('data', r))
+    raw.write(Buffer.from([0x81, 0x02, 0x68, 0x69]))
+    await new Promise((r) => raw.once('close', r))
+
+    const big = await connect(await user(randomUUID()))
+    const closed = new Promise<number>((r) => big.ws.once('close', r))
+    big.ws.send(JSON.stringify({ type: 'ping', pad: 'x'.repeat(17 * 1024) }))
+    expect(await closed).toBe(1009)
+
+    const ok = await connect(await user(randomUUID()))
+    ok.ws.send(JSON.stringify({ type: 'ping' }))
+    await ok.waitFor((m) => m.type === 'pong')
+  })
+
+  it('closes the connection with 4401 on a failed auth message', async () => {
+    const a = await connect(await user(randomUUID()))
+    const closed = new Promise<number>((r) => a.ws.once('close', r))
+    a.ws.send(JSON.stringify({ type: 'auth', token: 'not-a-jwt' }))
+    expect(await closed).toBe(4401)
   })
 
   it('sends nothing once the token has expired', async () => {
@@ -120,14 +204,19 @@ describe('realtime', () => {
     expect(a.msgs.filter((m) => m.type === 'change')).toEqual([])
   })
 
-  it('switches claims on an auth message', async () => {
+  it('switches claims on an auth message; the old identity stops receiving', async () => {
     const A = randomUUID()
-    const a = await connect(await user(randomUUID()))
+    const O = randomUUID()
+    const a = await connect(await user(O))
     await a.subscribe({ ref: 'r', table: 'rt_msgs', event: 'INSERT' })
     a.ws.send(JSON.stringify({ type: 'auth', token: await user(A) }))
-    await sleep(100)
+    // messages are handled in order, so the pong proves the auth message was applied
+    a.ws.send(JSON.stringify({ type: 'ping' }))
+    await a.waitFor((m) => m.type === 'pong')
+    await pool.query(`insert into public.rt_msgs (recipient) values ($1)`, [O])
     await pool.query(`insert into public.rt_msgs (recipient) values ($1)`, [A])
-    expect(await a.waitFor((m) => m.type === 'change')).toMatchObject({ new: { recipient: A } })
+    await a.waitFor((m) => m.type === 'change')
+    expect(a.msgs.filter((m) => m.type === 'change').map((m) => m.new.recipient)).toEqual([A])
   })
 
   it('re-establishes LISTEN after the connection drops', async () => {
