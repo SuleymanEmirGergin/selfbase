@@ -3,9 +3,12 @@
 
 export class ApiError extends Error {
   status: number
-  constructor(status: number, message: string) {
+  /** control's `error` code (e.g. account_exists), when the body had one */
+  code: string
+  constructor(status: number, message: string, code = '') {
     super(message)
     this.status = status
+    this.code = code
   }
 }
 
@@ -51,7 +54,9 @@ export async function request<T = unknown>(method: string, path: string, opts: O
     if (res.status === 401) signedOut()
   }
   const data = await res.json().catch(() => null)
-  if (!res.ok) throw new ApiError(res.status, (data && (data.message || data.error_description || data.msg || data.error)) || `HTTP ${res.status}`)
+  if (!res.ok)
+    throw new ApiError(res.status, (data && (data.message || data.error_description || data.msg || data.error)) || `HTTP ${res.status}`,
+      typeof data?.error === 'string' ? data.error : '')
   return data as T
 }
 
@@ -98,7 +103,9 @@ export const platform = {
   recover: (email: string) => request('POST', '/auth/v1/recover', { body: { email } }),
   /** Sets a new password with the access token of a recovery link. */
   setPassword: (accessToken: string, password: string) => request('PUT', '/auth/v1/user', { body: { password }, bearer: accessToken }),
-  acceptInvitation: (token: string, password: string) => request('POST', '/invitations/accept', { body: { token, password } }),
+  /** Without a password: an address that already has an account, accepted while signed in as it. */
+  acceptInvitation: (token: string, password?: string) =>
+    request('POST', '/invitations/accept', { body: password === undefined ? { token } : { token, password } }),
 
   projects: (slug: string) => request<Project[]>('GET', `/projects?organization_slug=${enc(slug)}`),
   createProject: (p: { organization_slug: string; name: string; size: Size }) =>
