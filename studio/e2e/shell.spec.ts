@@ -20,13 +20,14 @@ const signedIn = (): Routes => ({
 })
 
 async function mockApi(page: Page, routes: Routes) {
-  const calls: { key: string; body: unknown }[] = []
+  const calls: { key: string; body: unknown; query: URLSearchParams }[] = []
   await page.route('**/platform/**', async (route) => {
     const req = route.request()
-    const key = `${req.method()} ${new URL(req.url()).pathname.replace(/^\/platform/, '')}`
+    const url = new URL(req.url())
+    const key = `${req.method()} ${url.pathname.replace(/^\/platform/, '')}`
     let body: unknown = null
     try { body = req.postDataJSON() } catch { body = req.postData() }
-    calls.push({ key, body })
+    calls.push({ key, body, query: url.searchParams })
     const h = routes[key]
     const reply = typeof h === 'function' ? h(req) : h ?? { status: 404, body: { message: `no fixture for ${key}` } }
     await route.fulfill({ status: reply.status ?? 200, contentType: 'application/json', body: JSON.stringify(reply.body ?? {}) })
@@ -158,6 +159,57 @@ test('an owner can invite, change a role and remove a member', async ({ page }) 
   await page.getByRole('button', { name: 'Çıkar: dev@example.test' }).click()
   await page.getByRole('dialog').getByRole('button', { name: 'Çıkar' }).click()
   await expect.poll(() => api.count('DELETE /organizations/acme/members/4f1c2a9e-0000-4000-8000-000000000002')).toBe(1)
+  // both address the membership row, not only the user
+  const membership = fx('members')[1].id
+  for (const method of ['PATCH', 'DELETE'])
+    expect(api.calls.find((c) => c.key === `${method} /organizations/acme/members/4f1c2a9e-0000-4000-8000-000000000002`)!.query.get('membership_id')).toBe(membership)
+})
+
+test('older audit rows are paged by the last row id', async ({ page }) => {
+  const [row] = fx('audit-log')
+  const firstPage = Array.from({ length: 50 }, (_, i) => ({ ...row, id: 150 - i, action: `POST /platform/page-one/${i}` }))
+  const api = await mockApi(page, {
+    ...signedIn(),
+    'GET /organizations/acme/audit-log': (req) => ({ body: new URL(req.url()).searchParams.has('before') ? fx('audit-log') : firstPage }),
+  })
+  await page.goto('/org/acme/audit')
+  await page.getByRole('button', { name: 'Daha eski kayıtlar' }).click()
+  await expect(page.getByRole('cell', { name: 'POST /platform/projects/:ref/pause' })).toBeVisible()
+  const calls = api.calls.filter((c) => c.key === 'GET /organizations/acme/audit-log')
+  expect(calls.map((c) => c.query.get('before'))).toEqual([null, '101'])
+})
+
+test('an invitation for an address with an account sends the user to sign in, then accepts with the token only', async ({ page }) => {
+  let session = false
+  const api = await mockApi(page, {
+    ...signedIn(),
+    'GET /me': () => (session ? { body: fx('me') } : { status: 401, body: fx('unauthorized') }),
+    'POST /refresh': { status: 401, body: fx('unauthorized') },
+    'POST /login': () => { session = true; return { body: fx('login') } },
+    'POST /invitations/accept': (req) => {
+      const body = req.postDataJSON()
+      if ('password' in body) return { status: 400, body: fx('invitation-account-exists') }
+      return session ? { body: { email: 'owner@example.test' } } : { status: 401, body: fx('unauthorized') }
+    },
+  })
+  await page.goto('/invite/tok123')
+  await page.getByLabel('Yeni parola', { exact: true }).fill('correct horse battery')
+  await page.getByLabel('Yeni parola (tekrar)').fill('correct horse battery')
+  await page.getByRole('button', { name: 'Daveti kabul et' }).click()
+  await expect(page.getByText('Bu adresin zaten bir hesabı var. Önce giriş yapın.')).toBeVisible()
+
+  await page.getByRole('link', { name: 'Giriş yap' }).click()
+  await expect(page).toHaveURL(/\/sign-in\?next=%2Finvite%2Ftok123$/)
+  await page.getByLabel('E-posta').fill('owner@example.test')
+  await page.getByLabel('Parola').fill('correct horse battery')
+  await page.getByRole('button', { name: 'Giriş yap' }).click()
+
+  await expect(page).toHaveURL(/\/invite\/tok123$/)
+  await expect(page.getByText('olarak giriş yaptınız')).toBeVisible()
+  await page.getByRole('button', { name: 'Daveti kabul et' }).click()
+  await expect(page).toHaveURL(/\/org\/acme$/)
+  const accepts = api.calls.filter((c) => c.key === 'POST /invitations/accept').map((c) => c.body)
+  expect(accepts).toEqual([{ token: 'tok123', password: 'correct horse battery' }, { token: 'tok123' }])
 })
 
 test('import shows ignored and unknown key names and the job steps', async ({ page }) => {

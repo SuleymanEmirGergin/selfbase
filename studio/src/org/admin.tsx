@@ -83,7 +83,7 @@ export function Members({ org, canManage }: OrgProps) {
   }
   const remove = async (m: Member) => {
     if (await confirmDanger('Üyeyi çıkar', <p><strong>{m.email}</strong> bu organizasyondan çıkarılacak.</p>, 'Çıkar')) {
-      act(m, () => platform.removeMember(org.slug, m.user_id), 'Üye çıkarıldı')
+      act(m, () => platform.removeMember(org.slug, m.user_id, m.id), 'Üye çıkarıldı')
     }
   }
 
@@ -101,7 +101,7 @@ export function Members({ org, canManage }: OrgProps) {
                   <td>
                     {canManage
                       ? <select aria-label={`Rol: ${m.email}`} value={m.role} disabled={busy === m.user_id}
-                          onChange={(e) => act(m, () => platform.setRole(org.slug, m.user_id, e.target.value as Role), 'Rol değişti')}>{roleOptions}</select>
+                          onChange={(e) => act(m, () => platform.setRole(org.slug, m.user_id, e.target.value as Role, m.id), 'Rol değişti')}>{roleOptions}</select>
                       : ROLES[m.role] ?? m.role}
                   </td>
                   <td className="mono small">{m.project_ref ?? 'Tüm projeler'}</td>
@@ -213,7 +213,7 @@ export function Audit({ org }: OrgProps) {
 
   const loadMore = () => {
     setBusy(true)
-    platform.auditLog(org.slug, { limit: PAGE, before: rows[rows.length - 1].at })
+    platform.auditLog(org.slug, { limit: PAGE, before: String(rows[rows.length - 1].id) })
       .then((xs) => { setOlder((o) => [...o, ...xs]); setOlderFull(xs.length === PAGE) }, (e) => toast(errMsg(e), 'error'))
       .finally(() => setBusy(false))
   }

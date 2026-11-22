@@ -1,0 +1,4 @@
+{
+  "error": "account_exists",
+  "message": "This address already has an account: sign in as it and accept without a password"
+}

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent, InputHTMLAttributes, ReactNode } from 'react'
 import { ApiError, errMsg, platform } from './api.ts'
+import type { Me } from './api.ts'
 import { Link, navigate } from './router.tsx'
 
 // Sign-in, invitation and password reset: the screens reachable without a session.
@@ -80,12 +81,50 @@ function NewPasswordCard({ title, label, onSave }: { title: string; label: strin
   )
 }
 
-export const AcceptInvite = ({ token }: { token: string }) => (
-  <NewPasswordCard title="Daveti kabul et" label="Daveti kabul et" onSave={async (password) => {
-    await platform.acceptInvitation(token, password)
-    navigate('/sign-in?accepted=1', true)
-  }} />
-)
+/**
+ * A new address sets its password here. An address that already has an account cannot (control answers
+ * account_exists): its owner signs in first, comes back here and accepts with the token only.
+ */
+export function AcceptInvite({ token }: { token: string }) {
+  // undefined: still asking whether there is a session
+  const [me, setMe] = useState<Me | null | undefined>(undefined)
+  const [hasAccount, setHasAccount] = useState(false)
+  useEffect(() => { platform.me().then(setMe, () => setMe(null)) }, [])
+  const signedInAccept = useSubmit(async () => {
+    await platform.acceptInvitation(token)
+    location.assign('/') // a full reload, so the new organization is in the session's list
+  })
+  const signInLink = `/sign-in?next=${encodeURIComponent(`/invite/${token}`)}`
+
+  if (me === undefined) return <Card title="Daveti kabul et">{null}</Card>
+  if (me) {
+    return (
+      <Card title="Daveti kabul et" lead={<><strong>{me.email}</strong> olarak giriş yaptınız. Davet bu hesaba eklenecek.</>} onSubmit={signedInAccept.submit}>
+        {signedInAccept.error && <div className="error-box" role="alert">{signedInAccept.error}</div>}
+        <button className="btn primary block" disabled={signedInAccept.busy}>Daveti kabul et</button>
+      </Card>
+    )
+  }
+  if (hasAccount) {
+    return (
+      <Card title="Daveti kabul et">
+        <div className="note" role="status">Bu adresin zaten bir hesabı var. Önce giriş yapın.</div>
+        <Link to={signInLink} className="btn primary block">Giriş yap</Link>
+      </Card>
+    )
+  }
+  return (
+    <NewPasswordCard title="Daveti kabul et" label="Daveti kabul et" onSave={async (password) => {
+      try {
+        await platform.acceptInvitation(token, password)
+      } catch (err) {
+        if (err instanceof ApiError && err.code === 'account_exists') return setHasAccount(true)
+        throw err
+      }
+      navigate('/sign-in?accepted=1', true)
+    }} />
+  )
+}
 
 export function ResetPassword() {
   // A recovery link ends here with the session in the fragment (GoTrue's implicit flow); it never reaches a server.
