@@ -1,6 +1,7 @@
 import { config } from '../config.ts'
 import { pool } from '../db.ts'
 import { listen } from '../realtime/hub.ts'
+import { logLine } from '../log.ts'
 
 export type Bases = { fnUrl: string; coreUrl: string }
 export type NetQueueOptions = Partial<Bases> & { retryDelayMs?: number; scanMs?: number }
@@ -110,14 +111,14 @@ export function startWorker(opts: NetQueueOptions = {}) {
     running = (async () => {
       do {
         again = false
-        await drain().catch((err) => console.error('netqueue:', (err as Error).message))
+        await drain().catch((err) => logLine('error', `netqueue: ${(err as Error).message}`))
       } while (again && !stopped)
     })().finally(() => (running = undefined))
   }
 
   const listener = listen('selfbase_http', kick, kick)
   const timer = setInterval(kick, opts.scanMs ?? 30_000)
-  const prune = () => void pruneQueue().catch((err) => console.error('netqueue prune:', (err as Error).message))
+  const prune = () => void pruneQueue().catch((err) => logLine('error', `netqueue prune: ${(err as Error).message}`))
   const pruneTimer = setInterval(prune, 3600_000)
   prune()
   return {

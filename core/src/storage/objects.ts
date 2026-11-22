@@ -6,6 +6,7 @@ import { Readable } from 'node:stream'
 import { asUser, pool } from '../db.ts'
 import type { JwtClaims } from '../jwt.ts'
 import { StorageError, resolveObjectPath } from './paths.ts'
+import { logLine } from '../log.ts'
 
 export type Bucket = { id: string; public: boolean; file_size_limit: number | null; allowed_mime_types: string[] | null }
 type Meta = { mimetype?: string; cacheControl?: string; size?: number } | null
@@ -142,7 +143,7 @@ export async function removeObjects(claims: JwtClaims | null, bucket: string, na
   // a failed unlink leaves an orphan file, never a row without its file
   for (const row of rows) {
     await rm(resolveObjectPath(bucket, row.name), { force: true })
-      .catch((err: NodeJS.ErrnoException) => console.error(`storage: unlink failed for ${bucket}/${row.name}: ${err.code}`))
+      .catch((err: NodeJS.ErrnoException) => logLine('error', `storage: unlink failed for ${bucket}/${row.name}: ${err.code}`))
   }
   return rows
 }

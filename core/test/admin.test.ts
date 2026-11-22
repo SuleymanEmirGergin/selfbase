@@ -3,48 +3,35 @@ import { randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import bcrypt from 'bcryptjs'
 
 // config reads env at import, so set storage dir before loading app
 const base = mkdtempSync(join(tmpdir(), 'sb-admin-'))
 process.env.STORAGE_DIR = join(base, 'storage')
 
-const { app } = await import('../src/app.ts')
+const { app, adminApp } = await import('../src/app.ts')
 const { pool, asUser } = await import('../src/db.ts')
 const { config } = await import('../src/config.ts')
-const { verify, sign } = await import('../src/jwt.ts')
+const { sign } = await import('../src/jwt.ts')
 const { sqlLimits } = await import('../src/admin/sql.ts')
-const { SignJWT } = await import('jose')
 
-const ADMIN_EMAIL = 'admin@example.test'
-const ADMIN_PW = 'panel-test-password'
 const S = 't6' // test schema
 const serviceKey = process.env.SERVICE_ROLE_KEY!
-let cookie = ''
+const token = process.env.ADMIN_TOKEN!
 
 type Init = { body?: unknown; headers?: Record<string, string>; raw?: BodyInit }
-const call = (method: string, path: string, init: Init = {}, url = 'http://localhost') =>
-  app.request(`${url}/admin${path}`, {
+const call = (method: string, path: string, init: Init = {}) =>
+  adminApp.request(`http://localhost/admin${path}`, {
     method,
     headers: {
       ...(init.body !== undefined ? { 'content-type': 'application/json' } : {}),
-      ...(cookie ? { cookie } : {}),
+      authorization: `Bearer ${token}`,
       ...init.headers,
     },
     body: init.raw ?? (init.body !== undefined ? JSON.stringify(init.body) : undefined),
   })
 const json = async (res: Response) => ({ status: res.status, body: await res.json() })
-const login = (email: string, password: string, ip = randomUUID()) =>
-  app.request('http://localhost/admin/login', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-forwarded-for': ip },
-    body: JSON.stringify({ email, password }),
-  })
 
 beforeAll(async () => {
-  config.panelAdminEmail = ADMIN_EMAIL
-  config.panelAdminPasswordHash = await bcrypt.hash(ADMIN_PW, 4)
-  process.env.TRUST_PROXY = 'true'
   await pool.query(`drop schema if exists ${S} cascade; create schema ${S};
     grant usage on schema ${S} to anon;
     create table ${S}.items (id int primary key, label text not null, big bigint, at timestamptz, data jsonb);
@@ -58,9 +45,6 @@ beforeAll(async () => {
     alter table ${S}.items enable row level security;
     insert into ${S}.items values (1, 'one', 9007199254740993, '2026-01-02 03:04:05.123456+00', '{"a":1}'), (2, 'two', null, null, null);
     insert into ${S}.nopk values ('x');`)
-  const res = await login(ADMIN_EMAIL, ADMIN_PW)
-  expect(res.status).toBe(200)
-  cookie = res.headers.get('set-cookie')!.split(';')[0]
 })
 
 afterAll(async () => {
@@ -68,9 +52,9 @@ afterAll(async () => {
   rmSync(base, { recursive: true, force: true })
 })
 
-describe('panel session', () => {
+describe('admin token', () => {
   const routes: [string, string][] = [
-    ['POST', '/logout'], ['GET', '/me'], ['GET', '/schemas'], ['GET', '/tables?schema=public'],
+    ['GET', '/ready'], ['GET', '/schemas'], ['GET', '/tables?schema=public'],
     ['GET', `/rows/${S}/items`], ['POST', `/rows/${S}/items`], ['PATCH', `/rows/${S}/items`], ['DELETE', `/rows/${S}/items`],
     ['GET', '/policies'], ['POST', '/policies'], ['DELETE', '/policies'], ['POST', '/rls'], ['POST', '/sql'],
     ['GET', '/users'], ['PATCH', `/users/${randomUUID()}`], ['DELETE', `/users/${randomUUID()}`],
@@ -78,148 +62,51 @@ describe('panel session', () => {
     ['POST', '/files/b/x.txt'], ['DELETE', '/files/b/x.txt'], ['GET', '/nope'],
   ]
 
-  it('answers 401 on every route without the panel cookie', async () => {
+  it('answers 401 on every route without the token', async () => {
     for (const [m, p] of routes) {
-      const res = await app.request(`/admin${p}`, { method: m })
+      const res = await adminApp.request(`/admin${p}`, { method: m })
       expect(res.status, `${m} ${p}`).toBe(401)
+      expect(await res.json()).toEqual({ error: 'admin token required' })
     }
   })
 
-  it('does not accept the service_role key or a user JWT instead of the cookie', async () => {
+  it('does not accept the service_role key or a user JWT instead of the token', async () => {
     const user = await sign({ sub: randomUUID(), role: 'authenticated' }, 60)
-    for (const token of [serviceKey, user]) {
+    for (const t of [serviceKey, user]) {
       for (const [m, p] of routes) {
-        const res = await app.request(`/admin${p}`, { method: m, headers: { authorization: `Bearer ${token}`, apikey: token } })
+        const res = await adminApp.request(`/admin${p}`, { method: m, headers: { authorization: `Bearer ${t}`, apikey: t } })
         expect(res.status, `${m} ${p}`).toBe(401)
       }
     }
   })
 
-  it('rejects a forged or role-carrying cookie', async () => {
-    const asCookie = (v: string) => app.request('/admin/me', { headers: { cookie: `sb_panel=${v}` } })
-    expect((await asCookie(serviceKey)).status).toBe(401)
-    expect((await asCookie(cookie.split('=')[1] + 'x')).status).toBe(401)
-  })
-
-  it('sets an HttpOnly SameSite=Strict cookie, Secure when PUBLIC_URL is https (not from the request host)', async () => {
-    const local = (await login(ADMIN_EMAIL, ADMIN_PW)).headers.get('set-cookie')!
-    expect(local).toMatch(/HttpOnly/)
-    expect(local).toMatch(/SameSite=Strict/)
-    expect(local).toMatch(/Path=\/admin/)
-    expect(local).not.toMatch(/Secure/)
-    const saved = config.publicUrl
-    config.publicUrl = 'https://panel.example.test'
+  it('refuses every request while ADMIN_TOKEN is shorter than 32 characters', async () => {
+    const saved = config.adminToken
+    config.adminToken = 'short'
     try {
-      // a TLS proxy forwarding to http://127.0.0.1:8080 still gets a Secure cookie
-      const behindProxy = await app.request('http://127.0.0.1:8080/admin/login', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-forwarded-for': randomUUID() },
-        body: JSON.stringify({ email: ADMIN_EMAIL, password: ADMIN_PW }),
-      })
-      expect(behindProxy.headers.get('set-cookie')).toMatch(/Secure/)
+      expect((await adminApp.request('/admin/ready', { headers: { authorization: 'Bearer short' } })).status).toBe(401)
     } finally {
-      config.publicUrl = saved
+      config.adminToken = saved
     }
   })
 
-  it('panel cookie is never a valid API token', async () => {
-    await expect(verify(decodeURIComponent(cookie.split('=')[1]))).rejects.toThrow()
-    const res = await app.request('/auth/v1/user', { headers: { authorization: `Bearer ${cookie.split('=')[1]}` } })
-    expect(res.status).toBe(401)
+  it('GET /ready answers ok with the token', async () => {
+    expect(await json(await call('GET', '/ready'))).toEqual({ status: 200, body: { ok: true } })
   })
 
-  it('GET /me returns the admin email', async () => {
-    expect(await json(await call('GET', '/me'))).toEqual({ status: 200, body: { email: ADMIN_EMAIL } })
+  it('stores the actor header on audit rows, control by default; an over-long actor is refused', async () => {
+    const marker = `select '${randomUUID()}'`
+    expect((await call('POST', '/sql', { body: { query: marker }, headers: { 'x-selfbase-actor': 'ops@example.test' } })).status).toBe(200)
+    const other = `select '${randomUUID()}'`
+    expect((await call('POST', '/sql', { body: { query: other } })).status).toBe(200)
+    const { rows } = await pool.query(`select detail->>'query' as q, actor from selfbase.admin_audit where detail->>'query' = any($1)`, [[marker, other]])
+    expect(Object.fromEntries(rows.map((r) => [r.q, r.actor]))).toEqual({ [marker]: 'ops@example.test', [other]: 'control' })
+    const long = await call('POST', '/sql', { body: { query: 'select 1' }, headers: { 'x-selfbase-actor': 'a'.repeat(321) } })
+    expect(long.status).toBe(400)
   })
 
-  it('rejects wrong password and unknown email with 401', async () => {
-    expect((await login(ADMIN_EMAIL, 'wrong')).status).toBe(401)
-    expect((await login('other@example.test', ADMIN_PW)).status).toBe(401)
-  })
-
-  it('disables login when the hash env is empty', async () => {
-    const saved = config.panelAdminPasswordHash
-    config.panelAdminPasswordHash = ''
-    try {
-      expect((await login(ADMIN_EMAIL, ADMIN_PW)).status).toBe(401)
-      expect((await login(ADMIN_EMAIL, '')).status).toBe(401)
-    } finally {
-      config.panelAdminPasswordHash = saved
-    }
-  })
-
-  it('locks an IP for 15 minutes after 5 failed logins', async () => {
-    const ip = randomUUID()
-    for (let i = 0; i < 5; i++) expect((await login(ADMIN_EMAIL, 'wrong', ip)).status).toBe(401)
-    expect((await login(ADMIN_EMAIL, 'wrong', ip)).status).toBe(429)
-    expect((await login(ADMIN_EMAIL, ADMIN_PW, ip)).status).toBe(429)
-    expect((await login(ADMIN_EMAIL, ADMIN_PW)).status).toBe(200) // other IPs unaffected
-  })
-
-  it('throttles by socket IP when TRUST_PROXY is off', async () => {
-    const saved = process.env.TRUST_PROXY
-    process.env.TRUST_PROXY = 'false'
-    const viaSocket = (ip: string, password: string, xff = randomUUID()) =>
-      app.request('http://localhost/admin/login', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-forwarded-for': xff },
-        body: JSON.stringify({ email: ADMIN_EMAIL, password }),
-      }, { incoming: { socket: { remoteAddress: ip } } })
-    try {
-      const ip = `10.0.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250)}`
-      for (let i = 0; i < 5; i++) expect((await viaSocket(ip, 'wrong')).status).toBe(401)
-      // a fresh X-Forwarded-For value is ignored without TRUST_PROXY
-      expect((await viaSocket(ip, ADMIN_PW)).status).toBe(429)
-      expect((await viaSocket('10.9.9.9', ADMIN_PW)).status).toBe(200)
-    } finally {
-      process.env.TRUST_PROXY = saved
-    }
-  })
-
-  it('behind a trusted proxy keys on the rightmost X-Forwarded-For entry', async () => {
-    const proxySeen = randomUUID()
-    for (let i = 0; i < 5; i++) expect((await login(ADMIN_EMAIL, 'wrong', `${randomUUID()}, ${proxySeen}`)).status).toBe(401)
-    // a spoofed leftmost entry does not open a fresh bucket
-    expect((await login(ADMIN_EMAIL, ADMIN_PW, `1.2.3.4, ${proxySeen}`)).status).toBe(429)
-  })
-
-  it('rejects a role-carrying panel token and an alg:none token', async () => {
-    const key = new TextEncoder().encode(process.env.JWT_SECRET!)
-    const withRole = await new SignJWT({ panel: true, role: 'service_role', email: ADMIN_EMAIL })
-      .setProtectedHeader({ alg: 'HS256' }).setExpirationTime('1h').sign(key)
-    const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url')
-    const none = `${b64({ alg: 'none', typ: 'JWT' })}.${b64({ panel: true, email: ADMIN_EMAIL, exp: Math.floor(Date.now() / 1000) + 3600 })}.`
-    for (const t of [withRole, none]) expect((await app.request('/admin/me', { headers: { cookie: `sb_panel=${t}` } })).status).toBe(401)
-  })
-
-  it('treats http://[::1] as local (no Secure)', async () => {
-    const res = await app.request('http://[::1]/admin/login', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-forwarded-for': randomUUID() },
-      body: JSON.stringify({ email: ADMIN_EMAIL, password: ADMIN_PW }),
-    })
-    expect(res.status).toBe(200)
-    expect(res.headers.get('set-cookie')).not.toMatch(/Secure/)
-  })
-
-  it('accepts PUBLIC_URL origin and a missing Origin on state-changing requests', async () => {
-    const pub = new URL(config.publicUrl).origin
-    expect(pub).not.toBe('http://localhost')
-    expect((await call('POST', '/sql', { body: { query: 'select 1' }, headers: { origin: pub } })).status).toBe(200)
-    expect((await call('POST', '/sql', { body: { query: 'select 1' } })).status).toBe(200)
-  })
-
-  it('rejects a cross-origin state-changing request with 403', async () => {
-    const res = await call('POST', '/sql', { body: { query: 'select 1' }, headers: { origin: 'http://evil.example' } })
-    expect(res.status).toBe(403)
-    const same = await call('POST', '/sql', { body: { query: 'select 1' }, headers: { origin: 'http://localhost' } })
-    expect(same.status).toBe(200)
-  })
-
-  it('logout clears the cookie', async () => {
-    const res = await call('POST', '/logout')
-    expect(res.status).toBe(200)
-    expect(res.headers.get('set-cookie')).toMatch(/sb_panel=;.*Max-Age=0/)
+  it('the public app has no admin routes', async () => {
+    expect((await app.request('/admin/schemas', { headers: { authorization: `Bearer ${token}` } })).status).toBe(404)
   })
 })
 

@@ -7,6 +7,7 @@ import { authError, findById, toUserJson } from './users.ts'
 import type { UserRow } from './users.ts'
 import { issueSession, isBanned, sessionActive } from './sessions.ts'
 import { sha256, storeToken } from './mail.ts'
+import { logLine } from '../log.ts'
 
 const router = new Hono<AppEnv>()
 const MAX_ATTEMPTS = 5
@@ -18,7 +19,7 @@ export const phoneDisabled = () => authError(422, 'phone_provider_disabled', 'Ph
 export async function sendPhoneOtp(user: UserRow, phone: string): Promise<void> {
   const failed = () => authError(500, 'unexpected_failure', 'Error sending phone OTP')
   if (!config.authSmsHookSecret) {
-    console.error('AUTH_SMS_HOOK_SECRET is not set: phone OTP not sent')
+    logLine('error', 'AUTH_SMS_HOOK_SECRET is not set: phone OTP not sent')
     throw failed()
   }
   const tooSoon = () => authError(429, 'over_sms_send_rate_limit', `For security purposes, you can only request this after ${SMS_INTERVAL} seconds.`)

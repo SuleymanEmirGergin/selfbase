@@ -9,6 +9,7 @@ import { authError, createUser, findByEmail, findById, withTx } from './users.ts
 import type { UserRow } from './users.ts'
 import { issueSession, isBanned } from './sessions.ts'
 import { safeRedirect, sessionParams, withFragment } from './redirect.ts'
+import { logLine } from '../log.ts'
 
 const router = new Hono<AppEnv>()
 const stateKey = new TextEncoder().encode(config.jwtSecret)
@@ -47,18 +48,18 @@ async function googleProfile(code: string): Promise<GoogleProfile | null> {
       signal: AbortSignal.timeout(10_000),
     })
     if (!t.ok) {
-      console.error(`google token exchange failed: ${t.status}`)
+      logLine('error', `google token exchange failed: ${t.status}`)
       return null
     }
     const { access_token } = await t.json()
     const u = await fetch(userinfoUrl, { headers: { authorization: `Bearer ${access_token}` }, signal: AbortSignal.timeout(10_000) })
     if (!u.ok) {
-      console.error(`google userinfo failed: ${u.status}`)
+      logLine('error', `google userinfo failed: ${u.status}`)
       return null
     }
     return await u.json()
   } catch (err: any) {
-    console.error(`google oauth failed: ${err?.name ?? 'error'}`)
+    logLine('error', `google oauth failed: ${err?.name ?? 'error'}`)
     return null
   }
 }

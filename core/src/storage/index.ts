@@ -12,6 +12,7 @@ import {
   fileResponse, getBucket, listObjects, readMeta, readMetaUnchecked, removeObjects, uploadObject,
 } from './objects.ts'
 import type { Bucket } from './objects.ts'
+import { logLine } from '../log.ts'
 
 // Supabase Storage API paths, mounted at /storage/v1 in app.ts.
 type Env = { Variables: AppEnv['Variables'] & { bucket: Bucket } }
@@ -27,7 +28,7 @@ router.onError((err) => {
   const code = (err as { code?: string }).code
   if (code === '23505') return fail(409, 'Duplicate', 'The resource already exists')
   if (code === '42501') return fail(403, 'Unauthorized', 'new row violates row-level security policy')
-  console.error(err)
+  logLine('error', 'storage: unhandled error', { error: String((err as Error).stack ?? err) })
   return fail(500, 'internal', 'Internal server error')
 })
 
