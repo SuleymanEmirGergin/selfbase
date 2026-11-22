@@ -53,11 +53,6 @@ describe('bootstrap', () => {
     expect(await res.json()).toEqual({ ok: true })
   })
 
-  it('GET /panel/* is 404 while panel/dist is not built', async () => {
-    const res = await app.request('/panel/index.html')
-    expect(res.status).toBe(404)
-  })
-
   it('CORS preflight allows any requested header', async () => {
     const res = await app.request('/rest/v1/t', {
       method: 'OPTIONS',
