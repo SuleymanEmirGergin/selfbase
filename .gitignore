@@ -16,3 +16,4 @@ dist/
 panel.env
 backups/
 .local-test-login
+acceptance/last-run.json

@@ -8,10 +8,10 @@ import { execFileSync } from 'node:child_process'
 const root = join(import.meta.dirname, '..', '..')
 const read = (p) => readFileSync(join(root, p), 'utf8')
 
-const WORKSPACES = { core: 'selfbase-core', control: 'selfbase-control', provisioner: 'selfbase-provisioner', studio: 'selfbase-studio', client: 'selfbase-js' }
+const WORKSPACES = { core: 'selfbase-core', control: 'selfbase-control', provisioner: 'selfbase-provisioner', studio: 'selfbase-studio', client: 'selfbase-js', acceptance: 'selfbase-acceptance' }
 const IMAGES = ['db', 'core', 'fn', 'rest', 'pooler', 'job', 'control', 'provisioner']
 
-test('the root lists exactly the five workspaces, with their package names', () => {
+test('the root lists exactly the six workspaces, with their package names', () => {
   const pkg = JSON.parse(read('package.json'))
   assert.equal(pkg.private, true)
   assert.equal(pkg.version, '2.1.0')

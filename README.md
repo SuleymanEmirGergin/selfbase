@@ -25,7 +25,7 @@ Only `core` is published. `net.http_post` calls are queued in the database and s
 
 | Path | What |
 |---|---|
-| `package.json` | npm workspaces: `core`, `control`, `provisioner`, `studio`, `client`; one lockfile at the root |
+| `package.json` | npm workspaces: `core`, `control`, `provisioner`, `studio`, `client`, `acceptance`; one lockfile at the root |
 | `template/` | `compose.yml`, the whole stack (values from `.env`, see `.env.example`); `compose.test.yml`, the test database |
 | `db/` | Postgres image and `bootstrap/*.sql` (Supabase-compatible schemas, roles and shims) |
 | `core/` | auth, storage, realtime, admin API, gateway (Node 24, Hono) |
@@ -34,6 +34,7 @@ Only `core` is published. `net.http_post` calls are queued in the database and s
 | `control/`, `provisioner/` | control plane and Docker provisioner (stubs for now) |
 | `rest/`, `pooler/`, `job/` | PostgREST and PgBouncer images; backup/restore job image (`job/backup.sh`, `job/restore.sh`) |
 | `client/` | `selfbase-js`, the supabase-js drop-in; `client/dist/` is committed |
+| `acceptance/` | acceptance suite against a deployed project, `full` and `live` modes (`acceptance/README.md`) |
 | `scripts/` | key generation, panel password, Supabase migration, sync |
 
 ## Quick start
