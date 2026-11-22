@@ -7,7 +7,8 @@ import { config } from '../config.ts'
 import type { AppEnv } from '../jwt.ts'
 import { authError, checkPassword, createUser, findByEmail, findById, hashPassword, listUsers, toUserJson, withTx } from './users.ts'
 import { issueSession, isBanned, revokeSession, rotate, sessionActive } from './sessions.ts'
-import { sendConfirmation } from './mail.ts'
+import { background, sendConfirmation, sendEmailChange } from './mail.ts'
+import { phoneDisabled, sendPhoneOtp } from './routes-phone.ts'
 
 type Ctx = Context<AppEnv>
 type Body = Record<string, any>
@@ -18,11 +19,11 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // compared against when the email is unknown, so response time does not reveal registered emails
 const DUMMY_HASH = bcrypt.hashSync(randomUUID(), 10)
 
-const readBody = async (c: Ctx): Promise<Body> => {
+export const readBody = async (c: Ctx): Promise<Body> => {
   const b = await c.req.json().catch(() => null)
   return b && typeof b === 'object' ? b : {}
 }
-const checkEmail = (email: unknown): string => {
+export const checkEmail = (email: unknown): string => {
   if (typeof email !== 'string' || !EMAIL_RE.test(email)) throw authError(400, 'validation_failed', 'Unable to validate email address: invalid format')
   return email.toLowerCase()
 }
@@ -57,8 +58,12 @@ router.post('/signup', async (c) => {
   checkPassword(body.password)
   const data = body.data && typeof body.data === 'object' ? body.data : {}
   const existing = await findByEmail(email)
-  // same bcrypt cost on both branches so timing does not reveal registered emails (mail timing parity: Task 3)
-  if (existing) await hashPassword(body.password)
+  // one bcrypt operation on every branch so timing does not reveal registered emails; mails go out in the background
+  const unconfirmed = !!existing && !existing.email_confirmed_at
+  let samePassword = false
+  if (unconfirmed) samePassword = await bcrypt.compare(body.password, existing.encrypted_password || DUMMY_HASH)
+  else if (existing) await hashPassword(body.password)
+  const redirectTo = c.req.query('redirect_to')
   const user = existing
     ? null
     : await createUser({ email, password: body.password, user_metadata: data, provider: 'email' }).catch((err) => {
@@ -66,12 +71,22 @@ router.post('/signup', async (c) => {
         throw err
       })
   if (!user) {
-    // GoTrue: with confirmation on, an obfuscated user so signup does not reveal registered emails
-    if (config.authConfirmEmail) return c.json(fakeUser(email, data))
+    // GoTrue: with confirmation on, an obfuscated user so signup does not reveal registered emails;
+    // a still unconfirmed address gets its confirmation mail again (rate limited). A different password means two
+    // people claim it: the account loses its password and the mailbox owner sets one after the link (type=recovery).
+    // The same password is a double submit and changes nothing.
+    if (config.authConfirmEmail) {
+      if (unconfirmed)
+        background((samePassword ? Promise.resolve() : pool.query(
+          `update auth.users set encrypted_password = null, updated_at = now() where id = $1 and email_confirmed_at is null`,
+          [existing!.id],
+        )).then(() => sendConfirmation(existing!, redirectTo)))
+      return c.json(fakeUser(email, data))
+    }
     throw authError(422, 'user_already_exists', 'User already registered')
   }
   if (!config.authConfirmEmail) return c.json(await issueSession(user))
-  await sendConfirmation(user)
+  background(sendConfirmation(user, redirectTo))
   return c.json(toUserJson(user))
 })
 
@@ -115,7 +130,7 @@ router.put('/user', async (c) => {
   const emailTaken = () => authError(422, 'email_exists', 'A user with this email address has already been registered')
   if (newEmail && (await findByEmail(newEmail))) throw emailTaken()
   if (phone !== undefined) {
-    if (!config.authPhoneEnabled) throw authError(422, 'phone_provider_disabled', 'Phone provider is disabled')
+    if (!config.authPhoneEnabled) throw phoneDisabled()
     if (typeof phone !== 'string') throw authError(400, 'validation_failed', 'phone must be a string')
   }
   const hash = password === undefined ? null : await hashPassword(password)
@@ -130,19 +145,24 @@ router.put('/user', async (c) => {
       )
     if (hash) await tx.query(`update auth.users set encrypted_password = $2, updated_at = now() where id = $1`, [user.id, hash])
     if (newEmail && config.authConfirmEmail) {
-      // shortcut: only records the pending change; Task 3 sends the confirmation mails and applies it
+      // applied by GET /verify type=email_change
       await tx.query(`update auth.users set email_change = $2, updated_at = now() where id = $1`, [user.id, newEmail])
     } else if (newEmail) {
       await tx.query(`update auth.users set email = $2, updated_at = now() where id = $1`, [user.id, newEmail])
       await tx.query(`update auth.identities set identity_data = identity_data || jsonb_build_object('email', $2::text), updated_at = now()
         where user_id = $1 and provider = 'email'`, [user.id, newEmail])
     }
-    // shortcut: only records the pending change; Task 3 sends the OTP and applies it
+    // applied by POST /verify type=phone_change
     if (phone !== undefined) await tx.query(`update auth.users set phone_change = $2, updated_at = now() where id = $1`, [user.id, phone])
   }).catch((err) => {
     if (err.code === '23505') throw emailTaken() // lost a race for the same email
     throw err
   })
+  // the pending change stays recorded when this is 429; a later PUT sends the link
+  if (newEmail && config.authConfirmEmail && !(await sendEmailChange(user, newEmail)))
+    throw authError(429, 'over_email_send_rate_limit', `For security purposes, you can only request this after ${config.authEmailInterval} seconds.`)
+  // after the commit, so the code always matches a recorded phone_change; on 429/500 the change stays pending
+  if (phone !== undefined) await sendPhoneOtp(user, phone)
   return c.json(toUserJson((await findById(user.id))!))
 })
 
