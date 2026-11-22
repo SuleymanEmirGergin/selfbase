@@ -38,6 +38,8 @@ export function loadSettings(env: Record<string, string | undefined> = process.e
   }
   if (!/^[a-z0-9]+([._:/-][a-z0-9]+)*$/.test(s.registry)) fail('REGISTRY is not a registry path')
   if (!VERSION_RE.test(s.templateVersion)) fail('TEMPLATE_VERSION is not a version')
+  // socket-proxy.env puts it into a regex unescaped
+  if (!/^[A-Za-z0-9_-]+$/.test(s.proxyNetwork)) fail('PROXY_NETWORK must be a plain network name [A-Za-z0-9_-]+')
   if (s.backupHostDir && (!/^(\/[A-Za-z0-9._-]+)+$/.test(s.backupHostDir) || /\/\.\.?(\/|$)/.test(s.backupHostDir))) {
     fail('BACKUP_HOST_DIR must be an absolute path')
   }
