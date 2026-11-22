@@ -8,13 +8,14 @@ const bool = (v: string | undefined, dflt: boolean) => {
   return v === 'true'
 }
 const list = (v: string | undefined) => (v ?? '').split(',').map((s) => s.trim()).filter(Boolean)
-// "b64:<base64>" carries a bcrypt hash without any `$`: some deploy tools (Coolify) mangle `$` in env values.
-// A compose-escaped value (`$$`) that reached us unescaped is undone too; a bcrypt hash never contains `$$`.
-export const decodeHash = (v: string | undefined) =>
-  v?.startsWith('b64:') ? Buffer.from(v.slice(4), 'base64').toString('utf8') : (v || '').replaceAll('$$', '$')
 
 export const config = {
   port: Number(env.PORT || 8080),
+  // private admin API listener; not started unless ADMIN_TOKEN has at least 32 characters (server.ts)
+  adminPort: Number(env.ADMIN_PORT || 8081),
+  adminToken: env.ADMIN_TOKEN || '',
+  // the project this core serves, written on every log line
+  projectRef: env.PROJECT_REF || '',
   db: {
     host: env.DB_HOST || 'db',
     port: Number(env.DB_PORT || 5432),
@@ -30,6 +31,8 @@ export const config = {
   siteUrl: env.SITE_URL || 'http://localhost:5173',
   authRedirectAllowlist: list(env.AUTH_REDIRECT_ALLOWLIST),
   authConfirmEmail: bool(env.AUTH_CONFIRM_EMAIL, true),
+  // POST /signup answers 422 signup_disabled; only that route: OAuth and OTP sign-ins can still create users
+  authDisableSignup: bool(env.AUTH_DISABLE_SIGNUP, false),
   authPhoneEnabled: bool(env.AUTH_PHONE_ENABLED, false),
   authMinPassword: Number(env.AUTH_MIN_PASSWORD || 6),
   // link / OTP lifetime and per-user minimum gap between auth mails, seconds (docs/auth-settings.md)
@@ -64,9 +67,6 @@ export const config = {
     tokenUrl: env.GOOGLE_TOKEN_URL || 'https://oauth2.googleapis.com/token',
     userinfoUrl: env.GOOGLE_USERINFO_URL || 'https://openidconnect.googleapis.com/v1/userinfo',
   },
-  panelAdminEmail: env.PANEL_ADMIN_EMAIL || '',
-  panelAdminPasswordHash: decodeHash(env.PANEL_ADMIN_PASSWORD_HASH),
-  panelDir: env.PANEL_DIR || '../panel/dist',
   storageDir: env.STORAGE_DIR || '/data/storage',
   pgrstUrl: env.PGRST_URL || 'http://rest:3000',
   fnUrl: env.FN_URL || 'http://fn:8000',

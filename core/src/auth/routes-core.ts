@@ -53,6 +53,7 @@ const fakeUser = (email: string, data: object) => {
 }
 
 router.post('/signup', async (c) => {
+  if (config.authDisableSignup) throw authError(422, 'signup_disabled', 'Signups not allowed for this instance')
   const body = await readBody(c)
   const email = checkEmail(body.email)
   checkPassword(body.password)

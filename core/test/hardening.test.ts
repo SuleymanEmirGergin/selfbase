@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
 import type { Server } from 'node:http'
 import pg from 'pg'
-import { app } from '../src/app.ts'
+import { adminApp, app } from '../src/app.ts'
 import { asUser, pool } from '../src/db.ts'
 import { config } from '../src/config.ts'
 import { sign } from '../src/jwt.ts'
@@ -101,15 +101,8 @@ describe('gateway', () => {
     expect((await app.request('/rest/v1/items')).headers.get('content-security-policy')).toBeNull()
   })
 
-  it('/panel redirects to /panel/ and panel responses carry CSP, frame and referrer headers', async () => {
-    const r = await app.request('/panel')
-    expect(r.status).toBe(301)
-    expect(r.headers.get('location')).toBe('/panel/')
-    const res = await app.request('/panel/missing.js')
-    expect(res.headers.get('content-security-policy')).toBe(
-      "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'")
-    expect(res.headers.get('x-frame-options')).toBe('DENY')
-    expect(res.headers.get('referrer-policy')).toBe('no-referrer')
+  it('there is no /panel any more', async () => {
+    expect((await app.request('/panel')).status).toBe(404)
   })
 })
 
@@ -206,13 +199,31 @@ describe('auth rate limits', () => {
 })
 
 describe('limits and health', () => {
-  it('core JSON routes refuse bodies over 1 MiB; panel file uploads are not capped by it', async () => {
+  it('core JSON routes refuse bodies over 1 MiB; admin file uploads are not capped by it', async () => {
     const big = JSON.stringify({ email: 'a@example.test', password: 'x'.repeat(1024 * 1024 + 10) })
     const res = await app.request('/auth/v1/signup', { method: 'POST', headers: { 'content-type': 'application/json' }, body: big })
     expect(res.status).toBe(413)
-    expect((await app.request('/admin/sql', { method: 'POST', headers: { 'content-type': 'application/json' }, body: big })).status).toBe(413)
-    const upload = await app.request('/admin/files/b/x.bin', { method: 'POST', body: big })
-    expect(upload.status).toBe(401) // reaches the panel login check, not the 1 MiB limit
+    const authorization = `Bearer ${process.env.ADMIN_TOKEN}`
+    expect((await adminApp.request('/admin/sql', { method: 'POST', headers: { authorization, 'content-type': 'application/json' }, body: big })).status).toBe(413)
+    const upload = await adminApp.request(`/admin/files/no-such-bucket-${randomUUID()}/x.bin`, { method: 'POST', headers: { authorization }, body: big })
+    expect(upload.status).not.toBe(413) // reaches the bucket lookup, not the 1 MiB limit
+    expect(upload.status).toBeLessThan(500)
+  })
+
+  it('AUTH_DISABLE_SIGNUP answers 422 signup_disabled and creates no user', async () => {
+    const saved = config.authDisableSignup
+    config.authDisableSignup = true
+    const email = `nosignup-${randomUUID()}@example.test`
+    try {
+      const res = await app.request('/auth/v1/signup', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, password: 'password-1' }),
+      })
+      expect(res.status).toBe(422)
+      expect(await res.json()).toEqual({ code: 422, error_code: 'signup_disabled', msg: 'Signups not allowed for this instance' })
+    } finally {
+      config.authDisableSignup = saved
+    }
+    expect((await pool.query('select 1 from auth.users where email = $1', [email])).rowCount).toBe(0)
   })
 
   it('/health is 503 when the database does not answer', async () => {

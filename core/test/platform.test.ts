@@ -33,7 +33,7 @@ describe('platform migrations on the test database (migrated by global setup)', 
     await expect(applyMigrations(main, { ...opts, dir: gap })).rejects.toThrow(/0003-gap\.sql.*gap/)
     const dup = migrationDir([], { '0001-a.sql': 'select 1', '0001-b.sql': 'select 1' })
     await expect(applyMigrations(main, { ...opts, dir: dup })).rejects.toThrow(/0001-b\.sql.*duplicate/)
-    expect(await versions(main)).toEqual(['0001', '0002'])
+    expect(await versions(main)).toEqual(['0001', '0002', '0003'])
     expect(await exists(main, 'public.platform_gap_marker')).toBe(false)
   })
 
@@ -43,14 +43,14 @@ describe('platform migrations on the test database (migrated by global setup)', 
   })
 
   it('a broken migration leaves the ledger as it was and none of its objects', async () => {
-    const broken = migrationDir(['0001-bootstrap.sql', '0002-guards-2026-11-22.sql'], {
-      '0003-broken.sql': 'create table public.platform_broken_marker (id int);\nselect 1 / 0;\n',
+    const broken = migrationDir(['0001-bootstrap.sql', '0002-guards-2026-11-22.sql', '0003-admin-audit-actor.sql'], {
+      '0004-broken.sql': 'create table public.platform_broken_marker (id int);\nselect 1 / 0;\n',
     })
     const err = await applyMigrations(main, { ...opts, dir: broken }).catch((e: Error) => e)
     expect(err).toBeInstanceOf(Error)
-    expect((err as Error).message).toMatch(/0003-broken\.sql/)
+    expect((err as Error).message).toMatch(/0004-broken\.sql/)
     expect((err as Error).message).not.toMatch(/platform_broken_marker/) // names the file, never the SQL
-    expect(await versions(main)).toEqual(['0001', '0002'])
+    expect(await versions(main)).toEqual(['0001', '0002', '0003'])
     expect(await exists(main, 'public.platform_broken_marker')).toBe(false)
   })
 
@@ -70,6 +70,15 @@ describe('platform migrations on the test database (migrated by global setup)', 
       { rolname: 'anon', setconfig: ['statement_timeout=3s'] },
       { rolname: 'authenticated', setconfig: ['statement_timeout=8s'] },
     ])
+  })
+
+  it('0003 run twice by hand succeeds and leaves admin_audit.actor', async () => {
+    const sql = readFileSync(join(PLATFORM_DIR, '0003-admin-audit-actor.sql'), 'utf8')
+    await main.query(sql)
+    await main.query(sql)
+    const col = await main.query(`select data_type from information_schema.columns
+      where table_schema = 'selfbase' and table_name = 'admin_audit' and column_name = 'actor'`)
+    expect(col.rows).toEqual([{ data_type: 'text' }])
   })
 
   it('setRolePassword changes the authenticator login', async () => {
@@ -115,19 +124,19 @@ describe('platform migrations on an empty database', () => {
   beforeAll(reset, 60_000)
   afterAll(() => pool?.end())
 
-  it('applies 0001 and 0002, then nothing', async () => {
+  it('applies every file, then nothing', async () => {
     pool = testPool(port)
-    expect(await applyMigrations(pool, opts)).toEqual(['0001', '0002'])
+    expect(await applyMigrations(pool, opts)).toEqual(['0001', '0002', '0003'])
     expect(await applyMigrations(pool, opts)).toEqual([])
-    expect(await versions(pool)).toEqual(['0001', '0002'])
+    expect(await versions(pool)).toEqual(['0001', '0002', '0003'])
   }, 60_000)
 
   it('two concurrent runs apply each file once', async () => {
     await reset()
     pool = testPool(port)
     const [a, b] = await Promise.all([applyMigrations(pool, opts), applyMigrations(pool, opts)])
-    expect([...a, ...b].sort()).toEqual(['0001', '0002'])
-    expect(await versions(pool)).toEqual(['0001', '0002'])
+    expect([...a, ...b].sort()).toEqual(['0001', '0002', '0003'])
+    expect(await versions(pool)).toEqual(['0001', '0002', '0003'])
   }, 60_000)
 })
 
@@ -135,10 +144,10 @@ describe('platform migrations on a v1 database', () => {
   const v1 = testPool(process.env.TEST_DB_V1_PORT ?? '54333')
   afterAll(() => v1.end())
 
-  it('stamps 0001 without running it and applies 0002', async () => {
+  it('stamps 0001 without running it and applies the rest', async () => {
     await v1.query(`drop table if exists ${LEDGER}`) // a rerun against the same stack starts from v1 again
-    expect(await applyMigrations(v1, opts)).toEqual(['0002']) // running 0001 would fail on "create role anon"
-    expect(await versions(v1)).toEqual(['0001', '0002'])
+    expect(await applyMigrations(v1, opts)).toEqual(['0002', '0003']) // running 0001 would fail on "create role anon"
+    expect(await versions(v1)).toEqual(['0001', '0002', '0003'])
   }, 60_000)
 
   it('without adoptV1 a v1 database is not stamped', async () => {

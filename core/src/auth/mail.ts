@@ -7,6 +7,7 @@ import { render } from './templates.ts'
 import type { MailKind } from './templates.ts'
 import { safeRedirect } from './redirect.ts'
 import type { UserRow } from './users.ts'
+import { logLine } from '../log.ts'
 
 export const sha256 = (s: string) => createHash('sha256').update(s).digest('hex')
 
@@ -41,7 +42,7 @@ export async function storeToken(userId: string, tokenType: string, tokenHash: s
 }
 
 // no addresses or SMTP details: only the error code
-const logFailure = (err: any) => console.error(`auth mail failed: ${err?.code ?? err?.responseCode ?? 'error'}`)
+const logFailure = (err: any) => logLine('error', `auth mail failed: ${err?.code ?? err?.responseCode ?? 'error'}`)
 
 /** Runs a send without blocking the response, so response time does not depend on whether a mail goes out. */
 export const background = (p: Promise<unknown>) => void p.catch(logFailure)
@@ -53,7 +54,7 @@ export const smtpOptions = ({ host, port, user, pass }: typeof config.smtp) =>
   ({ host, port, secure: port === 465, requireTLS: port !== 465, auth: user ? { user, pass } : undefined })
 async function deliver(to: string, subject: string, html: string): Promise<void> {
   if (!config.smtp.host) {
-    if (!warned) console.warn('SMTP_HOST is empty: auth mails are written to selfbase.mail_log and not delivered')
+    if (!warned) logLine('warn', 'SMTP_HOST is empty: auth mails are written to selfbase.mail_log and not delivered')
     warned = true
     await pool.query(`insert into selfbase.mail_log (to_email, subject, html) values ($1, $2, $3)`, [to, subject, html])
     return

@@ -6,6 +6,7 @@ import { withTx } from '../auth/users.ts'
 import { StorageError, resolveObjectPath } from '../storage/paths.ts'
 import { fileResponse, getBucket, listObjects, notFound, readMetaUnchecked, removeObjects, uploadObject } from '../storage/objects.ts'
 import { adminError, audit, readBody } from './ident.ts'
+import { logLine } from '../log.ts'
 
 // Storage helpers run their row work through asUser(); service_role bypasses RLS, which is what the operator needs.
 const SERVICE = { role: 'service_role', exp: 0 } as JwtClaims
@@ -44,7 +45,7 @@ router.get(OBJ, async (c) => {
 /** Audit after a file write; a failed insert is logged and answered 500 instead of vanishing. */
 const auditFile = (action: string, target: string, detail: object) =>
   audit(pool, action, target, detail).catch((err) => {
-    console.error(`admin: audit failed after ${action} ${target}: ${err.message}`)
+    logLine('error', `admin: audit failed after ${action} ${target}: ${err.message}`)
     throw adminError(500, 'the change was applied but its audit row could not be written')
   })
 

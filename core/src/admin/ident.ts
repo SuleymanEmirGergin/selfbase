@@ -2,6 +2,8 @@ import pg from 'pg'
 import type { PoolClient } from 'pg'
 import type { Context } from 'hono'
 import { HTTPException } from 'hono/http-exception'
+import { getContext } from 'hono/context-storage'
+import type { AdminEnv } from './auth.ts'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
 import { pool } from '../db.ts'
 
@@ -50,9 +52,10 @@ export function column(rel: Relation, name: string): Column {
   return col
 }
 
-/** Writes one selfbase.admin_audit row; pass the write's transaction client so both commit together. */
+/** Writes one selfbase.admin_audit row with the request's actor; pass the write's transaction client so both commit together. */
 export const audit = (db: Pick<PoolClient, 'query'>, action: string, target: string | null, detail: object) =>
-  db.query('insert into selfbase.admin_audit (action, target, detail) values ($1, $2, $3)', [action, target, detail])
+  db.query('insert into selfbase.admin_audit (action, target, detail, actor) values ($1, $2, $3, $4)',
+    [action, target, detail, getContext<AdminEnv>().var.actor])
 
 /** Admin request body as an object ({} when missing or not JSON). */
 export const readBody = async (c: Context): Promise<Record<string, any>> => {

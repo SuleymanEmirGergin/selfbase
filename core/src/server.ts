@@ -1,8 +1,9 @@
 import type { Server } from 'node:http'
 import { serve } from '@hono/node-server'
-import { app } from './app.ts'
+import { adminApp, app } from './app.ts'
 import { config } from './config.ts'
 import { closeDb, pool } from './db.ts'
+import { logLine } from './log.ts'
 import { applyMigrations, setRolePassword } from './platform/migrate.ts'
 import { attachRealtime, stopRealtime } from './realtime/index.ts'
 import { startNetQueue, stopNetQueue } from './netqueue/index.ts'
@@ -11,22 +12,29 @@ import { startNetQueue, stopNetQueue } from './netqueue/index.ts'
 await applyMigrations(pool, { dir: config.platformDir, ledger: 'selfbase.platform_migrations', lockKey: 7213014, adoptV1: true })
   .then(() => setRolePassword(pool, 'authenticator', config.authenticatorPassword))
   .catch((e: Error) => {
-    console.error(`startup: ${e.message}`)
+    logLine('error', `startup: ${e.message}`)
     process.exit(1)
   })
-const server = serve({ fetch: app.fetch, port: config.port }, (info) => console.log(`core listening on :${info.port}`))
+const server = serve({ fetch: app.fetch, port: config.port }, (info) => logLine('info', `core listening on :${info.port}`))
 attachRealtime(server as Server)
 startNetQueue()
+
+// The admin listener is never published (AC-5); without a usable token there is nothing for it to accept.
+const adminServer = config.adminToken.length >= 32
+  ? serve({ fetch: adminApp.fetch, port: config.adminPort }, (info) => logLine('info', `core admin listening on :${info.port}`))
+  : null
+if (!adminServer) logLine('warn', 'ADMIN_TOKEN is empty or shorter than 32 characters: admin API not started')
 
 // Deploys send SIGTERM: stop taking requests, let the ones in flight (uploads) finish, then close everything.
 let stopping = false
 async function shutdown(signal: string) {
   if (stopping) return
   stopping = true
-  console.log(`${signal}: shutting down`)
+  logLine('info', `${signal}: shutting down`)
   setTimeout(() => process.exit(1), 8000).unref() // a stuck request must not outlive docker's 10 s grace period
-  const closed = new Promise((r) => server.close(r))
-  ;(server as Server).closeIdleConnections?.()
+  const servers = [server, adminServer].filter((s) => s !== null) as Server[]
+  const closed = Promise.all(servers.map((s) => new Promise((r) => s.close(r))))
+  for (const s of servers) s.closeIdleConnections?.()
   await Promise.allSettled([stopNetQueue(), stopRealtime()])
   await closed
   await closeDb()
