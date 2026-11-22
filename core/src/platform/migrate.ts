@@ -52,8 +52,9 @@ export async function applyMigrations(
     }
     return ran
   } finally {
-    await client.query('select pg_advisory_unlock($1)', [opts.lockKey]).catch(() => {})
-    client.release()
+    // a connection that cannot unlock is broken (or still holds the lock): destroy it instead of pooling it
+    const broken = await client.query('select pg_advisory_unlock($1)', [opts.lockKey]).then(() => undefined, (e: Error) => e)
+    client.release(broken)
   }
 }
 
