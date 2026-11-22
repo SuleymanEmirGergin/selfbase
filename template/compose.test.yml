@@ -1,6 +1,8 @@
 # Throwaway test stack. Values here are test-only, never real secrets.
-# Parallel checkouts: docker compose -p <name> -f template/compose.test.yml up -d --build --wait db db-empty db-v1 rest,
-# with TEST_DB_PORT / TEST_REST_PORT / TEST_DB_EMPTY_PORT / TEST_DB_V1_PORT set.
+# Start in two steps (as ci.yml does; rest is not in --wait, it restarts until core's global setup has migrated db):
+#   docker compose -p <name> -f template/compose.test.yml up -d --build --wait db db-empty db-v1
+#   docker compose -p <name> -f template/compose.test.yml up -d rest
+# Parallel checkouts: a different <name>, with TEST_DB_PORT / TEST_REST_PORT / TEST_DB_EMPTY_PORT / TEST_DB_V1_PORT set.
 # The db image has no schema of its own: core's test global setup applies the platform migrations to `db`.
 x-db: &db
   build:

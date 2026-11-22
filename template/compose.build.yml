@@ -1,0 +1,58 @@
+# Local development and tests only; the provisioner never reads this file. Run from the repository root:
+#   docker compose -f template/compose.yml -f template/compose.build.yml --env-file .env up -d --build
+# Adds what compose.yml leaves to the provisioner: the project name, image builds, a restart policy, start
+# conditions, core's published port (8080 only, never the admin port 8081) and the app's supabase/ folder for fn.
+# v1 project name (the checkout directory); keeps the volumes of existing installs (selfbase_pgdata, selfbase_storage)
+name: ${COMPOSE_PROJECT_NAME:-selfbase}
+
+services:
+  db:
+    build:
+      context: ..
+      dockerfile: db/Dockerfile
+    restart: unless-stopped
+    shm_size: 256m # Docker's 64m default breaks parallel queries ("could not resize shared memory segment")
+
+  rest:
+    build:
+      context: ..
+      dockerfile: rest/Dockerfile
+    restart: unless-stopped # exits until core has migrated, see compose.yml
+    depends_on:
+      db:
+        condition: service_healthy
+
+  core:
+    build:
+      context: ..
+      dockerfile: core/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${CORE_PORT:-8080}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+      rest:
+        condition: service_started
+
+  # SUPABASE_DIR: host path of the app's supabase/ folder (functions/ + config.toml), mounted over the functions
+  # volume; unset, an empty placeholder is mounted and every function name answers 404.
+  fn:
+    build:
+      context: ..
+      dockerfile: fn/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - path: ../fn.env
+        required: false
+    volumes:
+      - ${SUPABASE_DIR:-../fn/empty}:/supabase:ro
+
+  pooler:
+    build:
+      context: ..
+      dockerfile: pooler/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy

@@ -1,28 +1,15 @@
-name: ${COMPOSE_PROJECT_NAME:-selfbase} # v1 project name (the checkout directory); keeps the volumes of existing installs
-# selfbase stack. Run from the repository root: docker compose -f template/compose.yml --env-file .env up -d --build
-# Values come from .env (see .env.example); without --env-file compose reads template/.env instead. Only core is published, on loopback by default (CORE_BIND).
-# Every service: rotated json-file logs (10m x 3), no privilege gain through setuid binaries, at most
-# 512 processes. Per service below: mem_limit and cpus (change them there; docker compose up -d applies).
-x-defaults: &defaults
-  logging:
-    driver: json-file
-    options:
-      max-size: "10m"
-      max-file: "3"
-  security_opt:
-    - no-new-privileges:true
-  pids_limit: 512
-
+# selfbase project template (spec 7.2, AC-4). The provisioner reads this file as a strict subset of compose
+# (provisioner/src/template.ts): services and volumes only; per service image, command, environment, volumes,
+# depends_on, healthcheck, init, user, stop_grace_period. Limits come from sizes.json; restart policy, logging,
+# networks and Traefik labels are the provisioner's. Check: node provisioner/src/template.ts --check template/compose.yml
+# Local run (adds build, restart, the published core port and the project name):
+#   docker compose -f template/compose.yml -f template/compose.build.yml --env-file .env up -d --build
+# REGISTRY, TEMPLATE_VERSION, DB_SHARED_BUFFERS, DB_MAX_CONNECTIONS and POOL_SIZE are set by the provisioner.
 services:
   db:
-    <<: *defaults
-    build:
-      context: ..
-      dockerfile: db/Dockerfile
-    mem_limit: 1g
-    cpus: 2
-    shm_size: 256m # Docker's 64m default breaks parallel queries ("could not resize shared memory segment")
-    restart: unless-stopped
+    image: ${REGISTRY}/selfbase-db:${TEMPLATE_VERSION}
+    command: ["postgres", "-c", "shared_preload_libraries=pg_cron", "-c", "cron.database_name=postgres", "-c", "wal_level=logical",
+      "-c", "shared_buffers=${DB_SHARED_BUFFERS:-128MB}", "-c", "max_connections=${DB_MAX_CONNECTIONS:-60}"]
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
     volumes:
@@ -33,48 +20,41 @@ services:
       timeout: 3s
       retries: 30
 
+  # Exits until core has migrated and set the authenticator password; the restart policy brings it back.
   rest:
-    <<: *defaults
-    image: postgrest/postgrest:v14.1
-    mem_limit: 256m
-    cpus: 1
-    restart: unless-stopped
+    image: ${REGISTRY}/selfbase-rest:${TEMPLATE_VERSION}
     environment:
-      PGRST_DB_URI: postgres://authenticator:${POSTGRES_PASSWORD}@db:5432/postgres
-      PGRST_DB_SCHEMAS: public
-      PGRST_DB_MAX_ROWS: "1000"
+      PGRST_DB_URI: postgres://authenticator:${AUTHENTICATOR_PASSWORD:?set AUTHENTICATOR_PASSWORD}@db:5432/postgres
+      PGRST_DB_SCHEMAS: ${PGRST_DB_SCHEMAS:-public}
+      PGRST_DB_MAX_ROWS: ${PGRST_DB_MAX_ROWS:-1000}
       PGRST_DB_ANON_ROLE: anon
       PGRST_DB_EXTRA_SEARCH_PATH: public,extensions
       PGRST_JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
       PGRST_ADMIN_SERVER_PORT: "3001"
       PGRST_ADMIN_SERVER_HOST: localhost
-    depends_on:
-      db:
-        condition: service_healthy
+    depends_on: [db]
     healthcheck:
       test: ["CMD", "postgrest", "--ready"]
       interval: 5s
       timeout: 3s
       retries: 30
 
+  # Public port 8080 (the only one the proxy routes to); admin API on 8081, project network only (AC-5).
   core:
-    <<: *defaults
-    build:
-      context: ..
-      dockerfile: core/Dockerfile
-    mem_limit: 512m
-    cpus: 1
+    image: ${REGISTRY}/selfbase-core:${TEMPLATE_VERSION}
     init: true
-    restart: unless-stopped
-    ports:
-      - "${CORE_BIND:-127.0.0.1}:${CORE_PORT:-8080}:8080"
     environment:
       DB_HOST: db
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      JWT_SECRET: ${JWT_SECRET}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      AUTHENTICATOR_PASSWORD: ${AUTHENTICATOR_PASSWORD:?set AUTHENTICATOR_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      ADMIN_PORT: "8081"
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      PROJECT_REF: ${PROJECT_REF:-}
       PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL (public https origin of core)}
       TRUST_PROXY: ${TRUST_PROXY:-true}
       SITE_URL: ${SITE_URL:?set SITE_URL (the app origin)}
+      AUTH_DISABLE_SIGNUP: ${AUTH_DISABLE_SIGNUP:-false}
       AUTH_REDIRECT_ALLOWLIST: ${AUTH_REDIRECT_ALLOWLIST:-}
       AUTH_CONFIRM_EMAIL: ${AUTH_CONFIRM_EMAIL:-true}
       AUTH_SECURE_EMAIL_CHANGE: ${AUTH_SECURE_EMAIL_CHANGE:-true}
@@ -99,51 +79,34 @@ services:
       GOOGLE_AUTH_URL: ${GOOGLE_AUTH_URL:-https://accounts.google.com/o/oauth2/v2/auth}
       GOOGLE_TOKEN_URL: ${GOOGLE_TOKEN_URL:-https://oauth2.googleapis.com/token}
       GOOGLE_USERINFO_URL: ${GOOGLE_USERINFO_URL:-https://openidconnect.googleapis.com/v1/userinfo}
-      PANEL_ADMIN_EMAIL: ${PANEL_ADMIN_EMAIL:-}
-      PANEL_ADMIN_PASSWORD_HASH: ${PANEL_ADMIN_PASSWORD_HASH:-}
-      STORAGE_DIR: /data/storage # fixed: it is the storage volume's mount point below
+      STORAGE_DIR: /data/storage # fixed: the storage volume's mount point below
       STORAGE_MAX_UPLOAD_BYTES: ${STORAGE_MAX_UPLOAD_BYTES:-52428800}
-      PGRST_URL: ${PGRST_URL:-http://rest:3000}
-      FN_URL: ${FN_URL:-http://fn:8000}
+      PGRST_URL: http://rest:3000
+      FN_URL: http://fn:8000
     volumes:
       - storage:/data/storage
-    depends_on:
-      db:
-        condition: service_healthy
-      # not service_healthy: rest can log in only after core has migrated and set the authenticator password;
-      # until then it exits and its restart policy brings it back
-      rest:
-        condition: service_started
+    # rest only started, not healthy: it can log in only after core has migrated (see rest)
+    depends_on: [db, rest]
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
       interval: 10s
       timeout: 3s
       retries: 10
 
-  # Deno function host. SUPABASE_DIR is the host path of the app's supabase/ folder (functions/ + config.toml);
-  # unset, an empty placeholder is mounted and every function name answers 404.
+  # Deno function host. Functions come from the functions volume (written by deploys, spec 8.5); an empty
+  # volume means every function name answers 404.
   fn:
-    <<: *defaults
-    build:
-      context: ..
-      dockerfile: fn/Dockerfile
-    mem_limit: 512m
-    cpus: 1
-    restart: unless-stopped
-    env_file:
-      - path: ../fn.env
-        required: false
+    image: ${REGISTRY}/selfbase-fn:${TEMPLATE_VERSION}
     environment:
       SUPABASE_URL: http://core:8080
       SUPABASE_ANON_KEY: ${ANON_KEY:?set ANON_KEY}
       SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY:?set SERVICE_ROLE_KEY}
       # No SUPABASE_DB_URL: functions pull third-party code at runtime and get no database credentials.
-      # A function that really needs direct DB access gets it from fn.env, added there deliberately.
-      JWT_SECRET: ${JWT_SECRET}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
       FUNCTIONS_DIR: /supabase/functions
       FN_IMPORT_TIMEOUT_MS: ${FN_IMPORT_TIMEOUT_MS:-30000}
     volumes:
-      - ${SUPABASE_DIR:-../fn/empty}:/supabase:ro
+      - functions:/supabase:ro
       - denocache:/deno-dir # downloaded function dependencies survive restarts
     healthcheck:
       test: ["CMD", "nc", "-z", "127.0.0.1", "8000"]
@@ -151,34 +114,21 @@ services:
       timeout: 3s
       retries: 10
 
-  # Daily backup (03:15 UTC) of the database and the storage volume, see job/backup.sh.
-  # One-shot: docker compose -f template/compose.yml --env-file .env run --rm backup /scripts/backup.sh
-  # Restore: COMPOSE_FILE=template/compose.yml job/restore.sh <timestamp>
-  backup:
-    <<: *defaults
-    build:
-      context: ..
-      dockerfile: job/Dockerfile
-    mem_limit: 512m
-    cpus: 0.5
-    init: true # bash in --daily mode would ignore SIGTERM as PID 1
-    restart: unless-stopped
-    command: ["bash", "/scripts/backup.sh", "--daily"]
+  # PgBouncer, transaction pooling on 6432 (spec 8.9); pooler/entrypoint.sh writes its config.
+  pooler:
+    image: ${REGISTRY}/selfbase-pooler:${TEMPLATE_VERSION}
     environment:
-      PGHOST: db
-      PGUSER: postgres
-      PGPASSWORD: ${POSTGRES_PASSWORD}
-      PGDATABASE: postgres
-      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-7}
-    volumes:
-      - storage:/data/storage:ro
-      - ${BACKUP_DIR:-backups}:/backups
-    depends_on:
-      db:
-        condition: service_healthy
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POOL_SIZE: ${POOL_SIZE:-15}
+    depends_on: [db]
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "6432"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
 
 volumes:
   pgdata:
   storage:
-  backups:
+  functions:
   denocache:
