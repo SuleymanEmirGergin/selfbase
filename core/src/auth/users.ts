@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import bcrypt from 'bcryptjs'
 import { HTTPException } from 'hono/http-exception'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
+import type { PoolClient } from 'pg'
 import { pool } from '../db.ts'
 import { config } from '../config.ts'
 
@@ -50,7 +51,7 @@ export async function findById(id: string): Promise<UserRow | null> {
 }
 
 export async function findByEmail(email: string): Promise<UserRow | null> {
-  return (await pool.query(`${SELECT_USER} where lower(u.email) = lower($1) and not u.is_sso_user`, [email])).rows[0] ?? null
+  return (await pool.query(`${SELECT_USER} where u.email = lower($1) and not u.is_sso_user`, [email])).rows[0] ?? null
 }
 
 export async function listUsers(limit: number, offset: number): Promise<{ rows: UserRow[]; total: number }> {
@@ -59,6 +60,22 @@ export async function listUsers(limit: number, offset: number): Promise<{ rows: 
     pool.query(`select count(*)::int as n from auth.users`),
   ])
   return { rows: page.rows, total: count.rows[0].n }
+}
+
+/** Runs fn in a transaction on a superuser pool client. */
+export async function withTx<T>(fn: (c: PoolClient) => Promise<T>): Promise<T> {
+  const client = await pool.connect()
+  try {
+    await client.query('begin')
+    const result = await fn(client)
+    await client.query('commit')
+    return result
+  } catch (err) {
+    await client.query('rollback').catch(() => {})
+    throw err
+  } finally {
+    client.release()
+  }
 }
 
 export const hashPassword = (password: string) => bcrypt.hash(password, 10)
@@ -79,13 +96,12 @@ export async function createUser(p: {
   const id = randomUUID()
   const email = p.email.toLowerCase()
   const confirmed = p.provider !== 'email' || !config.authConfirmEmail
-  const client = await pool.connect()
-  try {
-    await client.query('begin')
+  const hash = p.password ? await hashPassword(p.password) : null
+  await withTx(async (client) => {
     await client.query(
       `insert into auth.users (id, aud, role, email, encrypted_password, email_confirmed_at, raw_app_meta_data, raw_user_meta_data)
        values ($1, 'authenticated', 'authenticated', $2, $3, case when $4 then now() end, $5, $6)`,
-      [id, email, p.password ? await hashPassword(p.password) : null, confirmed,
+      [id, email, hash, confirmed,
         { provider: p.provider, providers: [p.provider] }, p.user_metadata ?? {}],
     )
     // other providers insert their own identity (their provider_id is the provider's user id)
@@ -94,12 +110,6 @@ export async function createUser(p: {
         `insert into auth.identities (provider_id, user_id, identity_data, provider) values ($1::text, $1::uuid, $2, 'email')`,
         [id, { sub: id, email, email_verified: confirmed, phone_verified: false }],
       )
-    await client.query('commit')
-  } catch (err) {
-    await client.query('rollback')
-    throw err
-  } finally {
-    client.release()
-  }
+  })
   return (await findById(id))!
 }

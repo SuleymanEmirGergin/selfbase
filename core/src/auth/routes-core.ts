@@ -5,7 +5,7 @@ import bcrypt from 'bcryptjs'
 import { pool } from '../db.ts'
 import { config } from '../config.ts'
 import type { AppEnv } from '../jwt.ts'
-import { authError, checkPassword, createUser, findByEmail, findById, hashPassword, listUsers, toUserJson } from './users.ts'
+import { authError, checkPassword, createUser, findByEmail, findById, hashPassword, listUsers, toUserJson, withTx } from './users.ts'
 import { issueSession, isBanned, revokeSession, rotate, sessionActive } from './sessions.ts'
 import { sendConfirmation } from './mail.ts'
 
@@ -35,6 +35,7 @@ async function requireUser(c: Ctx) {
   if (!(await sessionActive(claims.session_id))) throw authError(403, 'session_not_found', 'Session from session_id claim in JWT does not exist')
   const user = await findById(claims.sub)
   if (!user) throw authError(403, 'user_not_found', 'User from sub claim in JWT does not exist')
+  if (isBanned(user)) throw authError(400, 'user_banned', 'User is banned')
   return { user, claims }
 }
 
@@ -55,7 +56,10 @@ router.post('/signup', async (c) => {
   const email = checkEmail(body.email)
   checkPassword(body.password)
   const data = body.data && typeof body.data === 'object' ? body.data : {}
-  const user = (await findByEmail(email))
+  const existing = await findByEmail(email)
+  // same bcrypt cost on both branches so timing does not reveal registered emails (mail timing parity: Task 3)
+  if (existing) await hashPassword(body.password)
+  const user = existing
     ? null
     : await createUser({ email, password: body.password, user_metadata: data, provider: 'email' }).catch((err) => {
         if (err.code === '23505') return null // lost a race with a concurrent signup for the same email
@@ -101,37 +105,44 @@ router.get('/user', async (c) => c.json(toUserJson((await requireUser(c)).user))
 router.put('/user', async (c) => {
   const { user } = await requireUser(c)
   const body = await readBody(c)
-  if (body.data !== undefined) {
-    if (!body.data || typeof body.data !== 'object' || Array.isArray(body.data)) throw authError(400, 'validation_failed', 'data must be an object')
-    // GoTrue merges top-level keys; a null value removes the key
-    await pool.query(
-      `update auth.users set raw_user_meta_data = (coalesce(raw_user_meta_data, '{}') || $2::jsonb)
-         - array(select key from jsonb_each($2::jsonb) where value = 'null'::jsonb), updated_at = now() where id = $1`,
-      [user.id, body.data],
-    )
-  }
-  if (body.password !== undefined) {
-    checkPassword(body.password)
-    await pool.query(`update auth.users set encrypted_password = $2, updated_at = now() where id = $1`, [user.id, await hashPassword(body.password)])
-  }
-  const email = body.email === undefined ? user.email : checkEmail(body.email)
-  if (email && email !== user.email) {
-    if (await findByEmail(email)) throw authError(422, 'email_exists', 'A user with this email address has already been registered')
-    if (config.authConfirmEmail) {
-      // shortcut: only records the pending change; Task 3 sends the confirmation mails and applies it
-      await pool.query(`update auth.users set email_change = $2, updated_at = now() where id = $1`, [user.id, email])
-    } else {
-      await pool.query(`update auth.users set email = $2, updated_at = now() where id = $1`, [user.id, email])
-      await pool.query(`update auth.identities set identity_data = identity_data || jsonb_build_object('email', $2::text), updated_at = now()
-        where user_id = $1 and provider = 'email'`, [user.id, email])
-    }
-  }
-  if (body.phone !== undefined) {
+  // validate everything before writing anything
+  const { data, password, phone } = body
+  if (data !== undefined && (!data || typeof data !== 'object' || Array.isArray(data)))
+    throw authError(400, 'validation_failed', 'data must be an object')
+  if (password !== undefined) checkPassword(password)
+  const email = body.email === undefined ? null : checkEmail(body.email)
+  const newEmail = email && email !== user.email ? email : null
+  const emailTaken = () => authError(422, 'email_exists', 'A user with this email address has already been registered')
+  if (newEmail && (await findByEmail(newEmail))) throw emailTaken()
+  if (phone !== undefined) {
     if (!config.authPhoneEnabled) throw authError(422, 'phone_provider_disabled', 'Phone provider is disabled')
-    if (typeof body.phone !== 'string') throw authError(400, 'validation_failed', 'phone must be a string')
-    // shortcut: only records the pending change; Task 3 sends the OTP and applies it
-    await pool.query(`update auth.users set phone_change = $2, updated_at = now() where id = $1`, [user.id, body.phone])
+    if (typeof phone !== 'string') throw authError(400, 'validation_failed', 'phone must be a string')
   }
+  const hash = password === undefined ? null : await hashPassword(password)
+
+  await withTx(async (tx) => {
+    if (data !== undefined)
+      // GoTrue merges top-level keys; a null value removes the key
+      await tx.query(
+        `update auth.users set raw_user_meta_data = (coalesce(raw_user_meta_data, '{}') || $2::jsonb)
+           - array(select key from jsonb_each($2::jsonb) where value = 'null'::jsonb), updated_at = now() where id = $1`,
+        [user.id, data],
+      )
+    if (hash) await tx.query(`update auth.users set encrypted_password = $2, updated_at = now() where id = $1`, [user.id, hash])
+    if (newEmail && config.authConfirmEmail) {
+      // shortcut: only records the pending change; Task 3 sends the confirmation mails and applies it
+      await tx.query(`update auth.users set email_change = $2, updated_at = now() where id = $1`, [user.id, newEmail])
+    } else if (newEmail) {
+      await tx.query(`update auth.users set email = $2, updated_at = now() where id = $1`, [user.id, newEmail])
+      await tx.query(`update auth.identities set identity_data = identity_data || jsonb_build_object('email', $2::text), updated_at = now()
+        where user_id = $1 and provider = 'email'`, [user.id, newEmail])
+    }
+    // shortcut: only records the pending change; Task 3 sends the OTP and applies it
+    if (phone !== undefined) await tx.query(`update auth.users set phone_change = $2, updated_at = now() where id = $1`, [user.id, phone])
+  }).catch((err) => {
+    if (err.code === '23505') throw emailTaken() // lost a race for the same email
+    throw err
+  })
   return c.json(toUserJson((await findById(user.id))!))
 })
 

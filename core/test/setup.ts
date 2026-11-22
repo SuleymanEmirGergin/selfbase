@@ -22,7 +22,7 @@ Object.assign(process.env, {
   AUTH_REDIRECT_ALLOWLIST: 'http://localhost:5173/*',
   AUTH_CONFIRM_EMAIL: 'true',
   AUTH_PHONE_ENABLED: 'false',
-  AUTH_MIN_PASSWORD: '8',
+  AUTH_MIN_PASSWORD: '6',
   SMTP_HOST: '',
   PANEL_ADMIN_EMAIL: 'admin@example.test',
   PANEL_ADMIN_PASSWORD_HASH: '',

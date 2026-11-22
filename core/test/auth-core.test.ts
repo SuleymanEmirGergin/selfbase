@@ -68,7 +68,7 @@ describe('auth core', () => {
 
   it('short password is 422 weak_password', async () => {
     config.authConfirmEmail = false
-    const res = await call('POST', '/signup', { email: email(), password: 'abc' })
+    const res = await call('POST', '/signup', { email: email(), password: '12345' })
     expect(res.status).toBe(422)
     expect(await res.json()).toMatchObject({ code: 422, error_code: 'weak_password' })
   })
@@ -97,6 +97,17 @@ describe('auth core', () => {
     const res = await signIn(s.user.email)
     expect(res.status).toBe(400)
     expect(await res.json()).toMatchObject({ error_code: 'user_banned' })
+  })
+
+  it('banned user: refresh and /user are 400 user_banned', async () => {
+    const s = await signUp()
+    await pool.query(`update auth.users set banned_until = now() + interval '1 day' where id = $1`, [s.user.id])
+    const u = await call('GET', '/user', undefined, s.access_token)
+    expect(u.status).toBe(400)
+    expect(await u.json()).toMatchObject({ error_code: 'user_banned' })
+    const r = await refresh(s.refresh_token)
+    expect(r.status).toBe(400)
+    expect(await r.json()).toMatchObject({ error_code: 'user_banned' })
   })
 
   it('a $2a$ hash (exported from Supabase) signs in', async () => {
@@ -157,6 +168,33 @@ describe('auth core', () => {
     expect((await signIn(e, 'new-password-456')).status).toBe(200)
   })
 
+  it('PUT /user with a taken email is 422 and writes nothing', async () => {
+    config.authConfirmEmail = false
+    const other = await signUp()
+    const e = email()
+    const s = await (await call('POST', '/signup', { email: e, password: PW, data: { a: 1 } })).json()
+    const res = await call('PUT', '/user', { data: { x: 1 }, password: 'new-password-456', email: other.user.email }, s.access_token)
+    expect(res.status).toBe(422)
+    expect(await res.json()).toMatchObject({ error_code: 'email_exists' })
+    const row = (await pool.query('select raw_user_meta_data, email from auth.users where id = $1', [s.user.id])).rows[0]
+    expect(row).toEqual({ raw_user_meta_data: { a: 1 }, email: e })
+    expect((await signIn(e)).status).toBe(200)
+  })
+
+  it('logout scope=local ends only this session, scope=others keeps only this one', async () => {
+    const s = await signUp()
+    const a = await (await signIn(s.user.email)).json()
+    const b = await (await signIn(s.user.email)).json()
+    expect((await call('POST', '/logout?scope=local', undefined, a.access_token)).status).toBe(204)
+    expect((await refresh(a.refresh_token)).status).toBe(400)
+    expect((await call('GET', '/user', undefined, b.access_token)).status).toBe(200)
+
+    expect((await call('POST', '/logout?scope=others', undefined, b.access_token)).status).toBe(204)
+    expect((await refresh(s.refresh_token)).status).toBe(400)
+    expect((await call('GET', '/user', undefined, b.access_token)).status).toBe(200)
+    expect((await refresh(b.refresh_token)).status).toBe(200)
+  })
+
   it('logout revokes the session: refresh fails and /user is 403', async () => {
     const s = await signUp()
     const res = await call('POST', '/logout', undefined, s.access_token)
@@ -167,6 +205,11 @@ describe('auth core', () => {
 
   it('admin endpoints need service_role', async () => {
     const s = await signUp()
+    const noToken = await app.request(`/auth/v1/admin/users/${s.user.id}`, { method: 'DELETE' })
+    expect(noToken.status).toBe(401)
+    expect(await noToken.json()).toMatchObject({ error_code: 'no_authorization' })
+    const listNoToken = await app.request('/auth/v1/admin/users')
+    expect(listNoToken.status).toBe(401)
     const asAnon = await call('DELETE', `/admin/users/${s.user.id}`)
     expect([401, 403]).toContain(asAnon.status)
     expect((await call('DELETE', `/admin/users/${s.user.id}`, undefined, s.access_token)).status).toBe(403)
