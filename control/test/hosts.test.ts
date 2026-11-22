@@ -163,6 +163,18 @@ describe('domains', () => {
     expect(await hostsOf(pool, a.projectId)).toEqual([])
   })
 
+  test('a PUBLIC_URL with a port still refuses its hostname, both kinds', async () => {
+    const a = await project()
+    const before = config.publicUrl
+    try {
+      config.publicUrl = 'https://Studio.Example.com:8443'
+      for (const kind of ['legacy', 'custom'] as const)
+        expect((await refusal(addDomain(pool, a.projectId, 'studio.example.com', kind))).code).toBe('hostname_taken')
+    } finally {
+      config.publicUrl = before
+    }
+  })
+
   test('a legacy name under the base domain must be in LEGACY_HOSTNAMES', async () => {
     const a = await project()
     const e = await refusal(addDomain(pool, a.projectId, `other.${BASE}`, 'legacy'))
@@ -183,5 +195,15 @@ describe('LEGACY_HOSTNAMES', () => {
     expect(loadConfig(env).legacyHostnames).toEqual([])
     expect(loadConfig({ ...env, LEGACY_HOSTNAMES: ' A.Example.test , b.example.test,' }).legacyHostnames).toEqual(['a.example.test', 'b.example.test'])
     expect(() => loadConfig({ ...env, LEGACY_HOSTNAMES: 'a.example.test,bad host' })).toThrow(/config: LEGACY_HOSTNAMES/)
+  })
+})
+
+describe('PUBLIC_URL', () => {
+  test('must be an http(s) URL with a hostname', async () => {
+    const { loadConfig } = await import('../src/config.ts')
+    const env = { ...process.env }
+    expect(loadConfig({ ...env, PUBLIC_URL: 'https://studio.example.com:8443' }).publicUrl).toBe('https://studio.example.com:8443')
+    for (const bad of ['studio.example.com', 'ftp://studio.example.com', 'file:///etc/passwd', 'not a url'])
+      expect(() => loadConfig({ ...env, PUBLIC_URL: bad })).toThrow(/^config: PUBLIC_URL/)
   })
 })

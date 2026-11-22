@@ -113,7 +113,9 @@ export async function addDomain(db: Db, projectId: string, hostname: string, kin
   const h = hostname.trim().toLowerCase()
   if (!HOSTNAME_RE.test(h)) throw new HostError('invalid_hostname', `"${hostname}" is not a valid hostname. Use a name such as api.example.com.`)
   // a project router for these would steal Studio's or the test project's traffic
-  if (h === new URL(config.publicUrl).host.toLowerCase() || h === config.testHost.toLowerCase()) {
+  const own = (name: string) => name.toLowerCase().replace(/\.$/, '')
+  // hostname, not host: PUBLIC_URL may carry a port
+  if (h === own(new URL(config.publicUrl).hostname) || h === own(config.testHost)) {
     throw new HostError('hostname_taken', `${h} is used by selfbase itself. Choose another hostname.`)
   }
   const base = config.baseDomain.toLowerCase()

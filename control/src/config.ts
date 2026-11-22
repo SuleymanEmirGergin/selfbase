@@ -26,6 +26,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   if (jwtSecret.length < 32) fail('CONTROL_JWT_SECRET must be at least 32 characters')
   const base = need('BASE_DOMAIN')
   const legacyHostnames = (env.LEGACY_HOSTNAMES || '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean)
+  const publicUrl = env.PUBLIC_URL || `https://selfbase.${base}`
+  if (!/^https?:$/.test(URL.parse(publicUrl)?.protocol ?? '') || !URL.parse(publicUrl)?.hostname) fail('PUBLIC_URL must be an http(s) URL with a hostname')
   for (const h of legacyHostnames) if (!HOSTNAME_RE.test(h)) fail('LEGACY_HOSTNAMES must be a comma-separated list of hostnames')
 
   return {
@@ -39,7 +41,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     provisionerUrl: env.PROVISIONER_URL || 'http://selfbase-provisioner:8090',
     provisionerToken: need('PROVISIONER_TOKEN'),
     baseDomain: base,
-    publicUrl: env.PUBLIC_URL || `https://selfbase.${base}`,
+    publicUrl,
     nodeName: env.NODE_NAME || 'main',
     proxyMode: oneOf('PROXY_MODE', 'coolify', ['coolify', 'own']),
     proxyNetwork: env.PROXY_NETWORK || 'coolify',
