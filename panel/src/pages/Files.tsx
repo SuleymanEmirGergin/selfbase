@@ -4,6 +4,9 @@ import { api, errMsg } from '../api.ts'
 import type { Bucket, FileEntry } from '../api.ts'
 import { Empty, ErrorBox, Icon, Loading, confirmDanger, fmtDate, fmtSize, toast } from '../ui.tsx'
 
+/** Admin API listing cap (core/src/admin/files.ts passes limit 1000). */
+const LIST_CAP = 1000
+
 export default function Files() {
   const [buckets, setBuckets] = useState<Bucket[] | null>(null)
   const [bucketsErr, setBucketsErr] = useState('')
@@ -14,10 +17,13 @@ export default function Files() {
 
   useEffect(() => {
     setBucketsErr('')
+    let live = true
     api.buckets().then((b) => {
+      if (!live) return
       setBuckets(b)
       setBucket((cur) => (cur && b.some((x) => x.id === cur) ? cur : b[0]?.id ?? null))
-    }, (e) => setBucketsErr(errMsg(e)))
+    }, (e) => live && setBucketsErr(errMsg(e)))
+    return () => { live = false }
   }, [tick])
 
   const create = async (e: FormEvent) => {
@@ -64,7 +70,8 @@ export default function Files() {
 
 function BucketView({ bucket }: { bucket: string }) {
   const [prefix, setPrefix] = useState('')
-  const [items, setItems] = useState<FileEntry[] | null>(null)
+  // each entry carries its full object path from the listing that produced it, so actions never mix prefixes
+  const [items, setItems] = useState<(FileEntry & { path: string })[] | null>(null)
   const [error, setError] = useState('')
   const [uploading, setUploading] = useState(false)
   const [tick, setTick] = useState(0)
@@ -74,7 +81,11 @@ function BucketView({ bucket }: { bucket: string }) {
   useEffect(() => {
     setError('')
     setItems(null)
-    api.files(bucket, prefix).then(setItems, (e) => setError(errMsg(e)))
+    let live = true // a slow listing of a folder we already left must not land here
+    api.files(bucket, prefix).then(
+      (list) => live && setItems(list.map((f) => ({ ...f, path: prefix + f.name }))),
+      (e) => live && setError(errMsg(e)))
+    return () => { live = false }
   }, [bucket, prefix, tick])
 
   const upload = async (files: FileList | null) => {
@@ -92,8 +103,7 @@ function BucketView({ bucket }: { bucket: string }) {
     }
   }
 
-  const remove = async (f: FileEntry) => {
-    const path = prefix + f.name
+  const remove = async ({ path }: { path: string }) => {
     if (!(await confirmDanger('Dosya silinsin mi?', <><code>{bucket}/{path}</code> kalıcı olarak silinecek.</>))) return
     try {
       await api.deleteFile(bucket, path)
@@ -128,6 +138,10 @@ function BucketView({ bucket }: { bucket: string }) {
           : !items ? <Loading />
           : !items.length ? <Empty>{prefix ? 'Bu klasör boş.' : 'Bu bucket boş. Dosya yüklemek için Yükle’ye basın.'}</Empty>
           : (
+            <>
+            {items.length >= LIST_CAP && (
+              <div className="note list-cap" role="note">Bu klasörde gösterilenden fazla öğe var; yalnızca ilk {LIST_CAP} öğe listeleniyor.</div>
+            )}
             <div className="grid-wrap">
               <table className="grid list-table">
                 <thead>
@@ -141,9 +155,9 @@ function BucketView({ bucket }: { bucket: string }) {
                 </thead>
                 <tbody>
                   {items.map((f) => f.id === null ? (
-                    <tr key={'d' + f.name} className="clickable" onClick={() => setPrefix(prefix + f.name + '/')}>
+                    <tr key={'d' + f.name} className="clickable" onClick={() => setPrefix(f.path + '/')}>
                       <td colSpan={5}>
-                        <button className="link file-name" onClick={(e) => { e.stopPropagation(); setPrefix(prefix + f.name + '/') }}>
+                        <button className="link file-name" onClick={(e) => { e.stopPropagation(); setPrefix(f.path + '/') }}>
                           <Icon name="folder" size={14} />{f.name}/
                         </button>
                       </td>
@@ -156,7 +170,7 @@ function BucketView({ bucket }: { bucket: string }) {
                       <td className="small">{fmtDate(f.updated_at)}</td>
                       <td>
                         <div className="row-actions end">
-                          <a className="icon-btn" href={api.fileUrl(bucket, prefix + f.name)} download={f.name} aria-label={`${f.name} indir`} title="İndir">
+                          <a className="icon-btn" href={api.fileUrl(bucket, f.path)} download={f.name} aria-label={`${f.name} indir`} title="İndir">
                             <Icon name="download" />
                           </a>
                           <button className="icon-btn danger" onClick={() => remove(f)} aria-label={`${f.name} sil`} title="Sil"><Icon name="trash" /></button>
@@ -167,6 +181,7 @@ function BucketView({ bucket }: { bucket: string }) {
                 </tbody>
               </table>
             </div>
+            </>
           )}
       </div>
     </section>

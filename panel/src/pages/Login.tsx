@@ -1,6 +1,16 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
-import { api, errMsg } from '../api.ts'
+import { ApiError, api, errMsg } from '../api.ts'
+
+// core/src/admin/session.ts answers a disabled login (no PANEL_ADMIN_* set) with the same 401 as a wrong password,
+// on purpose, so the 401 text names both causes.
+const loginError = (err: unknown) => {
+  const status = err instanceof ApiError ? err.status : 0
+  if (status === 401) return 'E-posta ya da parola hatalı. Sunucuda PANEL_ADMIN_EMAIL ve PANEL_ADMIN_PASSWORD_HASH ayarlı değilse panel girişi kapalıdır.'
+  if (status === 429) return 'Çok fazla hatalı deneme. 15 dakika bekleyip tekrar deneyin.'
+  if (status === 403) return 'İstek reddedildi: panele yalnızca kendi adresinden giriş yapılabilir.'
+  return errMsg(err)
+}
 
 export default function Login({ onLogin }: { onLogin: (me: { email: string }) => void }) {
   const [email, setEmail] = useState('')
@@ -15,7 +25,7 @@ export default function Login({ onLogin }: { onLogin: (me: { email: string }) =>
     try {
       onLogin(await api.login(email, password))
     } catch (err) {
-      setError(errMsg(err) === 'invalid login' ? 'E-posta ya da parola hatalı.' : errMsg(err))
+      setError(loginError(err))
     } finally {
       setBusy(false)
     }

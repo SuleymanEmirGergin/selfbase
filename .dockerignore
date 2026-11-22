@@ -9,3 +9,6 @@ data
 panel/dist
 panel/test-results
 panel/playwright-report
+**/.env
+**/.env.*
+!**/.env.example

@@ -9,7 +9,7 @@
   --border-strong: #363940;
   --text: #e5e6e8;
   --muted: #9da2aa;
-  --dim: #6b7079;
+  --dim: #8a8f98; /* >= 4.78:1 on every dark background, incl. --raised */
   --accent: #3fb68b;
   --accent-fg: #04130d;
   --accent-soft: rgba(63, 182, 139, 0.13);
@@ -37,7 +37,7 @@
     --border-strong: #cdd0d5;
     --text: #17181a;
     --muted: #5d636b;
-    --dim: #8a9098;
+    --dim: #646970; /* >= 4.84:1 on every light background, incl. --raised */
     --accent: #12855b;
     --accent-fg: #ffffff;
     --accent-soft: rgba(18, 133, 91, 0.1);
@@ -358,3 +358,10 @@ button.th-btn:hover { background: var(--raised); }
   .scroll-area { padding: 12px; }
   .sql-editor textarea { height: 26vh; }
 }
+
+/* round-1 additions */
+.schema-select { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.field-error { color: var(--danger); font-size: 12px; overflow-wrap: anywhere; }
+.list-cap { margin: 8px 16px; }
+.confirm-msg .form { gap: 10px; }
+.confirm-msg p { margin: 0; }

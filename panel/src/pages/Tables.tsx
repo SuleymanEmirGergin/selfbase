@@ -15,19 +15,32 @@ const JSON_TYPES = new Set(['json', 'jsonb'])
 /** Shared by Tables and RLS: schema list with the selected schema. */
 export function SchemaSelect({ value, onChange }: { value: string; onChange: (s: string) => void }) {
   const [schemas, setSchemas] = useState<string[]>([value])
-  useEffect(() => { api.schemas().then(setSchemas, () => {}) }, [])
+  const [error, setError] = useState('')
+  useEffect(() => {
+    let live = true
+    api.schemas().then((s) => live && setSchemas(s), (e) => live && setError(errMsg(e)))
+    return () => { live = false }
+  }, [])
   return (
-    <label className="field inline">
-      <span>Şema</span>
-      <select value={value} onChange={(e) => onChange(e.target.value)}>
-        {schemas.map((s) => <option key={s}>{s}</option>)}
-      </select>
-    </label>
+    <div className="schema-select">
+      <label className="field inline">
+        <span>Şema</span>
+        <select value={value} onChange={(e) => onChange(e.target.value)}>
+          {schemas.map((s) => <option key={s}>{s}</option>)}
+        </select>
+      </label>
+      {error && <div className="field-error" role="alert">Şemalar alınamadı: {error}</div>}
+    </div>
   )
 }
 
+/** Plain and partitioned tables; views, materialized views and foreign tables cannot have RLS. */
+export const hasRls = (rel: Relation) => rel.relkind === 'r' || rel.relkind === 'p'
+const KIND: Record<string, string> = { v: 'görünüm', m: 'mat. görünüm', f: 'yabancı tablo' }
+
 export const RlsBadge = ({ rel }: { rel: Relation }) =>
-  rel.rls_enabled ? <span className="badge ok">RLS</span> : <span className="badge danger">RLS kapalı</span>
+  !hasRls(rel) ? <span className="badge">{KIND[rel.relkind] ?? rel.relkind}</span>
+    : rel.rls_enabled ? <span className="badge ok">RLS</span> : <span className="badge danger">RLS kapalı</span>
 
 export default function Tables() {
   const [schema, setSchema] = useState('public')
@@ -38,12 +51,15 @@ export default function Tables() {
   const [tick, setTick] = useState(0)
 
   useEffect(() => {
+    let live = true // a response for a schema that is no longer selected is dropped
     setTables(null)
     setTablesErr('')
     api.tables(schema).then((t) => {
+      if (!live) return
       setTables(t)
       setName((n) => (n && t.some((x) => x.name === n) ? n : t[0]?.name ?? null))
-    }, (e) => setTablesErr(errMsg(e)))
+    }, (e) => live && setTablesErr(errMsg(e)))
+    return () => { live = false }
   }, [schema, tick])
 
   const shown = tables?.filter((t) => t.name.toLowerCase().includes(search.toLowerCase())) ?? []
@@ -69,14 +85,14 @@ export default function Tables() {
                   <button className={t.name === name ? 'active' : undefined} onClick={() => setName(t.name)} aria-current={t.name === name}>
                     <Icon name="table" size={14} />
                     <span className="list-name">{t.name}</span>
-                    {!t.rls_enabled && <span className="badge danger">RLS kapalı</span>}
+                    {(!hasRls(t) || !t.rls_enabled) && <RlsBadge rel={t} />}
                   </button>
                 </li>
               ))}
             </ul>
           )}
       </aside>
-      {rel ? <TableView key={`${schema}.${rel.name}`} rel={rel} /> : (
+      {rel ? <TableView key={`${rel.schema}.${rel.name}`} rel={rel} /> : (
         <section className="page-main">{tables && <Empty>Soldan bir tablo seçin.</Empty>}</section>
       )}
     </div>
@@ -95,9 +111,11 @@ function TableView({ rel }: { rel: Relation }) {
   const pkCols = rel.columns.filter((c) => c.is_pk)
 
   useEffect(() => {
+    let live = true // only the latest page/sort/filter request may land
     setError('')
     api.rows(rel.schema, rel.name, { limit: PAGE, offset, order: sort ? `${sort.col}.${sort.dir}` : undefined, filter: applied || undefined })
-      .then(setData, (e) => { setError(errMsg(e)); setData(null) })
+      .then((d) => live && setData(d), (e) => { if (live) { setError(errMsg(e)); setData(null) } })
+    return () => { live = false }
   }, [rel, offset, sort, applied, tick])
 
   const onSort = (col: string) => {
@@ -250,7 +268,7 @@ function RowDrawer({ rel, row, onClose, onSaved }: { rel: Relation; row: Row | n
           const id = `f-${c.name}`
           const long = JSON_TYPES.has(c.type) || c.type === 'text' || c.type.endsWith('[]')
           const placeholder = f.isNull ? 'NULL' : !row && c.default ? `varsayılan: ${c.default}` : !row ? 'boş bırakılırsa varsayılan' : ''
-          const common = { id, className: 'mono', value: f.text, disabled: f.isNull || readOnly, placeholder, onChange: (e: { target: { value: string } }) => set(c.name, { text: e.target.value }) }
+          const common = { id, className: 'mono', 'data-pk': c.is_pk || undefined, value: f.text, disabled: f.isNull || readOnly, placeholder, onChange: (e: { target: { value: string } }) => set(c.name, { text: e.target.value }) }
           return (
             <div className="field" key={c.name}>
               <div className="field-label">

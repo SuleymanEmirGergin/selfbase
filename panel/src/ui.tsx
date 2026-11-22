@@ -45,23 +45,41 @@ export const ErrorBox = ({ message, onRetry }: { message: string; onRetry?: () =
   </div>
 )
 
-/** Right-hand panel for editing or inspecting one record. Esc closes; focus moves in on open and back on close. */
+const FOCUSABLE = 'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'
+const FIELD = 'input:not(:disabled):not([data-pk]), textarea:not(:disabled), select:not(:disabled)'
+
+/**
+ * Right-hand modal panel for editing or inspecting one record. Esc closes, Tab stays inside, focus starts on the first
+ * editable non-key field and returns to the element that opened it.
+ */
 export function Drawer({ title, subtitle, onClose, children, footer }: {
   title: string; subtitle?: string; onClose: () => void; children: ReactNode; footer?: ReactNode
 }) {
-  const ref = useRef<HTMLElement>(null)
+  const ref = useRef<HTMLDivElement>(null)
+  const close = useRef(onClose)
+  close.current = onClose // parents pass fresh closures; the mount effect below must not re-run for them
   useEffect(() => {
     const before = document.activeElement as HTMLElement | null
-    const first = ref.current?.querySelector<HTMLElement>('input, textarea, select, button.btn')
-    ;(first ?? ref.current)?.focus()
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !document.querySelector('dialog[open]')) onClose() }
+    const el = ref.current!
+    ;(el.querySelector<HTMLElement>(`.drawer-body :is(${FIELD})`) ?? el.querySelector<HTMLElement>(FOCUSABLE) ?? el).focus()
+    const onKey = (e: KeyboardEvent) => {
+      if (document.querySelector('dialog[open]')) return // the confirm dialog handles its own keys
+      if (e.key === 'Escape') close.current()
+      if (e.key !== 'Tab') return
+      const items = [...el.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((x) => x.offsetParent !== null)
+      if (!items.length) return
+      const [first, last] = [items[0], items[items.length - 1]]
+      if (!el.contains(document.activeElement)) { e.preventDefault(); first.focus() }
+      else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
+    }
     document.addEventListener('keydown', onKey)
-    return () => { document.removeEventListener('keydown', onKey); before?.focus?.() }
-  }, [onClose])
+    return () => { document.removeEventListener('keydown', onKey); if (before?.isConnected) before.focus() }
+  }, [])
   return (
     <>
       <div className="drawer-scrim" onClick={onClose} />
-      <aside className="drawer" role="dialog" aria-label={title} ref={ref} tabIndex={-1}>
+      <div className="drawer" role="dialog" aria-modal="true" aria-label={title} ref={ref} tabIndex={-1}>
         <header className="drawer-head">
           <div className="drawer-title">
             <h2>{title}</h2>
@@ -71,7 +89,7 @@ export function Drawer({ title, subtitle, onClose, children, footer }: {
         </header>
         <div className="drawer-body">{children}</div>
         {footer && <footer className="drawer-foot">{footer}</footer>}
-      </aside>
+      </div>
     </>
   )
 }

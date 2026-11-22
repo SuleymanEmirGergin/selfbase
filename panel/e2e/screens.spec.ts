@@ -17,6 +17,7 @@ test.beforeAll(async ({ baseURL }) => {
       body text, tags text[], published boolean not null default false, meta jsonb, views integer not null default 0,
       created_at timestamptz not null default now());
     create table if not exists public.audit_log (id bigserial primary key, event text not null, payload jsonb, at timestamptz default now());
+    create or replace view public.published_posts as select id, author_id, title, views from public.posts where published;
     alter table public.profiles enable row level security;
     alter table public.posts enable row level security;
     drop policy if exists "profiles are public" on public.profiles;
@@ -72,7 +73,7 @@ test('screens', async ({ page, browser, baseURL }) => {
 
   await login(page)
   await nav(page, 'Tablolar')
-  await page.getByRole('complementary', { name: 'Tablolar' }).getByRole('button', { name: 'posts' }).click()
+  await page.getByRole('complementary', { name: 'Tablolar' }).getByRole('button', { name: 'posts', exact: true }).click()
   await expect(page.getByText('/ 6 satır')).toBeVisible()
   await page.screenshot({ animations: 'disabled', path: `${OUT}/02-tables.png` })
   await page.getByRole('cell', { name: 'Kendi sunucunda Postgres' }).click()
@@ -81,7 +82,7 @@ test('screens', async ({ page, browser, baseURL }) => {
   await page.keyboard.press('Escape')
 
   await nav(page, 'RLS')
-  await expect(page.getByRole('article', { name: 'posts' })).toBeVisible()
+  await expect(page.getByRole('article', { name: 'posts', exact: true })).toBeVisible()
   await page.screenshot({ animations: 'disabled', path: `${OUT}/03-rls.png` })
 
   await nav(page, 'SQL')
@@ -105,8 +106,16 @@ order by views desc nulls last;`)
   const ctx = await browser.newContext({ baseURL, viewport: { width: 375, height: 812 }, colorScheme: 'dark', deviceScaleFactor: 2, isMobile: true, hasTouch: true })
   const mobile = await ctx.newPage()
   await login(mobile)
-  await mobile.getByRole('complementary', { name: 'Tablolar' }).getByRole('button', { name: 'posts' }).click()
+  await mobile.getByRole('complementary', { name: 'Tablolar' }).getByRole('button', { name: 'posts', exact: true }).click()
   await expect(mobile.getByText('/ 6 satır')).toBeVisible()
   await mobile.screenshot({ animations: 'disabled', path: `${OUT}/07-tables-mobile.png` })
   await ctx.close()
+
+  const light = await browser.newContext({ baseURL, viewport: { width: 1440, height: 900 }, colorScheme: 'light' })
+  const lp = await light.newPage()
+  await login(lp)
+  await lp.getByRole('complementary', { name: 'Tablolar' }).getByRole('button', { name: 'posts', exact: true }).click()
+  await expect(lp.getByText('/ 6 satır')).toBeVisible()
+  await lp.screenshot({ animations: 'disabled', path: `${OUT}/09-tables-light.png` })
+  await light.close()
 })

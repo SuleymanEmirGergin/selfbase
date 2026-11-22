@@ -44,7 +44,8 @@ const enc = encodeURIComponent
 const encPath = (name: string) => name.split('/').map(enc).join('/')
 
 export type Column = { name: string; type: string; nullable: boolean; default: string | null; is_pk: boolean }
-export type Relation = { schema: string; name: string; rls_enabled: boolean; row_estimate: number; columns: Column[] }
+/** relkind is pg_class.relkind: r table, p partitioned table, v view, m materialized view, f foreign table. */
+export type Relation = { schema: string; name: string; relkind: string; rls_enabled: boolean; row_estimate: number; columns: Column[] }
 export type Row = Record<string, unknown>
 export type Policy = {
   name: string; schema: string; table: string; command: string; roles: string[]

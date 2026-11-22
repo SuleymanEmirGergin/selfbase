@@ -3,7 +3,7 @@ import type { FormEvent } from 'react'
 import { api, errMsg } from '../api.ts'
 import type { Policy, Relation } from '../api.ts'
 import { Drawer, Empty, ErrorBox, Icon, Loading, confirmDanger, toast } from '../ui.tsx'
-import { RlsBadge, SchemaSelect } from './Tables.tsx'
+import { RlsBadge, SchemaSelect, hasRls } from './Tables.tsx'
 
 const COMMANDS = ['ALL', 'SELECT', 'INSERT', 'UPDATE', 'DELETE']
 
@@ -17,9 +17,11 @@ export default function Policies() {
   const reload = () => setTick((t) => t + 1)
 
   useEffect(() => {
+    let live = true // a late response for the previous schema must not show (or be edited) under the new one
     setError('')
     Promise.all([api.tables(schema), api.policies(schema)])
-      .then(([tables, policies]) => setData({ tables, policies }), (e) => setError(errMsg(e)))
+      .then(([tables, policies]) => live && setData({ tables, policies }), (e) => live && setError(errMsg(e)))
+    return () => { live = false }
   }, [schema, tick])
 
   const setRls = async (t: Relation, enabled: boolean) => {
@@ -43,7 +45,7 @@ export default function Policies() {
   }
 
   const tables = data?.tables.filter((t) => t.name.toLowerCase().includes(search.toLowerCase())) ?? []
-  const off = data?.tables.filter((t) => !t.rls_enabled).length ?? 0
+  const off = data?.tables.filter((t) => hasRls(t) && !t.rls_enabled).length ?? 0
 
   return (
     <section className="page-main">
@@ -64,12 +66,22 @@ export default function Policies() {
             <>
               {off > 0 && (
                 <div className="warn-banner" role="note">
-                  <strong>{off} tabloda RLS kapalı.</strong> Bu tablolara anon ve authenticated rolleri izinleri ölçüsünde kısıtsız erişir.
+                  <strong>{off} tabloda RLS kapalı.</strong> RLS kapalı bir tabloda policy'ler hiç uygulanmaz: tabloda yetkisi olan
+                  her rol (anon ve authenticated dahil) bütün satırları okuyup değiştirebilir. Bu tablolar için RLS'i açın ve gereken policy'leri ekleyin.
                 </div>
               )}
               {!tables.length && <Empty>Eşleşen tablo yok.</Empty>}
               {tables.map((t) => {
                 const ps = data.policies.filter((p) => p.table === t.name)
+                if (!hasRls(t)) return (
+                  <article key={t.name} className="card" aria-label={t.name}>
+                    <header className="card-head">
+                      <h2 className="mono">{t.name}</h2>
+                      <RlsBadge rel={t} />
+                    </header>
+                    <p className="card-empty muted">Bu bir {t.relkind === 'f' ? 'yabancı tablo' : 'görünüm'}; RLS ve policy tanımlanamaz.</p>
+                  </article>
+                )
                 return (
                   <article key={t.name} className={`card ${t.rls_enabled ? '' : 'card-danger'}`} aria-label={t.name}>
                     <header className="card-head">
@@ -117,17 +129,19 @@ export default function Policies() {
           )}
       </div>
       {adding && data && (
-        <PolicyDrawer schema={schema} tables={data.tables} table={adding} onClose={() => setAdding(null)}
+        <PolicyDrawer tables={data.tables.filter(hasRls)} table={adding} onClose={() => setAdding(null)}
           onSaved={() => { setAdding(null); reload() }} />
       )}
     </section>
   )
 }
 
-function PolicyDrawer({ schema, tables, table, onClose, onSaved }: {
-  schema: string; tables: Relation[]; table: string; onClose: () => void; onSaved: () => void
+function PolicyDrawer({ tables, table, onClose, onSaved }: {
+  tables: Relation[]; table: string; onClose: () => void; onSaved: () => void
 }) {
   const [f, setF] = useState({ table, name: '', command: 'ALL', roles: 'public', using: '', check: '' })
+  // the schema always comes from the relation the form names, never from the current selector
+  const schema = tables.find((t) => t.name === f.table)!.schema
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const noUsing = f.command === 'INSERT'

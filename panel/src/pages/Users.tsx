@@ -5,6 +5,25 @@ import { Empty, ErrorBox, Icon, Loading, confirmDanger, fmtDate, toast } from '.
 
 const PAGE = 50
 const FOREVER = '2999-12-31T00:00:00Z'
+const BAN_DAYS = [[1, '1 gün'], [7, '7 gün'], [30, '30 gün'], [0, 'süresiz']] as const
+const banLabel = (days: number) => BAN_DAYS.find(([d]) => d === days)![1]
+
+/** Duration picker inside the ban confirm; writes the choice into `pick` so the caller can read it after confirming. */
+function BanChoice({ who, pick }: { who: string; pick: { days: number } }) {
+  const [days, setDays] = useState(pick.days)
+  return (
+    <div className="form">
+      <label className="field"><span>Süre</span>
+        <select value={days} onChange={(e) => { pick.days = Number(e.target.value); setDays(pick.days) }}>
+          {BAN_DAYS.map(([d, l]) => <option key={d} value={d}>{l}</option>)}
+        </select>
+      </label>
+      <p className="confirm-text">
+        <code>{who}</code> {days ? `${banLabel(days)} boyunca` : 'süresiz'} banlanacak ve tüm oturumları kapatılacak.
+      </p>
+    </div>
+  )
+}
 const isBanned = (u: User) => !!u.banned_until && Date.parse(u.banned_until) > Date.now()
 
 export default function Users() {
@@ -24,7 +43,9 @@ export default function Users() {
 
   useEffect(() => {
     setError('')
-    api.users(q, PAGE, offset).then(setData, (e) => setError(errMsg(e)))
+    let live = true // results of an older search must not replace the latest one
+    api.users(q, PAGE, offset).then((d) => live && setData(d), (e) => live && setError(errMsg(e)))
+    return () => { live = false }
   }, [q, offset, tick])
 
   const act = async (u: User, fn: () => Promise<unknown>, done: string) => {
@@ -41,8 +62,10 @@ export default function Users() {
   }
 
   const ban = async (u: User) => {
-    if (!(await confirmDanger('Kullanıcı banlansın mı?', <><code>{u.email || u.id}</code> süresiz banlanacak ve tüm oturumları kapatılacak.</>, 'Banla'))) return
-    act(u, () => api.updateUser(u.id, { banned_until: FOREVER }), 'Kullanıcı banlandı')
+    const pick = { days: 1 }
+    if (!(await confirmDanger('Kullanıcı banlansın mı?', <BanChoice who={u.email || u.id} pick={pick} />, 'Banla'))) return
+    const until = pick.days ? new Date(Date.now() + pick.days * 86400_000).toISOString() : FOREVER
+    act(u, () => api.updateUser(u.id, { banned_until: until }), `Kullanıcı banlandı (${banLabel(pick.days)})`)
   }
   const remove = async (u: User) => {
     if (!(await confirmDanger('Kullanıcı silinsin mi?', <><code>{u.email || u.id}</code> ve oturumları kalıcı olarak silinecek.</>))) return

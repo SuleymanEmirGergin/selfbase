@@ -20,6 +20,12 @@ const NUM = /^-?\d+(\.\d+)?$/
 const isNumericColumn = (rows: unknown[][], i: number) =>
   rows.some((r) => r[i] !== null) && rows.every((r) => r[i] === null || typeof r[i] === 'number' || (typeof r[i] === 'string' && NUM.test(r[i] as string)))
 
+/** Rows returned (SELECT, RETURNING), rows affected (INSERT/UPDATE/DELETE), or just done (DDL has no row count). */
+const resultSummary = (r: { columns: string[]; rows: unknown[][]; rowCount: number | null }) =>
+  r.columns.length ? `${(r.rowCount ?? r.rows.length).toLocaleString('tr-TR')} satır`
+    : r.rowCount !== null ? `${r.rowCount.toLocaleString('tr-TR')} satır etkilendi`
+    : 'Tamamlandı'
+
 export default function Sql() {
   const [query, setQuery] = useState(lastQuery)
   const [result, setResult] = useState<SqlResult | null>(lastResult)
@@ -73,9 +79,9 @@ export default function Sql() {
         {ok && (
           <>
             <span className="badge ok">Başarılı</span>
-            <span className="muted">{ok.rows.length ? `${ok.rows.length.toLocaleString('tr-TR')} satır` : `${ok.rowCount ?? 0} satır etkilendi`}</span>
+            <span className="muted">{resultSummary(ok)}</span>
             <span className="muted">{ok.durationMs} ms</span>
-            {ok.truncated && <span className="badge warn">İlk 1000 satır gösteriliyor</span>}
+            {ok.truncated && <span className="badge warn">İlk {ok.rows.length.toLocaleString('tr-TR')} satır gösteriliyor, toplam {(ok.rowCount ?? 0).toLocaleString('tr-TR')}</span>}
           </>
         )}
         {fail && <span className="badge danger">Hata</span>}
