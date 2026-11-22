@@ -1,15 +1,31 @@
 // One control.audit_log row per write through /platform and /v1 (spec section 9). Rows name the JSON body's keys,
 // never its values: tokens, passwords and secrets travel in bodies.
+import type { Context } from 'hono'
+import { bodyLimit } from 'hono/body-limit'
 import { createMiddleware } from 'hono/factory'
 import { pool } from './db.ts'
 import { clientIp } from './core.ts'
 import { apiRoute } from './session.ts'
 import type { Env } from './session.ts'
 
+export const BODY_LIMIT = 256 * 1024
+/** Route patterns that take larger bodies (uploads, imports) and enforce their own limit; the tasks adding them list them. */
+export const largeBodyRoutes = new Set<string>()
+const isJson = (c: Context) => !!c.req.header('content-type')?.toLowerCase().startsWith('application/json')
+const limit = bodyLimit({
+  maxSize: BODY_LIMIT,
+  onError: (c) => c.json({ error: 'payload_too_large', message: 'request body larger than 256 KiB' }, 413),
+})
+/** Caps every request body before audit or a handler parses it, except on the routes in largeBodyRoutes. */
+export const bodyCap = createMiddleware((c, next) => {
+  const route = apiRoute(c)
+  return route && largeBodyRoutes.has(route) ? next() : limit(c, next)
+})
+
 export const audit = createMiddleware<Env>(async (c, next) => {
   if (c.req.method === 'GET' || c.req.method === 'HEAD' || c.req.method === 'OPTIONS') return next()
   let bodyKeys: string[] = []
-  if (c.req.header('content-type')?.startsWith('application/json')) {
+  if (isJson(c)) {
     // parsed once here; Hono caches the body, so the handler can still read it
     const body = await c.req.json().catch(() => null)
     if (body && typeof body === 'object' && !Array.isArray(body)) bodyKeys = Object.keys(body)

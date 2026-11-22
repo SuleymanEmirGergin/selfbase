@@ -19,7 +19,7 @@ export const REFRESH_COOKIE = 'sb_studio_refresh'
 const REFRESH_PATH = '/platform/refresh'
 const ORIGIN = new URL(config.publicUrl).origin
 const secure = new URL(config.publicUrl).protocol === 'https:'
-const TOKEN_RE = /^Bearer\s+(sbp_[0-9a-f]{40})$/i
+const TOKEN_RE = /^Bearer (sbp_[0-9a-f]{40})$/
 // reachable without a session: they start one, end one, or are core's own sign-in routes (which check the bearer)
 const PUBLIC = /^\/platform\/(login|refresh|logout|invitations\/accept|auth\/v1\/.*)$/
 
@@ -69,13 +69,20 @@ async function cookieUser(jwt: string): Promise<User | null> {
   return rows[0] ? { id: rows[0].id, email: rows[0].email, via: 'cookie' } : null
 }
 
+/** The Studio session behind the request's cookie (same-origin checked), or null; for PUBLIC routes that use one. */
+export async function sessionUser(c: Context): Promise<User | null> {
+  const jwt = getCookie(c, ACCESS_COOKIE)
+  const user = jwt ? await cookieUser(jwt) : null
+  if (user) checkOrigin(c)
+  return user
+}
+
 /**
- * Sets c.get('user'). /platform: the cookie or `Bearer sbp_…`; /v1: the bearer only. Paths no route answers are
- * left to the JSON 404, and PUBLIC paths to their handlers.
+ * Sets c.get('user'). /platform: the cookie or `Bearer sbp_…`; /v1: the bearer only. Fails closed: every path but
+ * PUBLIC needs a caller, whether or not a route answers it (an unknown path is a 404 only after this).
  */
 export const authenticate = (scope: 'platform' | 'v1') =>
   createMiddleware<Env>(async (c, next) => {
-    if (!apiRoute(c)) return next()
     if (scope === 'platform' && PUBLIC.test(c.req.path)) return next()
     const header = c.req.header('authorization')
     let user: User | null = null
@@ -83,9 +90,7 @@ export const authenticate = (scope: 'platform' | 'v1') =>
       const token = header.match(TOKEN_RE)?.[1]
       user = token ? await tokenUser(token) : null
     } else if (scope === 'platform') {
-      const jwt = getCookie(c, ACCESS_COOKIE)
-      user = jwt ? await cookieUser(jwt) : null
-      if (user) checkOrigin(c)
+      user = await sessionUser(c)
     }
     if (!user) throw unauthorized()
     c.set('user', user)

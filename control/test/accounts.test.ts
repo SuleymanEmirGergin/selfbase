@@ -14,6 +14,11 @@ const controlDir = fileURLToPath(new URL('..', import.meta.url))
 const cli = (args: string[], input: string) =>
   spawnSync(process.execPath, ['src/cli.ts', ...args], { cwd: controlDir, input, encoding: 'utf8', env: process.env })
 
+// temporary catch-all routes on the real app (before its first request builds the router): authenticate must not
+// depend on the route shape
+app.all('/platform/x/*', (c) => c.json({ reached: true }))
+app.all('/v1/x/*', (c) => c.json({ reached: true }))
+
 const json = (body: unknown) => ({ method: 'POST', headers: { 'content-type': 'application/json', origin: ORIGIN }, body: JSON.stringify(body) })
 
 beforeAll(async () => {
@@ -86,11 +91,46 @@ describe('create-owner and login', () => {
   })
 })
 
+describe('fail closed', () => {
+  test('login needs Studio’s origin', async () => {
+    for (const origin of [undefined, 'https://evil.example']) {
+      const res = await app.request('/platform/login', {
+        method: 'POST', headers: { 'content-type': 'application/json', ...(origin ? { origin } : {}) },
+        body: JSON.stringify({ email: OWNER, password: PASSWORD }),
+      })
+      expect(res.status).toBe(403)
+      expect(res.headers.getSetCookie()).toEqual([])
+    }
+  })
+
+  test('ALL and wildcard routes need a caller too; an unknown path is 404 only after sign-in', async () => {
+    for (const path of ['/platform/x/a', '/v1/x/a/b']) {
+      const res = await app.request(path, { method: 'POST' })
+      expect(res.status, path).toBe(401)
+      expect(await res.json()).toEqual({ error: 'unauthorized', message: 'Unauthorized' })
+    }
+    const cookie = await login(OWNER, PASSWORD)
+    expect(await (await as(cookie, 'POST', '/platform/x/a')).json()).toEqual({ reached: true })
+    const unknown = await as(cookie, 'GET', '/platform/nope')
+    expect(unknown.status).toBe(404)
+    expect(await unknown.json()).toEqual({ error: 'not_found', message: expect.any(String) })
+  })
+
+  test('a JSON body over 256 KiB is refused before it is parsed', async () => {
+    const cookie = await login(OWNER, PASSWORD)
+    const res = await as(cookie, 'POST', '/platform/access-tokens', { name: 'big', pad: 'x'.repeat(300 * 1024) })
+    expect(res.status).toBe(413)
+    expect(await res.json()).toEqual({ error: 'payload_too_large', message: expect.any(String) })
+    expect((await pool.query(`select 1 from control.access_tokens where name = 'big'`)).rowCount).toBe(0)
+  })
+})
+
 describe('signup and other sign-in routes are not reachable', () => {
   test('POST signup under any mounted path creates no user', async () => {
     for (const path of ['/auth/v1/signup', '/platform/auth/v1/signup', '/v1/auth/v1/signup', '/platform/auth/v1/otp']) {
       const res = await app.request(path, json({ email: 'intruder@example.test', password: PASSWORD }))
-      expect(res.status, path).toBe(404)
+      // /v1 has no public paths: no caller is a 401 there, before any route lookup
+      expect(res.status, path).toBe(path.startsWith('/v1') ? 401 : 404)
     }
     expect((await app.request('/platform/auth/v1/authorize?provider=google')).status).toBe(404)
     expect((await app.request('/platform/auth/v1/token?grant_type=password', json({ email: OWNER, password: PASSWORD }))).status).toBe(404)
@@ -148,6 +188,14 @@ describe('sessions and tokens', () => {
     const list = await (await as(cookie, 'GET', '/platform/access-tokens')).json()
     expect(list).toEqual([{ id, name: 'ci', created_at: expect.any(String), last_used_at: expect.any(String), expires_at: null }])
     expect(JSON.stringify(list)).not.toContain(token)
+
+    // a token cannot mint another token
+    const minted = await withToken(token, 'POST', '/platform/access-tokens', { name: 'child' })
+    expect(minted.status).toBe(403)
+    expect(await minted.json()).toEqual({ error: 'forbidden', message: expect.any(String) })
+    // the scheme is matched exactly
+    const lower = await app.request('/v1/organizations', { headers: { authorization: `bearer ${token}` } })
+    expect(lower.status).toBe(401)
 
     expect((await as(cookie, 'DELETE', `/platform/access-tokens/${id}`)).status).toBe(200)
     expect((await withToken(token, 'GET', '/v1/organizations')).status).toBe(401)
@@ -222,6 +270,43 @@ describe('invitations', () => {
     expect(await again.json()).toEqual({ error: 'invalid_invitation', message: expect.any(String) })
   })
 
+  test('an invitation for an existing account needs that account’s session, never a password (takeover)', async () => {
+    // org A (default): its owner invites X, X accepts and so has an account
+    const ownerA = await login(OWNER, PASSWORD)
+    const first = await invite(ownerA, 'x@example.test')
+    expect((await app.request('/platform/invitations/accept', json({ token: first.token, password: PASSWORD }))).status).toBe(200)
+
+    // org B: another user owns it and invites X
+    await pool.query(`insert into control.organizations (slug, name) values ('orgb', 'Org B')`)
+    const b = await app.request('/platform/invitations/accept', json({ token: (await invite(ownerA, 'bowner@example.test')).token, password: PASSWORD }))
+    expect(b.status).toBe(200)
+    await pool.query(`insert into control.memberships (org_id, user_id, role)
+      select o.id, u.id, 'owner' from control.organizations o, auth.users u where o.slug = 'orgb' and u.email = 'bowner@example.test'`)
+    const ownerB = await login('bowner@example.test', PASSWORD)
+    const res = await as(ownerB, 'POST', '/platform/organizations/orgb/invitations', { email: 'x@example.test', role: 'administrator' })
+    expect(res.status).toBe(201)
+    const token = (await res.json()).link.split('/invite/')[1]
+
+    // anonymous, with a password of the attacker's choosing: refused, X's password is unchanged
+    const anon = await app.request('/platform/invitations/accept', json({ token, password: 'attacker-password-1' }))
+    expect(anon.status).toBe(400)
+    expect(await anon.json()).toEqual({ error: 'account_exists', message: expect.any(String) })
+    expect((await app.request('/platform/invitations/accept', json({ token }))).status).toBe(401)
+    // signed in as somebody else
+    expect((await as(ownerB, 'POST', '/platform/invitations/accept', { token })).status).toBe(403)
+    const inB = () => pool.query(`select m.role from control.memberships m join control.organizations o on o.id = m.org_id
+      join auth.users u on u.id = m.user_id where o.slug = 'orgb' and u.email = 'x@example.test'`)
+    expect((await inB()).rows).toEqual([])
+    resetRateLimits()
+    expect((await app.request('/platform/login', json({ email: 'x@example.test', password: 'attacker-password-1' }))).status).toBe(400)
+
+    // signed in as X: accepted
+    const x = await login('x@example.test', PASSWORD)
+    const ok = await as(x, 'POST', '/platform/invitations/accept', { token })
+    expect(ok.status).toBe(200)
+    expect((await inB()).rows).toEqual([{ role: 'administrator' }])
+  })
+
   test('an expired invitation fails', async () => {
     const cookie = await login(OWNER, PASSWORD)
     const inv = await invite(cookie, 'late@example.test')
@@ -234,6 +319,9 @@ describe('invitations', () => {
 
 describe('password reset', () => {
   test('recover mails a /platform/auth/v1/verify link; it lands with the implicit-flow fragment; PUT user sets the password', async () => {
+    // a session from before the reset (think: a stolen cookie pair)
+    const old = await login(OWNER, PASSWORD)
+    const oldRefresh = old.split('; ').find((c) => c.startsWith('sb_studio_refresh='))!
     const recover = await app.request('/platform/auth/v1/recover', json({ email: OWNER }))
     expect(recover.status).toBe(200)
     // the mail goes out in the background (SMTP_HOST is empty: core writes it to selfbase.mail_log)
@@ -262,6 +350,23 @@ describe('password reset', () => {
       body: JSON.stringify({ password: 'a-brand-new-password' }),
     })
     expect(put.status).toBe(200)
+    // the reset ended the other sessions: the old access cookie and the old refresh cookie are dead
+    expect((await as(old, 'GET', '/platform/me')).status).toBe(401)
+    expect((await app.request('/platform/refresh', { method: 'POST', headers: { cookie: oldRefresh, origin: ORIGIN } })).status).toBe(401)
+    // only the password is passed on to core
+    const other = await app.request('/platform/auth/v1/user', {
+      method: 'PUT',
+      headers: { authorization: `Bearer ${access}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'hijack@example.test' }),
+    })
+    expect(other.status).toBe(400)
+    await app.request('/platform/auth/v1/user', {
+      method: 'PUT',
+      headers: { authorization: `Bearer ${access}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ password: 'a-brand-new-password', email: 'hijack@example.test', data: { a: 1 } }),
+    })
+    expect((await pool.query(`select email, raw_user_meta_data from auth.users where email in ($1, 'hijack@example.test')`, [OWNER])).rows)
+      .toEqual([{ email: OWNER, raw_user_meta_data: {} }])
     resetRateLimits()
     expect((await login(OWNER, 'a-brand-new-password')).length).toBeGreaterThan(0)
     const short = await app.request('/platform/auth/v1/user', {

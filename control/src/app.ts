@@ -4,7 +4,7 @@ import { Hono } from 'hono'
 import { serveStatic } from '@hono/node-server/serve-static'
 import { config } from './config.ts'
 import { notFound, onError } from './errors.ts'
-import { audit } from './audit.ts'
+import { audit, bodyCap } from './audit.ts'
 import { authenticate } from './session.ts'
 import { platformAuth } from './routes/platform-auth.ts'
 import { platformOrgs, v1Orgs } from './routes/platform-orgs.ts'
@@ -18,9 +18,9 @@ app.notFound(notFound)
 
 app.get('/health', (c) => c.json({ ok: true }))
 
-// audit first, so refused writes are recorded too
-app.use('/platform/*', audit, authenticate('platform'))
-app.use('/v1/*', audit, authenticate('v1'))
+// size cap before anything parses a JSON body; then audit, so refused writes are recorded too
+app.use('/platform/*', bodyCap, audit, authenticate('platform'))
+app.use('/v1/*', bodyCap, audit, authenticate('v1'))
 
 app.route('/platform', platformAuth)
 app.route('/platform', platformOrgs)

@@ -5,9 +5,12 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
 import { getCookie } from 'hono/cookie'
+import type pg from 'pg'
+import { randomUUID } from 'node:crypto'
 import { pool } from '../db.ts'
+import type { Db } from '../db.ts'
 import { resetPasswordUrl } from '../core-env.ts'
-import { coreAuth, createUser } from '../core.ts'
+import { coreAuth, hashPassword, verify } from '../core.ts'
 import { ApiError } from '../errors.ts'
 import { newAccessToken } from '../ids.ts'
 import { ACCESS_COOKIE, REFRESH_COOKIE, checkOrigin, clearSessionCookies, setSessionCookies } from '../session.ts'
@@ -34,12 +37,37 @@ const passOn = async (res: Response) => {
   return res
 }
 
-/** A dashboard user whose address is taken as proven (the CLI, an accepted invitation). */
-export async function createConfirmedUser(email: string, password: string) {
-  const user = await createUser({ email, password, provider: 'email' })
-  await pool.query(`update auth.users set email_confirmed_at = coalesce(email_confirmed_at, now()) where id = $1`, [user.id])
-  await pool.query(`update auth.identities set identity_data = identity_data || '{"email_verified": true}' where user_id = $1`, [user.id])
-  return user
+/** Runs fn in one transaction on a control-db client. */
+export async function tx<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
+  const client = await pool.connect()
+  try {
+    await client.query('begin')
+    const result = await fn(client)
+    await client.query('commit')
+    return result
+  } catch (err) {
+    await client.query('rollback').catch(() => {})
+    throw err
+  } finally {
+    client.release()
+  }
+}
+
+/**
+ * A dashboard user whose address is taken as proven (the CLI, an accepted invitation), written on `db` so it can be
+ * part of the caller's transaction. The same rows core's createUser writes, with email_confirmed_at set.
+ */
+export async function createConfirmedUser(email: string, password: string, db: Db = pool): Promise<{ id: string; email: string }> {
+  const id = randomUUID()
+  const lower = email.toLowerCase()
+  await db.query(
+    `insert into auth.users (id, aud, role, email, encrypted_password, email_confirmed_at, raw_app_meta_data, raw_user_meta_data)
+     values ($1, 'authenticated', 'authenticated', $2, $3, now(), '{"provider": "email", "providers": ["email"]}', '{}')`,
+    [id, lower, await hashPassword(password)],
+  )
+  await db.query(`insert into auth.identities (provider_id, user_id, identity_data, provider) values ($1::text, $1::uuid, $2, 'email')`,
+    [id, { sub: id, email: lower, email_verified: true, phone_verified: false }])
+  return { id, email: lower }
 }
 
 const signedIn = (c: Context<Env>, s: { access_token: string; refresh_token: string; user: { id: string; email: string } }) => {
@@ -50,6 +78,7 @@ const signedIn = (c: Context<Env>, s: { access_token: string; refresh_token: str
 }
 
 platformAuth.post('/login', async (c) => {
+  checkOrigin(c) // login CSRF: only Studio's own page signs in
   const body = await c.req.json().catch(() => ({}))
   const res = await callCore(c, 'POST', '/token?grant_type=password', { body: JSON.stringify({ email: body?.email, password: body?.password }) })
   if (!res.ok) throw await coreError(res)
@@ -84,8 +113,21 @@ platformAuth.post('/auth/v1/recover', async (c) =>
 // the mailed link: core redirects with the session in the fragment (#access_token=…&type=recovery)
 platformAuth.get('/auth/v1/verify', async (c) => passOn(await callCore(c, 'GET', `/verify?${new URL(c.req.url).searchParams}`)))
 // Studio's reset screen sends the recovery access token as the bearer; core checks it and its session
-platformAuth.put('/auth/v1/user', async (c) =>
-  passOn(await callCore(c, 'PUT', '/user', { body: await c.req.text(), bearer: c.req.header('authorization') })))
+// Only the password is passed on (no email, phone or metadata changes from here). A new password ends every other
+// session of the user: a stolen cookie or refresh token stops working with the reset.
+platformAuth.put('/auth/v1/user', async (c) => {
+  const b = await c.req.json().catch(() => null)
+  if (typeof b?.password !== 'string') throw new ApiError(400, 'validation_failed', 'password is required')
+  const bearer = c.req.header('authorization')
+  const res = await passOn(await callCore(c, 'PUT', '/user', { body: JSON.stringify({ password: b.password }), bearer }))
+  // core accepted the bearer, so its claims are valid
+  const claims = await verify(bearer!.replace(/^Bearer\s+/i, ''))
+  await pool.query(
+    `update auth.refresh_tokens set revoked = true, updated_at = now() where user_id = $1 and not revoked and session_id <> $2`,
+    [claims.sub, claims.session_id],
+  )
+  return res
+})
 
 // ---- personal access tokens (org.tokens: every user, for their own tokens) ----
 
@@ -100,6 +142,8 @@ platformAuth.get('/access-tokens', async (c) => {
 })
 
 platformAuth.post('/access-tokens', async (c) => {
+  // a token cannot mint tokens: a leaked one must not outlive its own deletion
+  if (c.get('user').via !== 'cookie') throw new ApiError(403, 'forbidden', 'access tokens are created from a Studio session')
   const b = await c.req.json().catch(() => null)
   const name = b?.name
   if (typeof name !== 'string' || !name.trim() || name.length > 100) throw new ApiError(400, 'validation_failed', 'name must be 1 to 100 characters')

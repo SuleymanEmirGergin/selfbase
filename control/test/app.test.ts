@@ -29,11 +29,13 @@ test('Studio files and the index.html fallback for client routes', async () => {
 })
 
 test('/platform, /v1 and /health are never answered with index.html', async () => {
-  for (const path of ['/platform', '/platform/nope', '/v1', '/v1/projects/nope', '/health/x']) {
+  // without a caller, /platform and /v1 fail closed (401) before any 404 (accounts.test: 404 after sign-in)
+  for (const [path, status, error] of [['/platform/nope', 401, 'unauthorized'], ['/v1', 401, 'unauthorized'],
+    ['/v1/projects/nope', 401, 'unauthorized'], ['/health/x', 404, 'not_found']] as const) {
     const res = await app.request(path)
-    expect(res.status, path).toBe(404)
+    expect(res.status, path).toBe(status)
     expect(res.headers.get('content-type'), path).toMatch(/application\/json/)
-    expect(await res.json(), path).toEqual({ error: 'not_found', message: expect.any(String) })
+    expect(await res.json(), path).toEqual({ error, message: expect.any(String) })
   }
 })
 

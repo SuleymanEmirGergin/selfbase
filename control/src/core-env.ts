@@ -17,8 +17,9 @@ Object.assign(process.env, {
   AUTH_REDIRECT_ALLOWLIST: resetPasswordUrl,
   AUTH_DISABLE_SIGNUP: 'true',
 })
-// dashboard defaults, overridable: five sign-ins per IP per 5 minutes, 12-character passwords
+// dashboard default, overridable: five sign-ins per IP per 5 minutes
 process.env.AUTH_RATE_LIMIT_SIGN_IN ||= '5'
-process.env.AUTH_MIN_PASSWORD ||= '12'
-/** Dashboard passwords are never shorter than this, whatever AUTH_MIN_PASSWORD says (cli.ts, invitations). */
+/** Dashboard passwords are never shorter than this; AUTH_MIN_PASSWORD may raise it, never lower it. */
 export const MIN_PASSWORD = Math.max(12, Number(process.env.AUTH_MIN_PASSWORD) || 0)
+// core's own check (reset via PUT /user) uses the same floor
+process.env.AUTH_MIN_PASSWORD = String(MIN_PASSWORD)

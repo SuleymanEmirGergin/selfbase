@@ -11,8 +11,9 @@ import { ApiError } from '../errors.ts'
 import { hashToken } from '../ids.ts'
 import { ROLES, authorize, can } from '../authz.ts'
 import type { Role } from '../authz.ts'
+import { sessionUser } from '../session.ts'
 import type { Env } from '../session.ts'
-import { createConfirmedUser } from './platform-auth.ts'
+import { createConfirmedUser, tx } from './platform-auth.ts'
 
 export const platformOrgs = new Hono<Env>()
 export const v1Orgs = new Hono<Env>()
@@ -32,29 +33,19 @@ const role = (r: unknown): Role => {
   return r as Role
 }
 
-async function tx<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
-  const client = await pool.connect()
-  try {
-    await client.query('begin')
-    const result = await fn(client)
-    await client.query('commit')
-    return result
-  } catch (err) {
-    await client.query('rollback').catch(() => {})
-    throw err
-  } finally {
-    client.release()
-  }
-}
-
-async function orgBySlug(slug: string): Promise<{ id: string; slug: string; name: string }> {
-  const org = (await pool.query(`select id, slug, name from control.organizations where slug = $1`, [slug])).rows[0]
+/**
+ * The organization of `:slug` when the caller has any membership in it. Unknown and foreign organizations are the
+ * same 404, so a slug never reveals that an organization exists; the role check (authorize, 403) comes after.
+ */
+async function memberOrg(c: Context<Env>): Promise<{ id: string; slug: string; name: string }> {
+  const org = (await pool.query(
+    `select o.id, o.slug, o.name from control.organizations o
+      where o.slug = $1 and exists (select 1 from control.memberships m where m.org_id = o.id and m.user_id = $2)`,
+    [c.req.param('slug'), c.get('user').id],
+  )).rows[0]
   if (!org) throw notFound('organization')
   return org
 }
-
-const isMember = async (orgId: string, userId: string) =>
-  !!(await pool.query(`select 1 from control.memberships where org_id = $1 and user_id = $2 limit 1`, [orgId, userId])).rowCount
 
 /**
  * Every organization the user has a membership in: `role` is the org-wide role (null when the user only has
@@ -109,8 +100,7 @@ platformOrgs.post('/organizations', async (c) => {
 // ---- members ----
 
 platformOrgs.get('/organizations/:slug/members', async (c) => {
-  const org = await orgBySlug(c.req.param('slug'))
-  if (!(await isMember(org.id, c.get('user').id))) throw new ApiError(403, 'forbidden', 'Forbidden')
+  const org = await memberOrg(c) // any member may list
   const { rows } = await pool.query(
     `select m.id, m.user_id, u.email, m.role, p.ref as project_ref
        from control.memberships m join auth.users u on u.id = m.user_id left join control.projects p on p.id = m.project_id
@@ -126,7 +116,7 @@ platformOrgs.get('/organizations/:slug/members', async (c) => {
  * cannot demote each other at once.
  */
 async function memberRow(client: pg.PoolClient, c: Context<Env>) {
-  const org = await orgBySlug(c.req.param('slug')!)
+  const org = await memberOrg(c)
   const userId = c.req.param('userId')!
   const membershipId = c.req.query('membership_id')
   const callerRole = await authorize(c, 'org.members', { orgId: org.id })
@@ -185,7 +175,7 @@ async function mailInvitation(to: string, orgName: string, link: string) {
 }
 
 platformOrgs.post('/organizations/:slug/invitations', async (c) => {
-  const org = await orgBySlug(c.req.param('slug'))
+  const org = await memberOrg(c)
   const callerRole = await authorize(c, 'org.members', { orgId: org.id })
   const b = await body(c)
   if (typeof b.email !== 'string' || !EMAIL_RE.test(b.email)) throw bad('email is not a valid address')
@@ -214,8 +204,10 @@ platformOrgs.post('/organizations/:slug/invitations', async (c) => {
   return c.json({ id: inv.id, expires_at: inv.expires_at, link }, 201)
 })
 
-// public (session.ts): the token proves the mailbox. A new address becomes a confirmed account with this password;
-// an existing account just gets the membership (its password is not touched). Accepting does not sign in.
+// Public (session.ts). For a new address the token is enough: it becomes a confirmed account with this password.
+// For an address that already has an account the token alone is not: the caller must be signed in as that account
+// (Studio session) and send no password, so a forwarded or leaked link cannot attach anyone else to it.
+// Accepting does not sign in.
 platformOrgs.post('/invitations/accept', async (c) => {
   const { token, password } = await body(c)
   const invalid = () => new ApiError(400, 'invalid_invitation', 'Invitation is invalid or has expired')
@@ -223,26 +215,37 @@ platformOrgs.post('/invitations/accept', async (c) => {
   const inv = (await pool.query(`select * from control.invitations where token_hash = $1 and expires_at > now()`, [hashToken(token)])).rows[0]
   if (!inv) throw invalid()
   c.set('audit', { orgId: inv.org_id, projectId: inv.project_id ?? undefined, target: inv.email })
-  let user = await findByEmail(inv.email)
-  if (!user && (typeof password !== 'string' || password.length < MIN_PASSWORD))
+  const existing = await findByEmail(inv.email)
+  if (existing) {
+    if (password !== undefined)
+      throw new ApiError(400, 'account_exists', 'This address already has an account: sign in as it and accept without a password')
+    const me = await sessionUser(c)
+    if (!me) throw new ApiError(401, 'unauthorized', 'Sign in as the invited account to accept')
+    c.set('user', me)
+    if (me.email.toLowerCase() !== inv.email) throw new ApiError(403, 'forbidden', 'Signed in as another account than the one invited')
+  } else if (typeof password !== 'string' || password.length < MIN_PASSWORD) {
     throw new ApiError(422, 'weak_password', `Password should be at least ${MIN_PASSWORD} characters.`)
-  // single use: whoever deletes the row owns the acceptance
-  if (!(await pool.query(`delete from control.invitations where id = $1`, [inv.id])).rowCount) throw invalid()
-  user ??= await createConfirmedUser(inv.email, password).catch(async (err) => {
-    if (err.code === '23505') return (await findByEmail(inv.email))! // the address registered meanwhile
+  }
+  await tx(async (client) => {
+    // single use: whoever deletes the row owns the acceptance
+    if (!(await client.query(`delete from control.invitations where id = $1`, [inv.id])).rowCount) throw invalid()
+    const userId = existing?.id ?? (await createConfirmedUser(inv.email, password, client)).id
+    await client.query(
+      `insert into control.memberships (org_id, user_id, role, project_id) values ($1, $2, $3, $4) on conflict do nothing`,
+      [inv.org_id, userId, inv.role, inv.project_id],
+    )
+  }).catch((err) => {
+    // the address got an account meanwhile: nothing was written, the invitation stays; the next try takes the other branch
+    if (err.code === '23505') throw new ApiError(409, 'conflict', 'This address just got an account: try again')
     throw err
   })
-  await pool.query(
-    `insert into control.memberships (org_id, user_id, role, project_id) values ($1, $2, $3, $4) on conflict do nothing`,
-    [inv.org_id, user.id, inv.role, inv.project_id],
-  )
   return c.json({ email: inv.email })
 })
 
 // ---- audit log ----
 
 platformOrgs.get('/organizations/:slug/audit-log', async (c) => {
-  const org = await orgBySlug(c.req.param('slug'))
+  const org = await memberOrg(c)
   await authorize(c, 'org.members', { orgId: org.id })
   const limit = Math.min(200, Math.max(1, Number(c.req.query('limit')) || 50))
   const before = c.req.query('before')
@@ -260,25 +263,18 @@ platformOrgs.get('/organizations/:slug/audit-log', async (c) => {
 
 const ROLE_NAMES: Record<Role, string> = { owner: 'Owner', administrator: 'Administrator', developer: 'Developer', read_only: 'Read only' }
 
-/** The organization when the caller is a member; 404 otherwise, so /v1 does not reveal other organizations. */
-async function v1Org(c: Context<Env>) {
-  const org = await orgBySlug(c.req.param('slug')!)
-  if (!(await isMember(org.id, c.get('user').id))) throw notFound('organization')
-  return org
-}
-
 // v1-list-all-organizations; Supabase's organization id is its slug
 v1Orgs.get('/organizations', async (c) => c.json((await orgsOf(c.get('user').id)).map((o) => ({ id: o.slug, name: o.name }))))
 
 // v1-get-an-organization; plan and release channels have no meaning here: neutral values
 v1Orgs.get('/organizations/:slug', async (c) => {
-  const org = await v1Org(c)
+  const org = await memberOrg(c)
   return c.json({ id: org.slug, name: org.name, plan: 'free', opt_in_tags: [], allowed_release_channels: ['ga'] })
 })
 
 // v1-list-organization-members: one entry per user, their org-wide role first
 v1Orgs.get('/organizations/:slug/members', async (c) => {
-  const org = await v1Org(c)
+  const org = await memberOrg(c)
   const { rows } = await pool.query(
     `select distinct on (m.user_id) m.user_id, u.email, m.role from control.memberships m join auth.users u on u.id = m.user_id
       where m.org_id = $1 order by m.user_id, m.project_id nulls first`,

@@ -81,6 +81,17 @@ describe('authorize', () => {
     await createConfirmedUser('stranger@example.test', PASSWORD).then((u) => (users['stranger@example.test'] = u.id))
     expect((await probe('stranger@example.test', 'project.read', projA)).status).toBe(403)
   })
+
+  test('to a non-member an existing organization looks exactly like a missing one', async () => {
+    const stranger = await login('stranger@example.test', PASSWORD)
+    for (const [method, sub, body] of [['GET', '/members'], ['GET', '/audit-log'], ['POST', '/invitations', { email: 'a@example.test', role: 'developer' }],
+      ['PATCH', `/members/${users['owner@example.test']}`, { role: 'developer' }]] as const) {
+      const real = await as(stranger, method, `/platform/organizations/acme${sub}`, body)
+      const missing = await as(stranger, method, `/platform/organizations/nosuchorg${sub}`, body)
+      expect([real.status, missing.status], `${method} ${sub}`).toEqual([404, 404])
+      expect(await real.json()).toEqual(await missing.json())
+    }
+  })
 })
 
 describe('/platform/me and members', () => {
