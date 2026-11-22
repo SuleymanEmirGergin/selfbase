@@ -1,0 +1,5 @@
+{
+  "micro": { "db": { "mem_mb": 32, "cpus": 0.1, "pids": 32 }, "core": { "mem_mb": 32, "cpus": 0.1, "pids": 32 } },
+  "small": { "db": { "mem_mb": 48, "cpus": 0.1, "pids": 32 }, "core": { "mem_mb": 48, "cpus": 0.1, "pids": 32 } },
+  "medium": { "db": { "mem_mb": 64, "cpus": 0.1, "pids": 32 }, "core": { "mem_mb": 64, "cpus": 0.1, "pids": 32 } }
+}

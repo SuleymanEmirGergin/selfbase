@@ -1,0 +1,20 @@
+{
+  "services": {
+    "db": {
+      "image": "${REGISTRY}/selfbase-db:${TEMPLATE_VERSION}",
+      "init": true,
+      "environment": { "MARKER": "${MARKER}" },
+      "volumes": ["pgdata:/data"],
+      "stop_grace_period": "2s"
+    },
+    "core": {
+      "image": "${REGISTRY}/selfbase-core:${TEMPLATE_VERSION}",
+      "init": true,
+      "environment": { "CORE_MARKER": "${CORE_MARKER:-fixed}" },
+      "volumes": ["storage:/data/storage"],
+      "depends_on": ["db"],
+      "stop_grace_period": "2s"
+    }
+  },
+  "volumes": { "pgdata": null, "storage": null }
+}

@@ -1,0 +1,51 @@
+# Real-Docker test stack for test/ops.test.ts and test/proxy.test.ts, which start and remove it themselves:
+#   node --test --test-concurrency=1 test/ops.test.ts test/proxy.test.ts      (from provisioner/)
+# The tests build the fixture image and create the selfbase-test-proxy network first. Test-only values.
+# The provisioner runs the sources from this checkout against the fixture template and size table.
+name: selfbase-test
+services:
+  socket-proxy:
+    image: wollomatic/socket-proxy:1.14.0
+    user: "65534:0" # the socket is root:root 0660
+    env_file: ../socket-proxy.env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      control:
+        aliases: [selfbase-socket-proxy]
+
+  provisioner:
+    image: node:24.22.2-slim
+    user: node
+    working_dir: /app/provisioner
+    command: ["node", "src/server.ts"]
+    environment:
+      PROVISIONER_TOKEN: test-provisioner-token-0123456789abcdef
+      REGISTRY: selfbase-test.invalid/sb
+      TEMPLATE_VERSION: test
+      PROXY_NETWORK: selfbase-test-proxy
+      CONTROL_CONTAINER: selfbase-test-control
+      BACKUP_HOST_DIR: /tmp/sb-test-backups
+      TEMPLATE_PATH: /fixtures/ops-template.json
+      SIZES_PATH: /fixtures/ops-sizes.json
+    volumes:
+      - ../src:/app/provisioner/src:ro
+      - ./fixtures:/fixtures:ro
+    ports:
+      - "127.0.0.1:${TEST_PROVISIONER_PORT:-58090}:8090"
+    networks:
+      control:
+        aliases: [selfbase-provisioner]
+    depends_on: [socket-proxy]
+
+  # stands in for selfbase-control, which ensure connects to every sb-<ref> network
+  control:
+    image: selfbase-test.invalid/sb/selfbase-core:test
+    pull_policy: never
+    container_name: selfbase-test-control
+    init: true
+    networks: [control]
+
+networks:
+  control:
+    name: selfbase-test-control
