@@ -4,6 +4,7 @@ dump/
 data/
 node_modules/
 dist/
+!client/dist/
 .superpowers/
 .env.test-local
 .vitest/
