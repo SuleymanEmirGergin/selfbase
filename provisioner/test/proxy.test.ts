@@ -65,6 +65,10 @@ test('a bind mount from anywhere but the backup dir is 403; the backup dir passe
     assert.equal(create({ Binds: ['/:/host'] }), 403)
     assert.equal(create({ Mounts: [{ Type: 'bind', Source: '/var/run', Target: '/x' }] }), 403)
     assert.equal(create({ Mounts: [{ Type: 'bind', Source: `${BACKUP_DIR}/../../../var/run`, Target: '/x' }] }), 403)
+    // a sibling that only shares the prefix is another directory
+    assert.equal(create({ Mounts: [{ Type: 'bind', Source: `${BACKUP_DIR}x`, Target: '/x' }] }), 403)
+    assert.equal(create({ Mounts: [{ Type: 'bind', Source: `${BACKUP_DIR}-evil`, Target: '/x' }] }), 403)
+    assert.equal(create({ Binds: [`${BACKUP_DIR}-evil:/x`] }), 403)
     assert.equal(tryDocker('inspect', name), null)
     assert.equal(create({ Mounts: [{ Type: 'bind', Source: BACKUP_DIR, Target: '/backups' }] }), 201)
   } finally {

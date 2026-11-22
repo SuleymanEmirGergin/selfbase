@@ -133,6 +133,24 @@ test('a missing render variable is a 400 ProvisionError, not a TemplateError', (
     e instanceof ProvisionError && e.status === 400 && e.code === 'invalid_env' && e.message.includes('JWT_SECRET'))
 })
 
+test('a template-side render error stays a TemplateError (500 template_invalid)', () => {
+  const t = structuredClone(tpl)
+  t.services.core.environment.BROKEN = 'a $PUBLIC_URL'
+  assert.throws(() => buildProject(input(), t, SIZES, NODE), (e: unknown) => e instanceof TemplateError && !(e instanceof ProvisionError))
+})
+
+test('dropped provisioner-set env names are logged, names only', (t) => {
+  const warn = t.mock.method(console, 'warn', () => {})
+  buildProject(input({ env: { ...ENV, REGISTRY: 'docker.io/evil-value', POOL_SIZE: '9999' } }), tpl, SIZES, NODE)
+  assert.equal(warn.mock.callCount(), 1)
+  const line = String(warn.mock.calls[0].arguments[0])
+  assert.match(line, /REGISTRY/)
+  assert.match(line, /POOL_SIZE/)
+  assert.ok(!line.includes('evil-value') && !line.includes('9999'), line)
+  buildProject(input(), tpl, SIZES, NODE)
+  assert.equal(warn.mock.callCount(), 1)
+})
+
 test('a template service named job-* is refused', () => {
   for (const name of ['job-backup', 'job-x']) {
     const t = raw()
@@ -149,6 +167,15 @@ test('a template command or healthcheck that runs an interpreter with interpolat
     ['CMD sh -c', (s) => { s.healthcheck.test = ['CMD', 'sh', '-c', 'test ${SITE_URL}'] }],
     ['CMD node -e', (s) => { s.healthcheck.test = ['CMD', 'node', '-e', '${SITE_URL}'] }],
     ['user', (s) => { s.user = '${RUN_AS:-1000}' }],
+    // wrappers in front of the interpreter
+    ['tini -- sh -c', (s) => { s.command = ['tini', '--', 'sh', '-c', 'echo ${SITE_URL}'] }],
+    ['busybox sh -c', (s) => { s.command = ['busybox', 'sh', '-c', 'echo ${SITE_URL}'] }],
+    ['busybox alone', (s) => { s.command = ['/bin/busybox', 'ash', '-c', 'echo ${SITE_URL}'] }],
+    ['su-exec u bash -c', (s) => { s.command = ['su-exec', 'node', 'bash', '-c', 'echo ${SITE_URL}'] }],
+    ['gosu u sh -c', (s) => { s.command = ['gosu', 'node', '/bin/sh', '-c', 'echo ${SITE_URL}'] }],
+    ['xargs sh -c', (s) => { s.command = ['xargs', 'sh', '-c', 'echo ${SITE_URL}'] }],
+    ['sh -ec', (s) => { s.command = ['sh', '-ec', 'echo ${SITE_URL}'] }],
+    ['CMD dumb-init sh -c', (s) => { s.healthcheck.test = ['CMD', 'dumb-init', 'sh', '-c', 'test ${SITE_URL}'] }],
   ]
   for (const [name, f] of cases) {
     const t = raw()

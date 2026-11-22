@@ -16,7 +16,7 @@
 import { createHash } from 'node:crypto'
 import { assertRef, containerName, networkName, ProvisionError, volumeName } from './names.ts'
 import { parseCidr, VERSION_RE, type NodeSettings } from './settings.ts'
-import { ENV_KEY_RE, isObj, render, startOrder, TemplateError, type Template } from './template.ts'
+import { ENV_KEY_RE, isObj, MissingVarError, render, startOrder, type Template } from './template.ts'
 
 export type Size = 'micro' | 'small' | 'medium'
 export type SizeEntry = { mem_mb: number; cpus: number; pids: number; shm_mb?: number; shared_buffers?: string
@@ -35,6 +35,10 @@ const MAX_ENV_VALUE = 64 * 1024
 const MAX_HOSTS = 10
 // render variables only the provisioner sets; a project env value for one of them is dropped
 const RESERVED = ['REGISTRY', 'TEMPLATE_VERSION', 'PROJECT_SUBNET', 'DB_SHARED_BUFFERS', 'DB_MAX_CONNECTIONS', 'POOL_SIZE']
+
+/** Every variable the template reads, set to 'check', for the start-time and --check dry runs. */
+export const dryRunEnv = (tpl: Template) => Object.fromEntries([...JSON.stringify(tpl).matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)/g)]
+  .filter((m) => !RESERVED.includes(m[1])).map((m) => [m[1], 'check']))
 const SIZE_NAMES: string[] = ['micro', 'small', 'medium']
 const HOST_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/
 const DIR_RE = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)?$/
@@ -153,7 +157,10 @@ export function buildProject(input: EnsureInput, tpl: Template, sizes: Sizes, no
   const db = Object.hasOwn(table, 'db') ? res('db') : undefined
   const pooler = Object.hasOwn(table, 'pooler') ? res('pooler') : undefined
   const env = stringMap(input.env)
-  for (const k of RESERVED) delete env[k]
+  const dropped = RESERVED.filter((k) => Object.hasOwn(env, k))
+  for (const k of dropped) delete env[k]
+  // names only: the values are control's and may be secrets
+  if (dropped.length) console.warn(`provisioner: ${ref}: ignored provisioner-set env names from the request: ${dropped.join(', ')}`)
   Object.assign(env, {
     REGISTRY: node.registry,
     TEMPLATE_VERSION: templateVersion,
@@ -162,9 +169,9 @@ export function buildProject(input: EnsureInput, tpl: Template, sizes: Sizes, no
     ...(db?.max_connections !== undefined ? { DB_MAX_CONNECTIONS: String(db.max_connections) } : {}),
     ...(pooler?.pool_size !== undefined ? { POOL_SIZE: String(pooler.pool_size) } : {}),
   })
-  // a value the caller left out of env is the caller's error, not a broken template
+  // a variable the caller left out of env is the caller's error (400); any other render error is the template's (500)
   const rendered = (v: string) => {
-    try { return render(v, env) } catch (e) { throw e instanceof TemplateError ? new ProvisionError(400, 'invalid_env', e.message) : e }
+    try { return render(v, env) } catch (e) { throw e instanceof MissingVarError ? new ProvisionError(400, 'invalid_env', e.message) : e }
   }
 
   const net = networkName(ref)

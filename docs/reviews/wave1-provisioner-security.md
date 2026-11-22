@@ -119,11 +119,23 @@ proxy), C = `core/test/admin-peer.test.ts`.
 | 18 | `jobStatus` may answer 404 `service_not_found` (T7) | Fixed: `containerLogs` takes the not-found code; job status passes `job_not_found`. The window (container removed between inspect and logs) is not reproducible in a test | — |
 | 19 | Typo in docker.ts (T7) | Fixed: `const HOST =(` → `const HOST = (` (line 8; the line-48 comment reads correctly) | — |
 | 20 | No package.json script for the Docker tests (T7) | Fixed: `npm run test:docker -w provisioner`; `refusal.test.ts` joins `npm test` | — |
-| 21 | Core admin port 8081 reachable from other tenants on the shared network (T5, controller ruling) | Fixed: the provisioner sets `PROJECT_SUBNET` (control cannot override it); core's admin middleware answers 403 `{error:'admin_forbidden'}` to any peer outside it, before the token check, IPv4-mapped IPv6 included; unset = any peer, one warning at start; a bad value stops start | P, C |
+| 21 | Core admin port 8081 reachable from other tenants on the shared network (T5, controller ruling) | Fixed: the provisioner sets `PROJECT_SUBNET` (control cannot override it); core's admin middleware answers 403 `{error:'admin_forbidden'}` to any peer outside it, and to its network, gateway (base+1: the host's bridge interface, so every host-network process) and broadcast addresses, before the token check, IPv4-mapped IPv6 included; forwarding headers are ignored; unset = any peer, one warning at start; a bad value stops start | P, C |
 | 22 | Env keys with `=`/NUL, values over 64 KiB (brief) | Fixed: refused in project and job env | P |
 | 23 | `ref:'control'` on routes other than backup jobs (brief) | Fixed: restore jobs and restore status for `control` are 400 `invalid_ref`; every other route already refused it | P |
 | 24 | `service` path segment not in the template (brief) | Fixed: logs/stats accept template services only | P, O |
 | 25 | `templateVersion` outside `^[0-9A-Za-z._-]{1,64}$` (brief) | Already refused (Task 6); now covered by the refusal file | P |
+
+Fix round 1 (task review) refined these rows:
+- 21: the gateway, network and broadcast addresses of the /27 are refused too (I-1); `X-Forwarded-For`,
+  `X-Real-IP` and `Forwarded` do not count.
+- 2: only a missing variable (unset `${X}` or `${X:?msg}`, `MissingVarError`) is 400 `invalid_env`; any other render
+  error (unsupported interpolation) stays 500 `template_invalid`.
+- 4: dropped provisioner-set names are logged as one warning line, names only.
+- 10: every argv item before the first exact `-c`/`-e` is checked, so `tini --`, `su-exec u`, `gosu u`, `busybox`,
+  `xargs`, `dumb-init` cannot hide a shell; `sh -ec` is caught because there is no exact `-c`. Limit (marked
+  `shortcut:` in template.ts): the deny-list is by name, so an interpreter under another name passes.
+- 11: wollomatic 1.14.0 does not treat the allowed directory as a bare string prefix: `<dir>x` and `<dir>-evil`
+  (Mounts and Binds) are 403. No trailing slash was needed.
 
 ## Not fixed: for the controller
 
