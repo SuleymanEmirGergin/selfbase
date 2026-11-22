@@ -62,7 +62,8 @@ const encPath = (name: string) => name.split('/').map(enc).join('/')
 // ---- platform types (Task 10 / 13 / 14 shapes) ----
 
 export type Role = 'owner' | 'administrator' | 'developer' | 'read_only'
-export type OrgRef = { id: string; slug: string; name: string; role: Role }
+/** `role` is the org-wide role (null with only project memberships); `projects` the project-scoped roles (Task 10). */
+export type OrgRef = { id: string; slug: string; name: string; role: Role | null; projects: { ref: string; role: Role }[] }
 export type Me = { id: string; email: string; organizations: OrgRef[] }
 export type Size = 'micro' | 'small' | 'medium'
 export type Project = {
@@ -79,8 +80,8 @@ export type Capacity = {
   projects: { ref: string; name: string; size: Size; cap_mb: number; status: string; mem_usage_mb: number | null }[]
   new_hosts_this_week: number; max_new_hosts_per_week: number
 }
-// shortcut: Task 10 names the members routes but not the row shape; this follows section 9 (user, role, project scope).
-export type Member = { user_id: string; email: string; role: Role; project_ref: string | null }
+/** One row per membership: a user can have an org-wide and project-scoped rows; `id` addresses the row. */
+export type Member = { id: string; user_id: string; email: string; role: Role; project_ref: string | null }
 export type AccessToken = { id: string; name: string; created_at: string; last_used_at: string | null; expires_at: string | null }
 export type AuditRow = {
   id: number | string; at: string; actor: string; org_id: string | null; project_id: string | null
@@ -107,8 +108,11 @@ export const platform = {
   capacity: () => request<Capacity>('GET', '/capacity'),
 
   members: (slug: string) => request<Member[]>('GET', `${org(slug)}/members`),
-  setRole: (slug: string, userId: string, role: Role) => request('PATCH', `${org(slug)}/members/${enc(userId)}`, { body: { role } }),
-  removeMember: (slug: string, userId: string) => request('DELETE', `${org(slug)}/members/${enc(userId)}`),
+  // without membershipId the user must have exactly one membership in the organization (else 409 ambiguous_membership)
+  setRole: (slug: string, userId: string, role: Role, membershipId?: string) =>
+    request('PATCH', `${org(slug)}/members/${enc(userId)}${membershipId ? `?membership_id=${enc(membershipId)}` : ''}`, { body: { role } }),
+  removeMember: (slug: string, userId: string, membershipId?: string) =>
+    request('DELETE', `${org(slug)}/members/${enc(userId)}${membershipId ? `?membership_id=${enc(membershipId)}` : ''}`),
   invite: (slug: string, inv: { email: string; role: Role; project_ref?: string }) =>
     request<{ id: string; expires_at: string; link?: string }>('POST', `${org(slug)}/invitations`, { body: inv }),
 

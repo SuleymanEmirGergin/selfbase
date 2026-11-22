@@ -1,8 +1,11 @@
 // HTTP surface: management API at /v1, Studio-only endpoints at /platform, Studio's static build at /.
+import './core-env.ts'
 import { Hono } from 'hono'
 import { serveStatic } from '@hono/node-server/serve-static'
 import { config } from './config.ts'
 import { notFound, onError } from './errors.ts'
+import { audit } from './audit.ts'
+import { authenticate } from './session.ts'
 import { platformAuth } from './routes/platform-auth.ts'
 import { platformOrgs, v1Orgs } from './routes/platform-orgs.ts'
 import { platformProjects } from './routes/platform-projects.ts'
@@ -14,6 +17,10 @@ app.onError(onError)
 app.notFound(notFound)
 
 app.get('/health', (c) => c.json({ ok: true }))
+
+// audit first, so refused writes are recorded too
+app.use('/platform/*', audit, authenticate('platform'))
+app.use('/v1/*', audit, authenticate('v1'))
 
 app.route('/platform', platformAuth)
 app.route('/platform', platformOrgs)
