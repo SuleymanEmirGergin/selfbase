@@ -1,6 +1,7 @@
 #!/bin/sh
 # Runs the fn tests in a pinned Deno container (Deno need not be installed). Usage: sh fn/test/run.sh
 set -e
+export MSYS_NO_PATHCONV=1 # Git Bash would rewrite /app and /client into Windows paths
 cd "$(dirname "$0")/.."
 docker run --rm \
   -v "$(pwd -W 2>/dev/null || pwd):/app:ro" \

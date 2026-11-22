@@ -158,6 +158,12 @@ Deno.test('supabase-js import resolves to the selfbase client', async () => {
   eq(JSON.parse(r.text).selfbase, true)
 })
 
+Deno.test('npm:@supabase/supabase-js also resolves to the selfbase client', async () => {
+  const r = await call('/uses-other-client')
+  eq(r.status, 200)
+  eq(JSON.parse(r.text).npm, true)
+})
+
 Deno.test('unknown or invalid names are 404', async () => {
   eq((await call('/nope')).status, 404)
   eq((await call('/HELLO')).status, 404)

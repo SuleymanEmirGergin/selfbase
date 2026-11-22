@@ -2,6 +2,7 @@
   "imports": {
     "https://esm.sh/@supabase/supabase-js@2.108.2": "/client/selfbase.deno.mjs",
     "@supabase/supabase-js": "/client/selfbase.deno.mjs",
+    "npm:@supabase/supabase-js": "/client/selfbase.deno.mjs",
     "https://deno.land/std@0.168.0/http/server.ts": "/app/std_serve.ts"
   }
 }

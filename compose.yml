@@ -102,15 +102,17 @@ services:
         required: false
     environment:
       SUPABASE_URL: http://core:8080
-      SUPABASE_ANON_KEY: ${ANON_KEY}
-      SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
-      SUPABASE_DB_URL: postgres://postgres:${POSTGRES_PASSWORD}@db:5432/postgres
+      SUPABASE_ANON_KEY: ${ANON_KEY:?set ANON_KEY}
+      SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY:?set SERVICE_ROLE_KEY}
+      # No SUPABASE_DB_URL: functions pull third-party code at runtime and get no database credentials.
+      # A function that really needs direct DB access gets it from fn.env, added there deliberately.
       JWT_SECRET: ${JWT_SECRET}
       FUNCTIONS_DIR: /supabase/functions
       FN_IMPORT_TIMEOUT_MS: ${FN_IMPORT_TIMEOUT_MS:-30000}
     volumes:
       - ${SUPABASE_DIR:-./fn/empty}:/supabase:ro
       - ./client/dist:/client:ro
+      - denocache:/deno-dir # downloaded function dependencies survive restarts
     healthcheck:
       test: ["CMD", "nc", "-z", "127.0.0.1", "8000"]
       interval: 10s
@@ -142,3 +144,4 @@ volumes:
   pgdata:
   storage:
   backups:
+  denocache:

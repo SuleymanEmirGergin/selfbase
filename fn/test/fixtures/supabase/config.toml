@@ -15,6 +15,9 @@ verify_jwt = false
 [functions.uses-client]
 verify_jwt = false
 
+[functions.uses-other-client]
+verify_jwt = false
+
 [functions.hang]
 verify_jwt = false
 

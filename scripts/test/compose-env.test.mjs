@@ -44,6 +44,19 @@ test('every env variable core reads is passed by compose or internal', () => {
   check('core', vars, CORE_INTERNAL)
 })
 
+test('fn gets no database credentials', () => {
+  const block = serviceBlock('fn')
+  assert.doesNotMatch(block, /^\s+SUPABASE_DB_URL:/m)
+  assert.doesNotMatch(block, /POSTGRES_PASSWORD/)
+})
+
+test('values the services cannot run without stop compose when missing', () => {
+  for (const [service, vars] of [['core', ['PUBLIC_URL', 'SITE_URL']], ['fn', ['ANON_KEY', 'SERVICE_ROLE_KEY']]]) {
+    const block = serviceBlock(service)
+    for (const v of vars) assert.match(block, new RegExp(`\\$\\{${v}:\\?[^}]+\\}`), `${service}: ${v} must be \${${v}:?message}`)
+  }
+})
+
 test('every env variable fn reads is passed by compose or internal', () => {
   const vars = reads(sources(join(root, 'fn')), /Deno\.env\.get\(\s*['"]([A-Z][A-Z0-9_]*)['"]/g)
   assert.ok(vars.has('FN_IMPORT_TIMEOUT_MS'), 'scan missed FN_IMPORT_TIMEOUT_MS, regex broken?')
