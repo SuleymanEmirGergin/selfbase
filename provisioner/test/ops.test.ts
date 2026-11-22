@@ -47,6 +47,7 @@ test('a template that cannot render is 500 template_invalid; bad input is 400', 
   assert.deepEqual([r.status, r.body.error], [500, 'template_invalid'])
   assert.equal((await api('POST', `/projects/${REF}/ensure`, input({ subnet: '10.208.0.0/27' }))).body.error, 'invalid_subnet')
   assert.equal((await api('GET', '/projects/NOT-A-REF')).body.error, 'invalid_ref')
+  assert.deepEqual(Object.values(await api('GET', '/projects/%E0')).map((v: any) => v.error ?? v), [400, 'invalid_path'])
 })
 
 test('ensure creates network, volumes and labelled containers', async () => {
@@ -79,6 +80,8 @@ test('changing one env value recreates only that service', async () => {
   const now = ids()
   assert.notEqual(now.db, before.db)
   assert.equal(now.core, before.core)
+  // the old db got SIGTERM and wrote its marker; a SIGKILL (force remove) would leave none
+  assert.equal(tryDocker('run', '--rm', '-v', `sb-${REF}-pgdata:/d`, IMAGE, 'cat', '/d/stopped-cleanly'), 'clean')
 })
 
 test("recreate:['core'] recreates only core", async () => {
@@ -148,6 +151,11 @@ test('a backup job runs, a second one is 409, the result is read once', async ()
   assert.equal(tryDocker('inspect', `sb-${REF}-job-backup`), null)
   assert.equal((await api('GET', `/projects/${REF}/jobs/backup`)).status, 404)
   assert.equal((await api('POST', `/projects/${REF}/jobs`, { type: 'clone', args: {}, env: {} })).status, 501)
+  // a job container whose start failed stays 'created': reported failed and removed on that read
+  docker('create', '--name', `sb-${REF}-job-backup`, IMAGE)
+  const stuck = await api('GET', `/projects/${REF}/jobs/backup`)
+  assert.deepEqual([stuck.body.status, stuck.body.exitCode], ['failed', null])
+  assert.equal(tryDocker('inspect', `sb-${REF}-job-backup`), null)
 })
 
 test('delete keeps volumes with volumes=false and removes them with true', async () => {

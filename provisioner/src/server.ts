@@ -71,7 +71,7 @@ const routes: Route[] = [
   }],
   ['POST', new RegExp(`^/projects/${P}/attach-proxy$`), ([ref]) => ops.serial(ref, () => ops.attachProxy(ctx, ref))],
   ['POST', new RegExp(`^/projects/${P}/jobs$`), ([ref], _, b) => ops.serial('jobs', () => ops.runJob(ctx, ref, b))],
-  ['GET', new RegExp(`^/projects/${P}/jobs/${P}$`), ([ref, type]) => ops.jobStatus(ref, type)],
+  ['GET', new RegExp(`^/projects/${P}/jobs/${P}$`), ([ref, type]) => ops.serial('jobs', () => ops.jobStatus(ref, type))],
   ['GET', new RegExp(`^/projects/${P}/services/${P}/logs$`), ([ref, s], q) => ops.serviceLogs(ref, s, q.get('tail'))],
   ['GET', new RegExp(`^/projects/${P}/services/${P}/stats$`), ([ref, s]) => ops.serviceStats(ref, s)],
 ]
@@ -83,7 +83,9 @@ createServer(async (req, res) => {
     if (url.pathname !== '/health' && !authorized(req.headers.authorization)) throw new ProvisionError(401, 'unauthorized', 'bad bearer token')
     const hit = routes.find(([m, re]) => m === req.method && re.test(url.pathname))
     if (!hit) throw new ProvisionError(404, 'not_found', 'no such route')
-    const params = hit[1].exec(url.pathname)!.slice(1).map(decodeURIComponent)
+    const params = hit[1].exec(url.pathname)!.slice(1).map((p) => {
+      try { return decodeURIComponent(p) } catch { throw new ProvisionError(400, 'invalid_path', 'path is not valid percent-encoding') }
+    })
     out = await hit[2](params, url.searchParams, await readBody(req))
   } catch (e) {
     if (e instanceof ProvisionError) [status, code, out] = [e.status, e.code, { error: e.code, message: e.message }]

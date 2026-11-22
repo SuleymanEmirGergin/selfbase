@@ -33,6 +33,13 @@ const connectIfMissing = async (c: any, name: string, network: string) => {
   if (!Object.hasOwn(c.NetworkSettings?.Networks ?? {}, network)) await docker('POST', `/networks/${network}/connect`, { Container: name })
 }
 
+// Clean stop first (SIGTERM, then the container's own StopTimeout from stop_grace_period), so Postgres is
+// never SIGKILLed by a recreate or a delete. True when a container was removed.
+const stopAndRemove = async (name: string) => {
+  await docker('POST', `/containers/${name}/stop`, undefined, [304, 404])
+  return (await docker('DELETE', `/containers/${name}?force=true`, undefined, [404])).status !== 404
+}
+
 // One mutating operation per key at a time (control's reconcile and a user action can overlap).
 // shortcut: one map entry per ref ever touched, fine for the few dozen projects of a node.
 const locks = new Map<string, Promise<unknown>>()
@@ -89,7 +96,7 @@ export async function ensure(ctx: Ctx, ref: string, body: unknown) {
   for (const [i, c] of spec.containers.entries()) {
     let cur = current[i]
     if (fresh.includes(c)) {
-      if (cur) await docker('DELETE', `/containers/${c.name}?force=true`, undefined, [404])
+      if (cur) await stopAndRemove(c.name)
       await docker('POST', `/containers/create?name=${c.name}`, c.body)
       cur = await inspect(c.name)
     }
@@ -129,7 +136,7 @@ export async function remove(ctx: Ctx, ref: string, volumes: boolean) {
   const removed = { containers: [] as string[], volumes: [] as string[], network: false }
   // reverse start order, then anything else labelled for this ref (jobs)
   for (const n of new Set([...startOrder(ctx.tpl.services).reverse().map((s) => containerName(ref, s)), ...labelled])) {
-    if ((await docker('DELETE', `/containers/${n}?force=true`, undefined, [404])).status !== 404) removed.containers.push(n)
+    if (await stopAndRemove(n)) removed.containers.push(n)
   }
   const name = networkName(ref)
   const net = await inspectNetwork(name)
@@ -137,8 +144,7 @@ export async function remove(ctx: Ctx, ref: string, volumes: boolean) {
     if (attached(net, ctx.node.controlContainer)) {
       await docker('POST', `/networks/${name}/disconnect`, { Container: ctx.node.controlContainer, Force: true }, [404])
     }
-    await docker('DELETE', `/networks/${name}`, undefined, [404])
-    removed.network = true
+    removed.network = (await docker('DELETE', `/networks/${name}`, undefined, [404])).status !== 404
   }
   if (volumes) {
     for (const v of ctx.tpl.volumes.map((x) => volumeName(ref, x))) {
@@ -181,9 +187,11 @@ export async function jobStatus(ref: string, type: string) {
   const name = containerName(ref, `job-${type}`)
   const c = (await inspect(name)) ?? refuse(404, 'job_not_found', `no ${type} job`)
   const tail = await containerLogs(name, 50)
-  if (c.State.Running || c.State.Status === 'created') return { status: 'running', exitCode: null, tail }
+  if (c.State.Running) return { status: 'running', exitCode: null, tail }
   await docker('DELETE', `/containers/${name}?force=true`, undefined, [404])
-  return { status: c.State.ExitCode === 0 ? 'succeeded' : 'failed', exitCode: c.State.ExitCode as number, tail }
+  // still 'created' means its start failed: it never ran
+  const exitCode: number | null = c.State.Status === 'created' ? null : c.State.ExitCode
+  return { status: exitCode === 0 ? 'succeeded' : 'failed', exitCode, tail }
 }
 
 function serviceName(ref: string, service: string) {

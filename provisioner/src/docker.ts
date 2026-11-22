@@ -4,12 +4,14 @@ import { ProvisionError } from './names.ts'
 
 // 1.45 = Docker 26; Docker 29 still accepts it (its minimum is 1.44)
 const API = '/v1.45'
-const HOST = (process.env.DOCKER_HOST || 'http://selfbase-socket-proxy:2375').replace(/\/$/, '')
+const PULL_TIMEOUT_MS = 120_000
+const HOST =(process.env.DOCKER_HOST || 'http://selfbase-socket-proxy:2375').replace(/\/$/, '')
 
-export async function dockerFetch(method: string, path: string, body?: unknown): Promise<Response> {
+export async function dockerFetch(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<Response> {
   try {
     return await fetch(HOST + API + path, {
       method,
+      signal,
       headers: body === undefined ? {} : { 'content-type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
     })
@@ -25,7 +27,8 @@ export async function docker(method: string, path: string, body?: unknown, ok: n
   let data: any = text
   try { data = text ? JSON.parse(text) : null } catch { /* plain text answer */ }
   if (r.ok || ok.includes(r.status)) return { status: r.status, data }
-  const why = String(data?.message ?? text).slice(0, 200)
+  // a create refusal can echo an Env entry, so its text never leaves the process
+  const why = path.startsWith('/containers/create') ? 'container create refused' : String(data?.message ?? text).slice(0, 200)
   throw new ProvisionError(502, 'docker_refused', `${method} ${path.split('?')[0]} -> ${r.status}: ${why}`)
 }
 
@@ -35,9 +38,10 @@ export async function ensureImage(image: string): Promise<void> {
   if (await present()) return
   const at = image.lastIndexOf(':')
   const [repo, tag] = at > image.lastIndexOf('/') ? [image.slice(0, at), image.slice(at + 1)] : [image, 'latest']
-  // the pull answers with a progress stream; an error can arrive inside a 200, so only the re-check counts
-  await dockerFetch('POST', `/images/create?fromImage=${encodeURIComponent(repo)}&tag=${encodeURIComponent(tag)}`)
-    .then((r) => r.arrayBuffer(), () => null)
+  // the pull answers with a progress stream; an error can arrive inside a 200, so only the re-check counts.
+  // Its own timeout: a hung pull must not hold the per-ref lock.
+  await dockerFetch('POST', `/images/create?fromImage=${encodeURIComponent(repo)}&tag=${encodeURIComponent(tag)}`,
+    undefined, AbortSignal.timeout(PULL_TIMEOUT_MS)).then((r) => r.arrayBuffer()).catch(() => null)
   if (!(await present())) throw new ProvisionError(502, 'image_unavailable', `image ${image} is neither local nor pullable`)
 }
 
