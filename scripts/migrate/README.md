@@ -77,9 +77,9 @@ What each step does:
    aborts. Re-runnable.
 4. **02-restore.sh post**: refuses unless `auth.users`/`auth.identities` hold the source's counts
    (step 3 ran), then in one transaction loads the post-data section and compares every table's row
-   count (auth and storage included) with `catalog/counts.json`; a mismatch rolls it back.
+   count (auth and storage included) with `catalog/counts.json`; a mismatch rolls it back. After the commit it sends `NOTIFY pgrst, 'reload schema'` so PostgREST sees the restored tables without a restart.
 5. **03 policies**: recreates the storage policies and the user triggers on `auth.users` and
-   `storage.objects`.
+   `storage.objects`, then sends the same `NOTIFY pgrst, 'reload schema'`.
 6. **04-files.mjs**: downloads each object to `STORAGE_DIR/<bucket>/<name>`; skips files already
    there; never follows redirects (the service key stays with Supabase); prints
    downloaded/skipped/failed and exits 1 on any failure.

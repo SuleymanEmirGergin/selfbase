@@ -95,4 +95,6 @@ create policy ${qi(p.policyname)} on storage.${qi(p.tablename)} as ${p.permissiv
 }
 
 out.push('commit;')
+// after the commit: PostgREST reloads its schema cache only when the phase succeeded
+if (phase === 'policies') out.push("notify pgrst, 'reload schema';")
 process.stdout.write(out.join('\n') + '\n')
