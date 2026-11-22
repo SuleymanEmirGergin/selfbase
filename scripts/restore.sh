@@ -6,7 +6,7 @@
 #      sha256) inside the backup service; any mismatch, a missing file or an unknown timestamp is refused
 #      before anything changes; says how many storage files added since the backup would be deleted
 #   2. without --yes-overwrite it stops here
-#   3. `docker compose stop core rest fn`, so nothing writes to the database or storage during the restore
+#   3. `docker compose stop core rest fn backup`, so nothing writes to the database or storage during the restore
 #   4. cron: every active job is set inactive (committed) and running job sessions are terminated, so no
 #      job runs during the restore; the restore brings back the backup's job states (on failure the
 #      jobs set inactive here are set active again)
@@ -46,15 +46,21 @@ FILES='db.dump globals.sql storage.tar.gz '
 if [ "${1:-}" = --inside ]; then # runs in the backup container: --inside verify|apply <ts>
   step=$2 ts=$3 dir=/backups/$3
   [ -f "$dir/MANIFEST" ] || { echo "restore: there is no backup $ts" >&2; exit 1; }
-  [ "$(cut -d' ' -f1 "$dir/MANIFEST" | sort | tr '\n' ' ')" = "$FILES" ] ||
-    { echo "restore: the MANIFEST of $ts does not list exactly $FILES; refusing" >&2; exit 1; }
+  listed=$(cut -d' ' -f1 "$dir/MANIFEST" | sort | tr '\n' ' ')
+  if [ "$listed" = 'db.dump storage.tar.gz ' ]; then
+    echo "restore: WARNING: $ts has no globals.sql (an older backup); not needed for a restore over a running stack" >&2
+  elif [ "$listed" != "$FILES" ]; then
+    echo "restore: the MANIFEST of $ts does not list exactly $FILES; refusing" >&2
+    exit 1
+  fi
   while read -r f size sum; do
     if [ "$(stat -c %s "$dir/$f" 2>/dev/null)" != "$size" ] || [ "$(sha256sum < "$dir/$f" | cut -d' ' -f1)" != "$sum" ]; then
       echo "restore: $ts/$f does not match its MANIFEST (size or sha256); refusing" >&2
       exit 1
     fi
   done < "$dir/MANIFEST"
-  echo "restore: $ts verified (globals.sql with the roles is there too; not applied, see the script header)"
+  echo "restore: $ts verified"
+  [ ! -f "$dir/globals.sql" ] || echo "restore: globals.sql (roles) is in the backup; not applied, only for a disaster restore (see the script header)"
   if [ "$step" = verify ]; then
     added=$(comm -13 <(tar -tzf "$dir/storage.tar.gz" | sed 's#^\./##; s#/$##' | sort) \
       <(cd /data/storage && find . -mindepth 1 -type f | sed 's#^\./##' | sort) | wc -l)
@@ -62,7 +68,26 @@ if [ "${1:-}" = --inside ]; then # runs in the backup container: --inside verify
     exit 0
   fi
 
+  # Exit codes the host reads: 10 database rolled back (unchanged), 3 database restored but the storage
+  # step failed; anything else: state unknown.
   q() { psql -XAtq -v ON_ERROR_STOP=1 "$@"; }
+  jobs='' db_done=0 t=''
+  cleanup() {
+    local rc=$?
+    [ -z "$t" ] || rm -rf "$t"
+    [ "$rc" != 0 ] || return 0
+    if [ "$db_done" = 1 ]; then
+      echo "restore: FAILED in the storage step: the DATABASE WAS RESTORED from $ts, storage may be partly replaced; run the restore again" >&2
+      exit 3
+    fi
+    if [ -n "$jobs" ]; then
+      if q -c "update cron.job set active = true where jobid in ($jobs)"; then echo "restore: cron jobs $jobs set active again" >&2
+      else echo "restore: could NOT set cron jobs $jobs active again; do it by hand: update cron.job set active = true where jobid in ($jobs)" >&2; fi
+    fi
+    [ "$rc" != 10 ] || echo "restore: FAILED: the database restore rolled back; the database and storage are unchanged" >&2
+    exit "$rc"
+  }
+  trap cleanup EXIT
   jobs=$(q -c "select case when to_regclass('cron.job') is null then '' else (select coalesce(string_agg(jobid::text, ','), '')
     from (select jobid from cron.job where active) j) end")
   if [ -n "$jobs" ]; then
@@ -71,14 +96,10 @@ if [ "${1:-}" = --inside ]; then # runs in the backup container: --inside verify
   fi
   q -c "select pg_terminate_backend(pid) from pg_stat_activity
         where (application_name = 'pg_cron' or backend_type = 'pg_cron') and pid <> pg_backend_pid()" > /dev/null
-  if ! pg_restore --clean --if-exists --single-transaction --exit-on-error -d "${PGDATABASE:-postgres}" "$dir/db.dump"; then
-    [ -z "$jobs" ] || q -c "update cron.job set active = true where jobid in ($jobs)"
-    echo "restore: FAILED: the database restore rolled back; the database and storage are unchanged" >&2
-    exit 1
-  fi
+  pg_restore --clean --if-exists --single-transaction --exit-on-error -d "${PGDATABASE:-postgres}" "$dir/db.dump" || exit 10
+  db_done=1
   echo "restore: database restored (cron jobs as in the backup)"
   t="/restore-storage/.restoring-$ts"
-  trap 'rc=$?; rm -rf "$t"; [ $rc = 0 ] || { echo "restore: FAILED in the storage step: the DATABASE WAS RESTORED from $ts, storage may be partly replaced; run the restore again" >&2; exit 3; }' EXIT
   rm -rf "$t"
   mkdir "$t"
   tar -xzf "$dir/storage.tar.gz" -C "$t"
@@ -108,15 +129,19 @@ core=$(docker compose ps -aq core)
 vol=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/data/storage"}}{{.Name}}{{end}}{{end}}' "$core")
 [ -n "$vol" ] || { echo "restore: cannot find core's storage volume" >&2; exit 1; }
 
-echo "restore: stopping core rest fn"
-docker compose stop core rest fn
+echo "restore: stopping core rest fn backup"
+docker compose stop core rest fn backup
+start='docker compose start rest core fn backup'
 rc=0
 docker compose run --rm --no-deps -T -v "$vol:/restore-storage" backup bash /scripts/restore.sh --inside apply "$ts" || rc=$?
 if [ "$rc" != 0 ]; then
-  if [ "$rc" = 3 ]; then echo "restore: FAILED after the database was restored (storage step)" >&2
-  else echo "restore: FAILED; the database was NOT restored (rolled back)" >&2; fi
-  echo "restore: core rest fn are stopped: docker compose start rest core fn" >&2
+  case $rc in
+    10) echo "restore: FAILED; the database was NOT restored (rolled back)" >&2 ;;
+    3) echo "restore: FAILED after the database was restored (storage step)" >&2 ;;
+    *) echo "restore: FAILED (exit $rc); state unknown, check the database and the storage files" >&2 ;;
+  esac
+  echo "restore: core rest fn backup are stopped: $start" >&2
   exit 1
 fi
 echo "$caveats"
-echo "restore: done; start the services again: docker compose start rest core fn"
+echo "restore: done; start the services again: $start"

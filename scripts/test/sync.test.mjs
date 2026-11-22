@@ -46,8 +46,10 @@ const ok1 = 'create table t13.a (id int);\ninsert into t13.a values (1);\n'
 const bad2 = 'create table t13.b (id int);\nselect 1;\nselect * from t13.missing;\n'
 
 describe('sync', () => {
-  beforeEach(() => sql('drop table if exists selfbase.applied_migrations; truncate supabase_migrations.schema_migrations; ' +
+  beforeEach(() => sql('drop table if exists selfbase.applied_migrations, selfbase.sync_inflight; truncate supabase_migrations.schema_migrations; ' +
     'drop schema if exists t13 cascade; create schema t13;'))
+  const noGuard = () => assert.equal(sql("select (select count(*) from selfbase.sync_inflight) + " +
+    "(select count(*) from pg_class where relname = '_selfbase_sync_guard')"), '0')
 
   test('second of two fails: first recorded, second not, exit 1; a re-run does not re-apply the first', () => {
     const d = repo({ [M1]: ok1, [M2]: bad2 })
@@ -74,6 +76,7 @@ describe('sync', () => {
     assert.match(r.stdout, /selfbase\.enable_realtime/)
     assert.equal(sql('select count(*) from t13.a'), '1')
     assert.equal(applied(), `${M1},${M2}`)
+    noGuard()
     assert.match(sync(d).stdout, /nothing to apply/)
   })
 
@@ -83,6 +86,32 @@ describe('sync', () => {
     assert.equal(r.status, 0, r.stderr)
     assert.equal(applied(), M1)
     assert.equal(sql("select to_regclass('t13.w') is not null"), 't')
+    noGuard()
+  })
+
+  test("an apostrophe in an \\echo line does not hide a COMMIT (refused, nothing applied)", () => {
+    const d = repo({ [M1]: "begin;\ncreate table t13.t (id int);\n\\echo Istanbul'da done\ncommit;\ncreate table t13.u (id int);\n" })
+    const r = sync(d)
+    assert.equal(r.status, 1)
+    assert.match(r.stderr, new RegExp(`REFUSED ${M1}: has a statement after its COMMIT`))
+    assert.equal(applied(), '')
+    assert.equal(sql("select to_regclass('t13.t') is null and to_regclass('t13.u') is null"), 't')
+  })
+
+  test('tripwire: a COMMIT the scan cannot see fails the run truthfully and records nothing', () => {
+    // With standard_conforming_strings off (set inside a string, so the scan does not see it), psql and
+    // the server read 'a\', ' as one string and run the commit; the scan reads it as two strings.
+    const hidden = "select set_config('standard_conforming_strings', 'off', false);\ncreate table t13.h (id int);\n" +
+      "select 'a\\', '; commit; -- '\nselect 2;\n"
+    assert.equal(scan(hidden).error, undefined) // the scan is fooled; the tripwire must catch it
+    const r = sync(repo({ [M1]: hidden }))
+    assert.equal(r.status, 1)
+    assert.match(r.stderr, new RegExp(`FAILED ${M1}: it committed outside the expected transaction; it is NOT recorded; ` +
+      'inspect the database before running sync again'))
+    assert.doesNotMatch(r.stderr, /rolled back/)
+    assert.equal(applied(), '')
+    assert.equal(sql("select to_regclass('t13.h') is not null"), 't') // it did commit
+    noGuard()
   })
 
   test('a file with its own COMMIT in the middle is refused before any of it runs', () => {
@@ -161,8 +190,23 @@ describe('sync', () => {
     assert.equal(r.status, 0, r.stderr)
     assert.match(r.stdout, /marked 1 migrations as applied/)
     assert.equal(applied(), B)
-    assert.match(r.stdout, /these 3 migrations need a manual decision/)
-    for (const f of [A, C, D]) assert.match(r.stdout, new RegExp(`${f} {2}-> {2}node scripts/sync\\.mjs --repo .* --mark-applied ${f}`))
+    assert.match(r.stdout, new RegExp(`${B} is recorded on the source; ${A} shares its version and is NOT in the source history — ` +
+      'review it and either apply it by leaving it unmarked \\(it will be applied by the next normal run\\) or mark it with --mark-applied'))
+    assert.match(r.stdout, /these 2 migrations need a manual decision/)
+    for (const f of [C, D]) assert.match(r.stdout, new RegExp(`${f} {2}-> {2}node scripts/sync\\.mjs --repo .* --mark-applied ${f}`))
+
+    // a normal run refuses while neither C nor D is resolved: one of them ran on the source
+    let n = sync(d)
+    assert.equal(n.status, 2)
+    assert.match(n.stderr, /share a version the source recorded.*nothing applied/)
+    assert.match(n.stderr, new RegExp(`${C}[\\s\\S]*${D}|${D}[\\s\\S]*${C}`))
+    assert.equal(applied(), B)
+    put(d, A, 'create table t13.a (id int);')
+    put(d, C, 'create table t13.c (id int);')
+    assert.equal(sync(d, '--mark-applied', D).status, 0)
+    n = sync(d)
+    assert.equal(n.status, 0, n.stderr)
+    assert.equal(applied(), [A, B, D, C].sort().join(','))
   })
 
   test('--baseline-all also works when the history matches no file', () => {
@@ -271,12 +315,36 @@ describe('backup', { skip: !BP && 'set BACKUP_TEST_PROJECT to a running compose.
 
     r = restore(ts, '--yes-overwrite')
     assert.equal(r.status, 0, r.stderr)
-    assert.match(r.stdout, /start the services again: docker compose start rest core fn/)
-    ok(dc('start', 'rest', 'core', 'fn'))
+    assert.match(r.stdout, /stopping core rest fn backup/)
+    assert.match(r.stdout, /start the services again: docker compose start rest core fn backup/)
+    ok(dc('start', 'rest', 'core', 'fn', 'backup'))
     assert.equal(db("select string_agg(id || v, ',' order by id) from public.t13_keep"), '1a,2b')
     assert.equal(ok(core('cat /data/storage/t13/f.txt')), 'hello')
     assert.equal(db("select active from cron.job where jobname = 't13'"), 't') // the backup's job state is back
     assert.notEqual(core('test -e /data/storage/t13/new.txt').status, 0)
+  })
+
+  test('a failed database restore says NOT restored and sets the paused cron jobs active again', () => {
+    db('drop view if exists public.t13_v; drop table if exists public.t13_keep; create table public.t13_keep (id int primary key)')
+    db("select cron.unschedule(jobid) from cron.job where jobname = 't13'; select cron.schedule('t13', '0 4 * * *', 'select 1')")
+    const ts = backup()
+    db('create view public.t13_v as select * from public.t13_keep') // newer object depending on a restored one
+    const r = restore(ts, '--yes-overwrite')
+    ok(dc('start', 'rest', 'core', 'fn', 'backup'))
+    db('drop view public.t13_v')
+    assert.equal(r.status, 1)
+    assert.match(r.stderr, /the database was NOT restored \(rolled back\)/)
+    assert.match(r.stderr, /cron jobs \d+(,\d+)* set active again/)
+    assert.equal(db("select active from cron.job where jobname = 't13'"), 't')
+  })
+
+  test('a backup without globals.sql (older) is accepted with a warning', () => {
+    const ts = backup()
+    inBackup(`cd /backups/${ts} && rm globals.sql && grep -v '^globals.sql ' MANIFEST > M && mv M MANIFEST`)
+    const r = restore(ts)
+    assert.equal(r.status, 2) // verified; stops only for the missing --yes-overwrite
+    assert.match(r.stderr, new RegExp(`WARNING: ${ts} has no globals.sql`))
+    assert.match(r.stdout, new RegExp(`${ts} verified`))
   })
 
   test('a tampered dump or an unknown timestamp is refused, nothing is stopped', () => {
@@ -315,11 +383,37 @@ test('scan: psql shapes that would run differently are refused', () => {
   assert.match(scan('\\set ON_ERROR_STOP off\nselect 1;\n').error, /meta-command \\set ON_ERROR_STOP off/)
   assert.match(scan('\\echo `rm -rf /`\n').error, /backtick/)
   // Postgres nests block comments: this COMMIT is inside the comment
-  assert.deepEqual(scan('begin;\n/* a /* b */ commit; -- */\nselect 1;\n'), { commitAt: -1, ownBegin: true })
+  assert.deepEqual(scan('begin;\n/* a /* b */ commit; -- */\nselect 1;\n'), { commitAt: -1, ownBegin: true, beginEnd: 6 })
   assert.match(scan('begin;\nselect 1;\ncommit;\nselect 2;\n').error,
     /statement after its COMMIT \("select 2"\); move it inside the transaction, before the COMMIT/)
   assert.match(scan('select 1;\nbegin isolation level serializable;\nselect 2;\ncommit;\n').error, /BEGIN with options/)
   assert.equal(scan('begin isolation level serializable;\nselect 2;\ncommit;\n').ownBegin, true)
+})
+
+test('scan: a backslash line is psql text to its end; quotes, comments and $$ there do not hide SQL', () => {
+  for (const echo of ["\\echo Istanbul'da done", '\\echo a /* b', '\\echo say "hi', '\\echo $$ x', "\\qecho it's"]) {
+    assert.match(scan(`begin;\nselect 1;\n${echo}\ncommit;\ncreate table u (a int);\n`).error, /statement after its COMMIT/, echo)
+    assert.equal(scan(`begin;\nselect 1;\n${echo}\ncommit;\n`).error, undefined, echo)
+  }
+  assert.match(scan('\\echo :foo\n').error, /variable reference in \\echo/)
+  assert.match(scan('\\echo a \\\\ select 1;\n').error, /second backslash/)
+})
+
+test('scan: unterminated constructs are refused with their line', () => {
+  assert.match(scan("select 1;\nselect 'abc;\ncommit;\n").error, /unterminated string literal starting at line 2/)
+  assert.match(scan('select 1; /* a /* b */ still open\n').error, /unterminated block comment starting at line 1/)
+  assert.match(scan('do $f$ begin\nend $g$;\n').error, /unterminated dollar-quoted body \$f\$ starting at line 1/)
+  assert.match(scan('select "abc from t;\n').error, /unterminated quoted identifier/)
+  assert.match(scan("begin;\nselect 1;\ncommit;\n/* trailing\n").error, /unterminated block comment starting at line 4/)
+})
+
+test('scan: \\encoding only UTF8; settings that change quote lexing are refused', () => {
+  assert.equal(scan("\\encoding 'utf8'\nselect 1;\n").error, undefined)
+  assert.match(scan('\\encoding LATIN1\nselect 1;\n').error, /meta-command \\encoding LATIN1/)
+  assert.match(scan('set standard_conforming_strings = off;\n').error, /changes how quotes are read/)
+  assert.match(scan("set local standard_conforming_strings to 'off';\n").error, /changes how quotes are read/)
+  assert.equal(scan("set standard_conforming_strings to 'on';\nselect 1;\n").error, undefined)
+  assert.match(scan('set backslash_quote = on;\n').error, /changes how quotes are read/)
 })
 
 test('scan: casts, slices and time literals are not psql variables', () => {
@@ -328,7 +422,7 @@ test('scan: casts, slices and time literals are not psql variables', () => {
 })
 
 test('scan: dollar bodies, comments and strings do not count as transaction control', () => {
-  assert.deepEqual(scan("do $$ begin commit; end $$; -- commit;\nselect 'begin;';"), { commitAt: -1, ownBegin: false })
+  assert.deepEqual(scan("do $$ begin commit; end $$; -- commit;\nselect 'begin;';"), { commitAt: -1, ownBegin: false, beginEnd: 0 })
   assert.equal(scan('begin;\nselect 1;\nend;\n').commitAt, 'begin;\nselect 1;\n'.length)
   assert.match(scan('create index concurrently i on t (a);').error, /cannot run inside a transaction/)
   assert.match(scan('begin; select 1; commit; begin; select 2; commit;').error, /more than one/)

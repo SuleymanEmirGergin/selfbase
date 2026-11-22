@@ -12,6 +12,8 @@
 // A file psql could run differently from how it is scanned here (meta-commands other than \echo,
 // \qecho, \warn, \encoding and `\set ON_ERROR_STOP on`, psql variables), with transaction control
 // beyond one wrapper, or with a statement that cannot run in a transaction, is refused before any of it runs.
+// Independent of that scan, a guard created at the start of the transaction must still exist when the
+// record is written, so a COMMIT the scan missed fails the run (reported as committed, NOT recorded).
 // One sync at a time per database (advisory lock).
 // Env (or .env at the repo root): TARGET_DB_URL, a superuser URL reachable from a container (service name
 // plus DOCKER_NETWORK, or host.docker.internal:<port>). Values are never printed.
@@ -26,59 +28,88 @@ const lib = fileURLToPath(new URL('./migrate/lib.sh', import.meta.url)).replace(
 export const LOCK_KEY = 7213013 // pg_advisory_lock key held for a whole sync run
 
 const ID = /[A-Za-z0-9_$\u0080-￿]/
-// Blanks comments (nested /* */ like Postgres), string literals, quoted identifiers and dollar-quoted
-// bodies with spaces (same length, newlines kept), so keywords and offsets can be read from the rest.
-export function mask(sql) {
+const lineOf = (s, i) => s.slice(0, i).split('\n').length
+
+// Lexes a migration the way psql does: comments (nested /* */ like Postgres), string literals,
+// quoted identifiers and dollar-quoted bodies are blanked with spaces (same length, newlines kept), so
+// keywords and offsets can be read from the rest. A backslash outside those starts a psql meta-command
+// that runs to the end of its line, where psql's own lexer applies (quotes, comment openers and $$ are
+// plain text there): such lines are blanked too and returned in `metas`. An unterminated construct is
+// an error (psql would read the rest of the file into it).
+export function lex(sql) {
   const out = sql.split('')
   const n = sql.length
+  const metas = []
   const quoteEnd = (k, q, esc) => {
     while (k < n) {
       if (esc && sql[k] === '\\') k += 2
       else if (sql[k] === q) { if (sql[k + 1] !== q) return k + 1; k += 2 } else k++
     }
-    return n
+    return -1
   }
   for (let i = 0; i < n;) {
     const c = sql[i]
     let j = -1
+    let what = ''
     if (c === '-' && sql[i + 1] === '-') { j = sql.indexOf('\n', i); if (j < 0) j = n }
-    else if (c === '/' && sql[i + 1] === '*') {
+    else if (c === '\\') {
+      j = sql.indexOf('\n', i); if (j < 0) j = n
+      metas.push({ at: i, line: sql.slice(i, j).replace(/\r$/, '') })
+    } else if (c === '/' && sql[i + 1] === '*') {
+      what = 'block comment'
       let depth = 1
       for (j = i + 2; j < n && depth;) {
         if (sql[j] === '/' && sql[j + 1] === '*') { depth++; j += 2 } else if (sql[j] === '*' && sql[j + 1] === '/') { depth--; j += 2 } else j++
       }
-    } else if (c === "'") j = quoteEnd(i + 1, "'", /[Ee]/.test(sql[i - 1] ?? '') && !ID.test(sql[i - 2] ?? ''))
-    else if (c === '"') j = quoteEnd(i + 1, '"', false)
-    else if (c === '$' && !ID.test(sql[i - 1] ?? '')) {
+      if (depth) j = -2
+    } else if (c === "'") {
+      what = 'string literal'
+      j = quoteEnd(i + 1, "'", /[Ee]/.test(sql[i - 1] ?? '') && !ID.test(sql[i - 2] ?? ''))
+      if (j < 0) j = -2
+    } else if (c === '"') {
+      what = 'quoted identifier'
+      j = quoteEnd(i + 1, '"', false)
+      if (j < 0) j = -2
+    } else if (c === '$' && !ID.test(sql[i - 1] ?? '')) {
       const t = /^\$(?:[A-Za-z_\u0080-￿][A-Za-z0-9_\u0080-￿]*)?\$/.exec(sql.slice(i, i + 100))
-      if (t) { const e = sql.indexOf(t[0], i + t[0].length); j = e < 0 ? n : e + t[0].length }
+      if (t) {
+        what = `dollar-quoted body ${t[0]}`
+        const e = sql.indexOf(t[0], i + t[0].length)
+        j = e < 0 ? -2 : e + t[0].length
+      }
     }
+    if (j === -2) return { error: `has an unterminated ${what} starting at line ${lineOf(sql, i)}` }
     if (j < 0) { i++; continue }
     for (let k = i; k < j; k++) if (out[k] !== '\n') out[k] = ' '
     i = j
   }
-  return out.join('')
+  return { m: out.join(''), metas }
 }
 
 const NO_TX = /^(vacuum|create database|drop database|alter system|create tablespace|drop tablespace|(create|alter|drop) subscription|create (unique )?index concurrently|drop index concurrently|reindex\b.*\bconcurrently\b|alter table\b.*\bdetach partition\b.*\bconcurrently\b)/
 const OTHER_TX = /^(rollback|abort|savepoint|release|prepare transaction|commit prepared)\b/
 const PLAIN_BEGIN = /^(begin( transaction| work)?|start transaction)$/
+// change how the server (and psql) lex quotes, so the scan would no longer match what runs
+const SCS_ON = /^set\s+(session\s+|local\s+)?standard_conforming_strings\s*(to|=)\s*'?on'?\s*;?$/i
 
 // Checks a migration runs in psql exactly as read here and as one transaction. Returns { error } or
-// { commitAt, ownBegin }: the offset of its COMMIT (a BEGIN ... COMMIT wrapper, which 200 of the team's
-// files have) or -1, and whether its own BEGIN is the first statement (then it opens the transaction).
+// { commitAt, ownBegin, beginEnd }: the offset of its COMMIT (a BEGIN ... COMMIT wrapper, which 200 of
+// the team's files have) or -1, whether its own BEGIN is the first statement (then it opens the
+// transaction) and the offset just after that BEGIN's semicolon.
 export function scan(sql) {
-  let m = mask(sql)
-  // Meta-commands: only output and \set ON_ERROR_STOP on. \if hides statements, \gset/\g end one,
-  // \set feeds variables, \i \c \! \o \copy reach other files, databases or the shell.
-  for (const x of m.matchAll(/\\/g)) {
-    const bol = m.lastIndexOf('\n', x.index) + 1
-    const eol = m.indexOf('\n', x.index) < 0 ? m.length : m.indexOf('\n', x.index)
-    const line = sql.slice(x.index, eol).replace(/\r$/, '')
+  const lexed = lex(sql)
+  if (lexed.error) return lexed
+  const { m, metas } = lexed
+  // Meta-commands: only output, \encoding UTF8 and \set ON_ERROR_STOP on. \if hides statements, \gset/\g
+  // end one, \set feeds variables, \i \c \! \o \copy reach other files, databases or the shell.
+  for (const { at, line } of metas) {
     const cmd = /^\\([A-Za-z]+|.?)/.exec(line)[1]
-    if (m.slice(bol, x.index).trim()) return { error: `has the psql meta-command \\${cmd} after SQL on the same line` }
-    if (/`/.test(m.slice(x.index, eol))) return { error: `has a backtick (shell command) in \\${cmd}` }
-    const ok = ['echo', 'qecho', 'warn', 'encoding'].includes(cmd) || /^\\set\s+on_error_stop\s+on\s*$/i.test(line)
+    if (m.slice(m.lastIndexOf('\n', at) + 1, at).trim()) return { error: `has the psql meta-command \\${cmd} after SQL on the same line` }
+    if (line.includes('`')) return { error: `has a backtick (shell command) in \\${cmd}` }
+    if (line.indexOf('\\', 1) >= 0) return { error: `has a second backslash in the line of \\${cmd}` }
+    if (/:[A-Za-z_'"{\u0080-￿]/.test(line)) return { error: `uses a psql variable reference in \\${cmd}` }
+    const ok = ['echo', 'qecho', 'warn'].includes(cmd) || /^\\encoding\s+(['"]?)utf8\1\s*$/i.test(line) ||
+      /^\\set\s+on_error_stop\s+on\s*$/i.test(line)
     if (!ok) return { error: `contains the psql meta-command ${line.trim().slice(0, 60)}` }
   }
   // psql variables (:name, :'name', :"name", :{?name}); not :: casts, := or slices like a[1:2]
@@ -88,7 +119,6 @@ export function scan(sql) {
       return { error: `uses the psql variable reference "${sql.slice(k, k + 20).split('\n')[0]}"` }
     }
   }
-  m = m.replace(/\\.*$/gm, (s) => ' '.repeat(s.length)) // a meta-command runs to the end of its line
   if (/\bbegin\s+atomic\b/i.test(m)) return { error: 'contains BEGIN ATOMIC, which this scanner cannot split' }
   const stmts = []
   let start = 0
@@ -98,12 +128,16 @@ export function scan(sql) {
     else if (m[i] === ')') depth = Math.max(0, depth - 1)
     if (i < m.length && (m[i] !== ';' || depth)) continue
     const t = m.slice(start, i).trim().toLowerCase().replace(/\s+/g, ' ')
-    if (t) stmts.push({ t, at: start + m.slice(start, i).search(/\S/) })
+    const at = start + m.slice(start, i).search(/\S/)
+    if (t) stmts.push({ t, at, end: i + 1 })
     start = i + 1
   }
   for (const s of stmts) {
     if (NO_TX.test(s.t)) return { error: `contains "${s.t.slice(0, 60)}", which cannot run inside a transaction` }
     if (OTHER_TX.test(s.t)) return { error: `contains ${s.t.split(' ')[0].toUpperCase()} (transaction control)` }
+    if (/\bbackslash_quote\b/.test(s.t) || (/\bstandard_conforming_strings\b/.test(s.t) && !SCS_ON.test(sql.slice(s.at, s.end).trim()))) {
+      return { error: `changes how quotes are read ("${s.t.slice(0, 60)}"); only standard_conforming_strings = on is allowed` }
+    }
   }
   const begins = stmts.filter((s) => /^(begin|start transaction)\b/.test(s.t))
   const commits = stmts.filter((s) => /^(commit|end)\b/.test(s.t))
@@ -119,7 +153,7 @@ export function scan(sql) {
   if (begin && !ownBegin && !PLAIN_BEGIN.test(begin.t)) {
     return { error: 'has a BEGIN with options that is not its first statement, so the options would not take effect' }
   }
-  return { commitAt: commit ? commit.at : -1, ownBegin }
+  return { commitAt: commit ? commit.at : -1, ownBegin, beginEnd: ownBegin ? begin.end : 0 }
 }
 
 const lit = (s) => `'${s.replace(/'/g, "''")}'`
@@ -166,8 +200,11 @@ async function takeLock() {
   return child
 }
 
+// sync_inflight holds a row only inside a migration's transaction: one left after a failure means the
+// migration committed outside that transaction (a COMMIT the scan did not see).
 const CREATE = `create table if not exists selfbase.applied_migrations (
-  name text primary key, applied_at timestamptz not null default now(), checksum text);`
+  name text primary key, applied_at timestamptz not null default now(), checksum text);
+create table if not exists selfbase.sync_inflight (name text primary key, started_at timestamptz not null default now());`
 const record = (f) => `insert into selfbase.applied_migrations (name, checksum) values (${lit(f.name)}, ${lit(f.sum)})
   on conflict (name) do nothing;\n${f.version ? `insert into supabase_migrations.schema_migrations (version, name)
   values (${lit(f.version)}, ${lit(f.label)}) on conflict (version) do nothing;\n` : ''}`
@@ -231,6 +268,7 @@ select 'V', version, coalesce(name, '') from supabase_migrations.schema_migratio
     if (sum && sum !== f.sum) console.error(`sync: WARNING: ${f.name} changed after it was applied (checksum differs); not re-applied`)
   }
   const pending = files.filter((f) => !applied.has(f.name))
+  const sameVersion = (f) => files.filter((g) => g.version && g.version === f.version)
 
   if (toMark.length) {
     const list = toMark.map((n) => files.find((f) => f.name === n) ?? (console.error(`sync: ${n} is not in ${dir}`), process.exit(2)))
@@ -244,15 +282,18 @@ select 'V', version, coalesce(name, '') from supabase_migrations.schema_migratio
     let mark = []
     let left = []
     const manual = []
+    const siblings = []
     for (const f of pending) {
-      const same = files.filter((g) => g.version && g.version === f.version)
+      const same = sameVersion(f)
+      const named = same.find((g) => g.label === history.get(f.version))
       if (!f.version || !history.has(f.version)) left.push(f)
       else if (same.length === 1) mark.push(f)
       // a shared version: the history row's name says which file ran; if it cannot tell, the operator decides
-      else if (same.filter((g) => g.label === history.get(f.version)).length === 1 && f.label === history.get(f.version)) mark.push(f)
+      else if (named === f) mark.push(f)
+      else if (named) siblings.push([f, named])
       else manual.push(f)
     }
-    if (!mark.length && !manual.length && pending.length) {
+    if (!mark.length && !manual.length && !siblings.length && pending.length) {
       const why = history.size ? `supabase_migrations.schema_migrations has ${history.size} rows but none matches a file here`
         : 'supabase_migrations.schema_migrations is empty (the source history was not copied)'
       if (!baselineAll) {
@@ -270,9 +311,14 @@ select 'V', version, coalesce(name, '') from supabase_migrations.schema_migratio
         'the next normal run will apply them:')
       for (const f of left) console.log(`  ${f.name}`)
     }
+    for (const [f, named] of siblings) {
+      console.log(`sync: ${named.name} is recorded on the source; ${f.name} shares its version and is NOT in the source history — ` +
+        'review it and either apply it by leaving it unmarked (it will be applied by the next normal run) or mark it with ' +
+        `--mark-applied:\n  node scripts/sync.mjs --repo ${repo} --mark-applied ${f.name}`)
+    }
     if (manual.length) {
       console.log(`sync: these ${manual.length} migrations need a manual decision: they share a version with another file and ` +
-        'the source history cannot tell which ran. For each one that ran on the source, before the next normal run (which would apply it):')
+        'the source history cannot tell which ran. Mark each one that ran on the source; normal runs refuse until then:')
       for (const f of manual) console.log(`  ${f.name}  ->  node scripts/sync.mjs --repo ${repo} --mark-applied ${f.name}`)
     }
     lock?.stdin.end()
@@ -281,6 +327,16 @@ select 'V', version, coalesce(name, '') from supabase_migrations.schema_migratio
 
   if (!applied.size && history.size && pending.length) {
     console.error('sync: selfbase.applied_migrations is empty but the source history is not: run --baseline first')
+    process.exit(2)
+  }
+  // Files sharing a version the source recorded, none marked yet and none named by the history: one of
+  // them ran on the source, so applying any could repeat it.
+  const unresolved = pending.filter((f) => history.has(f.version) && sameVersion(f).length > 1 &&
+    sameVersion(f).every((g) => !applied.has(g.name) && g.label !== history.get(f.version)))
+  if (unresolved.length) {
+    console.error('sync: these files share a version the source recorded and the history cannot tell which ran; ' +
+      'mark the one(s) that ran first (nothing applied):')
+    for (const f of unresolved) console.error(`  ${f.name}  ->  node scripts/sync.mjs --repo ${repo} --mark-applied ${f.name}`)
     process.exit(2)
   }
   if (dryRun) {
@@ -309,12 +365,32 @@ select 'V', version, coalesce(name, '') from supabase_migrations.schema_migratio
     }
     // One explicit transaction, so a cut stream rolls back: the file's own BEGIN when it comes first,
     // else one added on line 1; the record goes before the file's COMMIT, or a COMMIT is added.
-    const rec = `\nreset role;\n${record(f)}`
-    const body = s.commitAt < 0 ? `${f.text}\n;${rec}commit;\n` : `${f.text.slice(0, s.commitAt)}${rec}${f.text.slice(s.commitAt)}`
-    const r = run('', `${s.ownBegin ? '' : 'begin; '}${body}`)
-    const out = r.stderr.split('\n').filter((l) => l && !/transaction in progress/.test(l))
+    // Tripwire, independent of the scan: a guard created right after that BEGIN (on the same line, so
+    // error line numbers stay the file's) is dropped by any COMMIT, and the record block reads it first.
+    const t = f.text
+    const b = s.ownBegin ? s.beginEnd : 0
+    const c = s.commitAt < 0 ? t.length : s.commitAt
+    const guard = `create temp table _selfbase_sync_guard () on commit drop; insert into selfbase.sync_inflight (name) values (${lit(f.name)});`
+    const rec = `\nreset role;\nselect from pg_temp._selfbase_sync_guard;\ndelete from selfbase.sync_inflight where name = ${lit(f.name)};\n${record(f)}`
+    const sql = `${s.ownBegin ? '' : 'begin; '}${t.slice(0, b)} ${guard} ${t.slice(b, c)}` +
+      (s.commitAt < 0 ? `\n;${rec}commit;\n` : `${rec}${t.slice(c)}`)
+    const r = run('', sql)
+    // "already in progress" is expected when sync's BEGIN wraps a later plain BEGIN of the file; "no
+    // transaction in progress" can only come from a COMMIT the scan did not see.
+    const out = r.stderr.split('\n').filter((l) => l && !/there is already a transaction in progress/.test(l))
       .map((l) => l.replace(/^psql:<stdin>:/, `${f.name}:`))
-    if (r.status !== 0) stop(`sync: FAILED ${f.name} (rolled back; ${done} applied before it):\n${out.join('\n')}`)
+    const unseenCommit = out.some((l) => /there is no transaction in progress/.test(l))
+    if (r.status !== 0 || unseenCommit) {
+      const left = query(`select name from selfbase.sync_inflight where name = ${lit(f.name)};
+delete from selfbase.sync_inflight where name = ${lit(f.name)};`).length
+      if (left || unseenCommit) {
+        const msg = `sync: FAILED ${f.name}: it committed outside the expected transaction; it is NOT recorded; ` +
+          `inspect the database before running sync again (${done} applied before it):\n${out.join('\n')}`
+        done++ // its changes are in the database, so PostgREST still has to reload
+        stop(msg)
+      }
+      stop(`sync: FAILED ${f.name} (rolled back; ${done} applied before it):\n${out.join('\n')}`)
+    }
     done++
     console.log(`sync: applied ${f.name}`)
     for (const l of out) console.log(`  ${l}`)
