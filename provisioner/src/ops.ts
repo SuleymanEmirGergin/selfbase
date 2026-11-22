@@ -164,6 +164,16 @@ export async function remove(ctx: Ctx, ref: string, volumes: boolean) {
   return { removed }
 }
 
+// The proxy's address on PROXY_NETWORK (Traefik reaches control there), by its exact container name: never a DNS
+// answer, which any container on that network can join with an alias. Not running: 503, control keeps what it had.
+export async function proxyAddresses(ctx: Ctx) {
+  const name = ctx.node.proxyContainer
+  const c = await inspect(name)
+  const ip = c?.Name === `/${name}` && c.State?.Running ? c.NetworkSettings?.Networks?.[ctx.node.proxyNetwork]?.IPAddress : ''
+  if (!ip) refuse(503, 'proxy_unavailable', `${name} is not running on ${ctx.node.proxyNetwork}`)
+  return { container: name, addresses: [ip as string] }
+}
+
 export async function attachProxy(ctx: Ctx, ref: string) {
   assertRef(ref)
   const name = containerName(ref, 'core')

@@ -40,7 +40,8 @@ list; case 11 that the host's lists are as before. Built images stay (`selfbase.
    syslog logging. Control has no socket and is not on the socket proxy's network. The control stack's secrets are
    files under `/run/secrets`, none in any `Config.Env`. Seven wrong sign-ins from A's core straight to
    `selfbase-control:8080`, each with a new spoofed `X-Forwarded-For`: the sixth and seventh are 429 (the key is the
-   socket address, since only `TRUSTED_PROXY_HOSTS` may forward).
+   socket address, since only the proxy container's own address may forward). A container on the proxy network
+   with the network alias `selfbase-traefik` gets the same 429s: trust is by exact container name, not DNS.
 4. Studio in Chromium: sign in, insert a row in the table editor, `select 1`, core log lines from VictoriaLogs.
 5. Control stack stopped: both projects answer `/health`, sign-up and `/rest/v1/`; a core restart comes back healthy
    with `logs` down (D-5); after the stack starts again reconcile changes nothing (no job, no recreated container).

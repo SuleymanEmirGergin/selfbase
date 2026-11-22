@@ -2,7 +2,7 @@
 // ones control/.env.example lists and the control stack's compose files interpolate.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, chownSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
@@ -10,6 +10,9 @@ import { tmpdir } from 'node:os'
 const root = join(import.meta.dirname, '..', '..')
 const script = join(root, 'scripts', 'install-check.mjs')
 const SECRET = 'do-not-print-this-secret-value-0123456789'
+// On Linux the secret files must be root:10001, which only root can set: run this file as root there (CI uses sudo,
+// the documented check runs with --user 0)
+const asRoot = process.platform === 'linux' && process.getuid?.() === 0
 
 const good = {
   BASE_DOMAIN: 'example.test',
@@ -40,6 +43,7 @@ function run(env, { raw, secrets = goodSecrets, extraEnv = {} } = {}) {
   for (const [name, value] of Object.entries(secrets)) {
     writeFileSync(join(sdir, name), `${value}\n`)
     chmodSync(join(sdir, name), 0o640)
+    if (asRoot) chownSync(join(sdir, name), 0, 10001)
   }
   const r = spawnSync(process.execPath, [script, file, sdir], { encoding: 'utf8', env: { ...process.env, ...extraEnv } })
   rmSync(dir, { recursive: true, force: true })
@@ -139,6 +143,39 @@ test('the env file must be 0600 and the secret files not world-readable on Linux
   assert.equal(r.status, 1)
   assert.match(r.stdout + r.stderr, /0600/)
   assert.match(r.stdout + r.stderr, /master_key: mode/)
+})
+
+test('TRUSTED_PROXY_HOSTS takes IP addresses only and PROXY_CONTAINER a plain name', () => {
+  // a name would be resolved by DNS, and any container on the network can carry an alias
+  const r = run({ ...good, TRUSTED_PROXY_HOSTS: '10.0.0.5,coolify-proxy', PROXY_CONTAINER: 'a/b' })
+  assert.equal(r.status, 1)
+  assert.match(r.out, /TRUSTED_PROXY_HOSTS: must be comma-separated IP addresses/)
+  assert.match(r.out, /PROXY_CONTAINER: must be a plain container name/)
+  assert.equal(run({ ...good, TRUSTED_PROXY_HOSTS: '10.0.0.5, fd00::1', PROXY_CONTAINER: 'my-traefik' }).status, 0)
+})
+
+test('a secret file must be owned by uid 0 and readable by group SECRETS_GID', { skip: !asRoot }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sb-install-check-'))
+  const file = join(dir, '.env')
+  writeFileSync(file, Object.entries(good).map(([k, v]) => `${k}=${v}`).join('\n'), { mode: 0o600 })
+  chmodSync(file, 0o600)
+  for (const [name, value] of Object.entries(goodSecrets)) {
+    writeFileSync(join(dir, name), value)
+    chmodSync(join(dir, name), 0o640)
+    chownSync(join(dir, name), 0, 10001)
+  }
+  const check = () => { const r = spawnSync(process.execPath, [script, file, dir], { encoding: 'utf8' }); return { status: r.status, out: r.stdout + r.stderr } }
+  assert.equal(check().status, 0)
+  chownSync(join(dir, 'master_key'), 1000, 10001)
+  chmodSync(join(dir, 'control_db_password'), 0o600)
+  chownSync(join(dir, 'provisioner_token'), 0, 0)
+  const r = check()
+  rmSync(dir, { recursive: true, force: true })
+  assert.equal(r.status, 1)
+  assert.match(r.out, /master_key: must be owned by uid 0/)
+  assert.match(r.out, /control_db_password: must be group-readable \(0640\)/)
+  assert.match(r.out, /provisioner_token: group must be SECRETS_GID 10001/)
+  assert.doesNotMatch(r.out, /control_jwt_secret/)
 })
 
 test('no file: exit 1 with usage', () => {

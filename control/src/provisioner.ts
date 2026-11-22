@@ -1,6 +1,7 @@
 // Client of the provisioner HTTP API (Task 7, spec 7.5): one method per route, same shapes. A failure becomes
 // ProvisionerError(code, message) built from the provisioner's {error, message} only; a request body (it carries
 // the project env) is never part of an error.
+import { forgetCoreIp } from './core-addr.ts'
 import { ApiError } from './errors.ts'
 
 export type ServiceState = { service: string; exists: boolean; state: string | null; health: string | null
@@ -25,6 +26,8 @@ export interface Provisioner {
   jobStatus(ref: string, type: string): Promise<JobState>
   logs(ref: string, service: string, tail: number): Promise<string>
   stats(ref: string, service: string): Promise<{ mem_usage_mb: number; mem_limit_mb: number; cpu_percent: number }>
+  /** The proxy container's address on the proxy network (its X-Forwarded-For is trusted); 503 while it is down. */
+  proxy(): Promise<{ container: string; addresses: string[] }>
 }
 
 let current: Provisioner | undefined
@@ -88,14 +91,18 @@ export function httpProvisioner(url: string, token: string): Provisioner {
     return (res.headers.get('content-type')?.includes('application/json') ? JSON.parse(text) : text) as T
   }
   const p = (ref: string) => `/projects/${seg(ref)}`
+  // anything that may recreate, stop or remove a project's containers: its core may have another address afterwards
+  // (or none), so the next admin call asks again; also when the call failed halfway
+  const mutate = <T>(ref: string, run: Promise<T>) => run.finally(() => forgetCoreIp(ref))
   return {
     list: () => call('GET', '/projects', STATE_MS),
     inspect: (ref) => call('GET', p(ref), STATE_MS),
-    ensure: ({ ref, ...body }) => call('POST', `${p(ref)}/ensure`, MUTATE_MS, body),
-    start: (ref, services) => call('POST', `${p(ref)}/start`, MUTATE_MS, services ? { services } : {}),
-    stop: (ref, services) => call('POST', `${p(ref)}/stop`, MUTATE_MS, services ? { services } : {}),
-    remove: (ref, volumes) => call('DELETE', `${p(ref)}?volumes=${volumes}`, MUTATE_MS),
-    attachProxy: (ref) => call('POST', `${p(ref)}/attach-proxy`, MUTATE_MS),
+    ensure: ({ ref, ...body }) => mutate(ref, call('POST', `${p(ref)}/ensure`, MUTATE_MS, body)),
+    start: (ref, services) => mutate(ref, call('POST', `${p(ref)}/start`, MUTATE_MS, services ? { services } : {})),
+    stop: (ref, services) => mutate(ref, call('POST', `${p(ref)}/stop`, MUTATE_MS, services ? { services } : {})),
+    remove: (ref, volumes) => mutate(ref, call('DELETE', `${p(ref)}?volumes=${volumes}`, MUTATE_MS)),
+    attachProxy: (ref) => mutate(ref, call('POST', `${p(ref)}/attach-proxy`, MUTATE_MS)),
+    proxy: () => call('GET', '/proxy', READ_MS),
     runJob: (ref, type, args, env) => call('POST', `${p(ref)}/jobs`, JOB_MS, { type, args, env }),
     jobStatus: (ref, type) => call('GET', `${p(ref)}/jobs/${seg(type)}`, JOB_MS),
     logs: (ref, service, tail) => call('GET', `${p(ref)}/services/${seg(service)}/logs?tail=${tail}`, READ_MS),

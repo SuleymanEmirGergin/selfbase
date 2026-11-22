@@ -52,6 +52,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx -w studio playwright install --with-deps chromium
-      - run: node --test scripts/test/install-check.test.mjs scripts/test/gen-keys.test.mjs
+      # as root: the secret-file checks need files owned by root:SECRETS_GID
+      - run: sudo "$(command -v node)" --test scripts/test/install-check.test.mjs scripts/test/gen-keys.test.mjs
       - run: bash job/test/job.test.sh
       - run: node --test --test-concurrency=1 test/e2e/teardown.test.mjs test/e2e/stack.test.mjs

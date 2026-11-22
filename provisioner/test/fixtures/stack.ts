@@ -10,10 +10,12 @@ export const TOKEN = 'test-provisioner-token-0123456789abcdef'
 export const REGISTRY = 'selfbase-test.invalid/sb'
 export const IMAGE = `${REGISTRY}/selfbase-core:test`
 export const PROXY_NET = 'selfbase-test-proxy'
+// stands in for selfbase-traefik / coolify-proxy (PROXY_CONTAINER): not sb-*, so only its own allow-list entry passes it
+export const PROXY_CONTAINER = 'selfbase-test-edge'
 const IMAGES = ['db', 'core', 'job'].map((s) => `${REGISTRY}/selfbase-${s}:test`)
 export const BACKUP_DIR = '/opt/selfbase/sb-test-backups'
 // compose fills these into socket-proxy.env, as on the server
-const env = { ...process.env, PROXY_NETWORK: PROXY_NET, REGISTRY, BACKUP_HOST_DIR: BACKUP_DIR }
+const env = { ...process.env, PROXY_NETWORK: PROXY_NET, REGISTRY, BACKUP_HOST_DIR: BACKUP_DIR, PROXY_CONTAINER }
 
 export const docker = (...args: string[]) =>
   execFileSync('docker', args, { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] }).trim()

@@ -132,4 +132,8 @@ export class FakeProvisioner implements Provisioner {
     await this.rec('stats', [ref, service])
     return { mem_usage_mb: 0, mem_limit_mb: 0, cpu_percent: 0 }
   }
+  async proxy() {
+    await this.rec('proxy', [])
+    return { container: 'coolify-proxy', addresses: [] as string[] }
+  }
 }

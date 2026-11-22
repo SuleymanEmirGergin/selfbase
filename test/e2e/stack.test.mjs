@@ -10,7 +10,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
-import { CONTROL_HOST, E2E_DIR, FIXED, ORIGIN, PROXY_NETWORK, SECRETS_DIR, SOCKET_GID, compose, connectFrom, docker, dockerOk, envFile,
+import { CONTROL_HOST, E2E_DIR, FIXED, IMPOSTOR, ORIGIN, PROXY_NETWORK, SECRETS_DIR, SOCKET_GID, compose, connectFrom, docker, dockerOk, envFile,
   https, inspect, resolveFrom, root, run, runResources, snapshot, waitFor } from './helpers.mjs'
 
 process.chdir(root)
@@ -82,6 +82,7 @@ function teardown() {
   // ones below, by compose's label: never `down -v`), then what the run made by hand
   const mine = runResources(refs, { proxyNetwork: madeProxyNetwork })
   if (mine.containers.length) dockerOk('rm', '-f', '-v', ...mine.containers)
+  dockerOk('rm', '-f', '-v', IMPOSTOR) // run with --rm; only a killed run leaves it (before() checked it was not there)
   try {
     compose(envPath, 'rm', '-f', '-s', '-v')
     compose(envPath, 'down', '--remove-orphans', '--timeout', '5')
@@ -212,14 +213,21 @@ test('3: every project container is capped and hardened; control has no Docker s
   assert.match(resolveFrom('selfbase-control', 'selfbase-socket-proxy'), /ENOTFOUND|EAI_AGAIN/)
   // a project container reaches control:8080 without Traefik; its X-Forwarded-For is ignored, so a fresh spoofed
   // address per try does not escape the sign-in limit (5 per IP)
-  const tries = run('docker', ['exec', `sb-${P.a.ref}-core`, 'node', '-e', `const http=require('http'),out=[];let n=0
+  const signIns = `const http=require('http'),out=[];let n=0
 const go=()=>{const body=JSON.stringify({email:'nobody@e2e.test',password:'wrong-password-1'})
 const r=http.request({host:'selfbase-control',port:8080,path:'/platform/login',method:'POST',headers:{host:'${CONTROL_HOST}',
 'content-type':'application/json','content-length':Buffer.byteLength(body),origin:'${ORIGIN}','x-forwarded-for':'198.51.100.'+(++n)}},
 (res)=>{res.resume();out.push(res.statusCode);if(n<7)go();else console.log(out.join(' '))});r.on('error',(e)=>console.log(e.code));r.end(body)}
-go()`]).split(' ')
-  assert.equal(tries.length, 7, tries.join(' '))
-  assert.ok(tries.slice(0, 5).every((s) => s !== '429') && tries.slice(5).every((s) => s === '429'), tries.join(' '))
+go()`
+  const limited = (tries) => {
+    assert.equal(tries.length, 7, tries.join(' '))
+    assert.ok(tries.slice(0, 5).every((s) => s !== '429') && tries.slice(5).every((s) => s === '429'), tries.join(' '))
+  }
+  limited(run('docker', ['exec', `sb-${P.a.ref}-core`, 'node', '-e', signIns]).split(' '))
+  // nor from a container on the proxy network that answers to the proxy's name: trust is by exact container name
+  // (the provisioner inspects selfbase-traefik), never DNS
+  limited(run('docker', ['run', '--rm', '--name', IMPOSTOR, '--network', PROXY_NETWORK, '--network-alias', 'selfbase-traefik',
+    '--entrypoint', 'node', inspect(`sb-${P.a.ref}-core`).Config.Image, '-e', signIns]).split(' '))
 })
 
 test('4: Studio against the real stack: table editor, SQL, logs', async () => {

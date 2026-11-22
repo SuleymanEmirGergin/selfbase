@@ -3,7 +3,9 @@ import { ProvisionError } from './names.ts'
 
 export type NodeSettings = { registry: string; templateVersion: string; proxyNetwork: string; entrypointHttp: string
   entrypointHttps: string; certResolver: string; logSyslogAddr: string; cgroupParent: string; backupHostDir: string
-  subnetPool: string; controlContainer: string; controlNetwork: string }
+  subnetPool: string; controlContainer: string; controlNetwork: string
+  /** the proxy's exact container name: control trusts X-Forwarded-For from its address only (GET /proxy) */
+  proxyContainer: string }
 
 export const VERSION_RE = /^[0-9A-Za-z._-]{1,64}$/
 const OCTET = '(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)'
@@ -35,7 +37,10 @@ export function loadSettings(env: Record<string, string | undefined> = process.e
     subnetPool: env.PROJECT_SUBNET_POOL ?? '10.207.0.0/16',
     controlContainer: env.CONTROL_CONTAINER ?? 'selfbase-control',
     controlNetwork: env.CONTROL_NETWORK ?? 'selfbase',
+    proxyContainer: env.PROXY_CONTAINER || (env.PROXY_MODE === 'own' ? 'selfbase-traefik' : 'coolify-proxy'),
   }
+  // socket-proxy.env puts it into the allow-list unescaped
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(s.proxyContainer)) fail('PROXY_CONTAINER must be a plain container name [A-Za-z0-9_-]+')
   if (!/^[a-z0-9]+([._:/-][a-z0-9]+)*$/.test(s.registry)) fail('REGISTRY is not a registry path')
   if (!VERSION_RE.test(s.templateVersion)) fail('TEMPLATE_VERSION is not a version')
   // socket-proxy.env puts it into a regex unescaped

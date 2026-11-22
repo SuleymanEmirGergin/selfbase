@@ -141,10 +141,12 @@ export function runResources(refs, { proxyNetwork = false } = {}) {
   }
 }
 
+// case 3: carries the network alias selfbase-traefik (run with --rm; listed so the guard and teardown cover a leftover)
+export const IMPOSTOR = 'selfbase-e2e-impostor'
 /** The fixed names a real install uses: a run refuses to start when any exists, so it never adopts (or removes) one. */
 export const FIXED = {
   containers: ['selfbase-control', 'selfbase-control-db', 'selfbase-provisioner', 'selfbase-socket-proxy', 'selfbase-logs',
-    'selfbase-traefik', 'selfbase-traefik-socket-proxy'],
+    'selfbase-traefik', 'selfbase-traefik-socket-proxy', IMPOSTOR],
   networks: ['selfbase', 'selfbase-docker', 'selfbase-traefik-docker', PROXY_NETWORK],
   volumes: ['selfbase-control-pgdata', 'selfbase-logs', 'selfbase-acme'],
 }

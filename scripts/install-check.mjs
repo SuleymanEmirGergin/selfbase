@@ -7,13 +7,14 @@
 // One line per problem, naming the key or file and never a value; exit 1 when there is any. Standard library only.
 // `--keys` prints the known keys as JSON (tests compare them with control/.env.example and the compose files).
 import { readFileSync, statSync } from 'node:fs'
+import { isIP } from 'node:net'
 import { join } from 'node:path'
 
 const REQUIRED = ['BASE_DOMAIN', 'REGISTRY', 'TEMPLATE_VERSION', 'PROXY_MODE', 'PROXY_NETWORK', 'BACKUP_HOST_DIR']
 // compose secrets (SECRETS_DIR/<file>), never env: a container's Config.Env is readable by a socket proxy's inspect
 const SECRET_FILES = { SELFBASE_MASTER_KEY: 'master_key', CONTROL_DB_PASSWORD: 'control_db_password',
   CONTROL_JWT_SECRET: 'control_jwt_secret', PROVISIONER_TOKEN: 'provisioner_token' }
-const OPTIONAL = ['PROJECT_SUBNET_POOL', 'SECRETS_DIR', 'SECRETS_GID', 'TRUSTED_PROXY_HOSTS',
+const OPTIONAL = ['PROJECT_SUBNET_POOL', 'SECRETS_DIR', 'SECRETS_GID', 'TRUSTED_PROXY_HOSTS', 'PROXY_CONTAINER',
   'PUBLIC_URL', 'TEST_HOST', 'NODE_NAME', 'LEGACY_HOSTNAMES', 'MEMORY_BUDGET_MB', 'OVERCOMMIT', 'SHARED_RESERVED_MB',
   'JOB_SLOT_MB', 'MAX_NEW_HOSTS_PER_WEEK', 'BRANCH_HOST_SLOTS', 'CERT_PROBE', 'BACKUP_RETENTION_DAYS', 'SMTP_HOST', 'SMTP_PORT',
   'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM', 'AUTH_RATE_LIMIT_SIGN_IN', 'PROXY_ENTRYPOINT_HTTP', 'PROXY_ENTRYPOINT_HTTPS',
@@ -74,7 +75,12 @@ for (const [key, name] of Object.entries(SECRET_FILES)) {
   else if (key !== 'SELFBASE_MASTER_KEY' && key !== 'CONTROL_DB_PASSWORD' && text.length < 32) bad(name, 'must be at least 32 characters')
   // control and the provisioner read it as group SECRETS_GID (compose bind-mounts the file with its host mode)
   const st = statSync(path)
-  if (linux && ((st.mode & 0o037) !== 0 || String(st.gid) !== secretsGid)) bad(name, `mode must be 0640 root:${secretsGid} (gen-keys.mjs --secrets)`)
+  if (!linux) continue
+  const fix = `(0640 root:${secretsGid}, gen-keys.mjs --secrets)`
+  if (st.uid !== 0) bad(name, `must be owned by uid 0 ${fix}`)
+  if (String(st.gid) !== secretsGid) bad(name, `group must be SECRETS_GID ${secretsGid} ${fix}`)
+  if ((st.mode & 0o040) === 0) bad(name, `must be group-readable (0640) ${fix}`)
+  if ((st.mode & 0o037) !== 0) bad(name, `mode must be 0640: no group write, nothing for others ${fix}`)
 }
 // SECRETS_DIR as compose sees it on the host (the check reads the directory mounted at its second argument)
 if (v('SECRETS_DIR') && (!/^\/opt\/selfbase(\/[A-Za-z0-9._-]+)+$/.test(v('SECRETS_DIR')) || /\/\.\.?(\/|$)/.test(v('SECRETS_DIR')))) {
@@ -84,6 +90,12 @@ if (v('SECRETS_DIR') && (!/^\/opt\/selfbase(\/[A-Za-z0-9._-]+)+$/.test(v('SECRET
 let socketGid = process.env.HOST_DOCKER_SOCKET_GID
 try { socketGid ??= String(statSync('/var/run/docker.sock').gid) } catch {}
 if (socketGid && socketGid !== '0' && v('DOCKER_SOCKET_GID') !== socketGid) bad('DOCKER_SOCKET_GID', `must be ${socketGid}, the group of /var/run/docker.sock`)
+
+// trust is by address: a name would be resolved by DNS, and any container on the network can carry an alias
+if (v('TRUSTED_PROXY_HOSTS').split(',').map((h) => h.trim()).filter(Boolean).some((h) => !isIP(h))) {
+  bad('TRUSTED_PROXY_HOSTS', 'must be comma-separated IP addresses (the proxy container itself is PROXY_CONTAINER)')
+}
+if (v('PROXY_CONTAINER') && !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(v('PROXY_CONTAINER'))) bad('PROXY_CONTAINER', 'must be a plain container name [A-Za-z0-9_-]+')
 
 const pool = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(v('PROJECT_SUBNET_POOL'))
 if (v('PROJECT_SUBNET_POOL')) {

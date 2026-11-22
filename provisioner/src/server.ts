@@ -63,6 +63,7 @@ const P = '([^/]+)'
 const routes: Route[] = [
   ['GET', /^\/health$/, async () => ({ ok: true, templateVersion: ctx.node.templateVersion })],
   ['GET', /^\/projects$/, () => ops.listProjects(ctx)],
+  ['GET', /^\/proxy$/, () => ops.proxyAddresses(ctx)],
   ['GET', new RegExp(`^/projects/${P}$`), ([ref]) => ops.projectState(ctx, ref)],
   ['POST', new RegExp(`^/projects/${P}/ensure$`), ([ref], _, b) => ops.serial(ref, () => ops.ensure(ctx, ref, b))],
   ['POST', new RegExp(`^/projects/${P}/(start|stop)$`), ([ref, a], _, b) => ops.serial(ref, () => ops.startStop(ctx, ref, a as 'start' | 'stop', b))],

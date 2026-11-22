@@ -1,34 +1,53 @@
-// The rate-limit and audit key (core's clientIp, which control uses): X-Forwarded-For counts only from a trusted proxy.
-// Control is reachable on :8080 by every container on the proxy and project networks, not only through Traefik.
-import { afterAll, beforeAll, expect, it } from 'vitest'
-import { clientIp, refreshTrustedProxies } from '../src/core.ts'
+// The rate-limit and audit key (core's clientIp, which control uses): X-Forwarded-For counts only from the proxy's
+// address as the provisioner read it from Docker (exact container name), never from a DNS answer, which any container
+// on the proxy network can join with an alias. Control is reachable on :8080 by every container on the proxy and
+// project networks, not only through Traefik.
+import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest'
+import { clientIp, trustProxies } from '../src/core.ts'
 
 const ctx = (peer: string, xff?: string) =>
   ({ req: { header: (k: string) => (k === 'x-forwarded-for' ? xff : undefined) }, env: { incoming: { socket: { remoteAddress: peer } } } }) as any
 const saved = process.env.TRUST_PROXY
+const PROXY = '192.0.2.10'
+let answer: () => Promise<string[]> = async () => [PROXY]
+const source = vi.fn(() => answer())
 
-beforeAll(async () => {
-  process.env.TRUST_PROXY = 'true'
-  await refreshTrustedProxies('localhost, 192.0.2.10')
-})
-afterAll(async () => {
-  process.env.TRUST_PROXY = saved
-  await refreshTrustedProxies(process.env.TRUSTED_PROXY_HOSTS)
-})
+beforeAll(() => { process.env.TRUST_PROXY = 'true' })
+afterEach(() => { trustProxies(null); vi.useRealTimers(); source.mockClear(); answer = async () => [PROXY] })
+afterAll(() => { process.env.TRUST_PROXY = saved })
 
-it('a spoofed X-Forwarded-For from an untrusted peer does not change the key', () => {
+it("an untrusted peer's spoofed X-Forwarded-For does not change the key; the proxy's (also IPv4-mapped) does", async () => {
+  await trustProxies(source).refresh()
+  // an impostor aliased as the proxy on its network: its own address, not the proxy's, is what reaches control
   expect(clientIp(ctx('10.207.0.5', '6.6.6.6'))).toBe('10.207.0.5')
-  expect(clientIp(ctx('10.207.0.5', '1.1.1.1, 7.7.7.7'))).toBe('10.207.0.5')
+  expect(clientIp(ctx(PROXY, '6.6.6.6, 203.0.113.7'))).toBe('203.0.113.7')
+  expect(clientIp(ctx(`::ffff:${PROXY}`, '203.0.113.8'))).toBe('203.0.113.8')
+  expect(clientIp(ctx(PROXY))).toBe(PROXY)
 })
 
-it('a trusted proxy (by name or address, also IPv4-mapped) gives the rightmost X-Forwarded-For entry', () => {
-  expect(clientIp(ctx('127.0.0.1', '6.6.6.6, 203.0.113.7'))).toBe('203.0.113.7')
-  expect(clientIp(ctx('::ffff:192.0.2.10', '203.0.113.8'))).toBe('203.0.113.8')
-  expect(clientIp(ctx('192.0.2.10'))).toBe('192.0.2.10')
+it('a failed refresh keeps the trusted set; IP literals are trusted from the start', async () => {
+  const t = trustProxies(source, ['198.51.100.1'])
+  expect(clientIp(ctx('198.51.100.1', '203.0.113.9'))).toBe('203.0.113.9')
+  await t.refresh()
+  answer = async () => { throw new Error('provisioner down') }
+  await t.refresh()
+  expect(clientIp(ctx(PROXY, '203.0.113.7'))).toBe('203.0.113.7')
+  expect(clientIp(ctx('198.51.100.1', '203.0.113.9'))).toBe('203.0.113.9')
 })
 
-it('without TRUSTED_PROXY_HOSTS every peer is a proxy (core behind its own Traefik route)', async () => {
-  await refreshTrustedProxies('')
+it('an unknown peer sending X-Forwarded-For re-asks at most every 5 s (a restarted proxy has a new address)', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  await trustProxies(source).refresh()
+  source.mockClear()
+  vi.setSystemTime(Date.now() + 6000)
+  answer = async () => ['192.0.2.11']
+  expect(clientIp(ctx('192.0.2.11', '203.0.113.7'))).toBe('192.0.2.11')
+  expect(clientIp(ctx('192.0.2.11', '203.0.113.7'))).toBe('192.0.2.11')
+  expect(source).toHaveBeenCalledTimes(1)
+  await vi.waitFor(() => expect(clientIp(ctx('192.0.2.11', '203.0.113.7'))).toBe('203.0.113.7'))
+})
+
+it('without a source every peer is a proxy (core behind its own Traefik route)', () => {
+  trustProxies(null)
   expect(clientIp(ctx('10.207.0.5', '6.6.6.6'))).toBe('6.6.6.6')
-  await refreshTrustedProxies('localhost, 192.0.2.10')
 })

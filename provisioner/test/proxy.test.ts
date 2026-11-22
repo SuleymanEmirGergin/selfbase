@@ -3,7 +3,7 @@
 // the allow-list were ever wrong.
 import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { BACKUP_DIR, docker, down, execIn, IMAGE, PROXY_NET, tryDocker, up } from './fixtures/stack.ts'
+import { BACKUP_DIR, docker, down, execIn, IMAGE, PROXY_CONTAINER, PROXY_NET, tryDocker, up } from './fixtures/stack.ts'
 
 const SB = 'sb-proxytest-probe'
 const NOTHING = encodeURIComponent(JSON.stringify({ label: ['selfbase.test.never=1'] }))
@@ -74,6 +74,13 @@ test('a bind mount from anywhere but the backup dir is 403; the backup dir passe
   } finally {
     tryDocker('rm', '-f', name)
   }
+})
+
+test("the proxy container's inspect is allowed by its exact name only", () => {
+  // 404: allowed, there is no such container right now; any other non-sb name stays 403
+  assert.deepEqual(statuses('provisioner', [['GET', `/v1.45/containers/${PROXY_CONTAINER}/json`],
+    ['GET', `/v1.45/containers/${PROXY_CONTAINER}x/json`], ['GET', '/v1.45/containers/selfbase-test-impostor/json'],
+    ['GET', `/v1.45/containers/${PROXY_CONTAINER}/logs`]]), [404, 403, 403, 403])
 })
 
 test('any other client address gets 403', () => {

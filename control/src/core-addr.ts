@@ -1,6 +1,7 @@
 // A project's core address on sb-<ref>, as the provisioner read it from Docker. Never a DNS name: Docker's DNS may
 // answer core's proxy-network address (where its admin port refuses control), and anything on a network control
-// shares could answer a name. Cached per ref; a caller forgets it when a connection fails (core was recreated).
+// shares could answer a name. Cached per ref; forgotten after every provisioner call that may recreate, stop or
+// remove the project's containers (provisioner.ts) and when a connection to it fails.
 import { ApiError } from './errors.ts'
 import type { Provisioner } from './provisioner.ts'
 
