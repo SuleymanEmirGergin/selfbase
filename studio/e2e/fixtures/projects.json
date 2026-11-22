@@ -1,0 +1,53 @@
+[
+  {
+    "id": "corteqsprojectrefaaa",
+    "ref": "corteqsprojectrefaaa",
+    "organization_id": "8a0f2c1e-0000-4000-8000-0000000000a1",
+    "name": "corteqs",
+    "region": "main",
+    "status": "ACTIVE_HEALTHY",
+    "created_at": "2026-11-20T10:00:00Z",
+    "database": {
+      "host": "db",
+      "version": "17",
+      "postgres_engine": "17",
+      "release_channel": "ga"
+    },
+    "size": "small",
+    "certificate": "ok"
+  },
+  {
+    "id": "stagingprojectrefbbb",
+    "ref": "stagingprojectrefbbb",
+    "organization_id": "8a0f2c1e-0000-4000-8000-0000000000a1",
+    "name": "staging",
+    "region": "main",
+    "status": "COMING_UP",
+    "created_at": "2026-11-21T09:30:00Z",
+    "database": {
+      "host": "db",
+      "version": "17",
+      "postgres_engine": "17",
+      "release_channel": "ga"
+    },
+    "size": "micro",
+    "certificate": "pending"
+  },
+  {
+    "id": "archiveprojectrefccc",
+    "ref": "archiveprojectrefccc",
+    "organization_id": "8a0f2c1e-0000-4000-8000-0000000000a1",
+    "name": "archive",
+    "region": "main",
+    "status": "INACTIVE",
+    "created_at": "2026-11-01T08:00:00Z",
+    "database": {
+      "host": "db",
+      "version": "17",
+      "postgres_engine": "17",
+      "release_channel": "ga"
+    },
+    "size": "micro",
+    "certificate": "ok"
+  }
+]

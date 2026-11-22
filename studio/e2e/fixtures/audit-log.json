@@ -1,0 +1,32 @@
+[
+  {
+    "id": 42,
+    "at": "2026-11-22T11:58:00Z",
+    "actor": "owner@example.test",
+    "org_id": "8a0f2c1e-0000-4000-8000-0000000000a1",
+    "project_id": null,
+    "action": "POST /platform/access-tokens",
+    "target": null,
+    "ip": "203.0.113.5",
+    "details": {
+      "status": 201,
+      "body_keys": [
+        "name"
+      ]
+    }
+  },
+  {
+    "id": 41,
+    "at": "2026-11-22T10:12:00Z",
+    "actor": "owner@example.test",
+    "org_id": "8a0f2c1e-0000-4000-8000-0000000000a1",
+    "project_id": "corteqsprojectrefaaa",
+    "action": "POST /platform/projects/:ref/pause",
+    "target": "corteqsprojectrefaaa",
+    "ip": "203.0.113.5",
+    "details": {
+      "status": 200,
+      "body_keys": []
+    }
+  }
+]

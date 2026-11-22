@@ -1,0 +1,35 @@
+{
+  "budget_mb": 16384,
+  "reserved_mb": 2720,
+  "job_slot_mb": 512,
+  "used_mb": 3520,
+  "free_mb": 9632,
+  "projects": [
+    {
+      "ref": "corteqsprojectrefaaa",
+      "name": "corteqs",
+      "size": "small",
+      "cap_mb": 2336,
+      "status": "ACTIVE_HEALTHY",
+      "mem_usage_mb": 1210
+    },
+    {
+      "ref": "stagingprojectrefbbb",
+      "name": "staging",
+      "size": "micro",
+      "cap_mb": 1184,
+      "status": "COMING_UP",
+      "mem_usage_mb": 402
+    },
+    {
+      "ref": "archiveprojectrefccc",
+      "name": "archive",
+      "size": "micro",
+      "cap_mb": 1184,
+      "status": "INACTIVE",
+      "mem_usage_mb": 0
+    }
+  ],
+  "new_hosts_this_week": 2,
+  "max_new_hosts_per_week": 3
+}

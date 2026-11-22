@@ -1,0 +1,14 @@
+[
+  {
+    "user_id": "4f1c2a9e-0000-4000-8000-000000000001",
+    "email": "owner@example.test",
+    "role": "owner",
+    "project_ref": null
+  },
+  {
+    "user_id": "4f1c2a9e-0000-4000-8000-000000000002",
+    "email": "dev@example.test",
+    "role": "developer",
+    "project_ref": "corteqsprojectrefaaa"
+  }
+]
