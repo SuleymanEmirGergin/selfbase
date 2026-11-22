@@ -212,6 +212,32 @@ test('an invitation for an address with an account sends the user to sign in, th
   expect(accepts).toEqual([{ token: 'tok123', password: 'correct horse battery' }, { token: 'tok123' }])
 })
 
+for (const [status, body] of [
+  [403, { error: 'forbidden', message: 'Signed in as another account than the one invited' }],
+  [422, { error: 'weak_password', message: 'Password should be at least 12 characters.' }],
+] as const) {
+  test(`an invitation accepted while signed in as another account (${status}) offers to continue with another account`, async ({ page }) => {
+    let session = true
+    const api = await mockApi(page, {
+      ...signedIn(),
+      'GET /me': () => (session ? { body: fx('me') } : { status: 401, body: fx('unauthorized') }),
+      'POST /refresh': { status: 401, body: fx('unauthorized') },
+      'POST /logout': () => { session = false; return { body: {} } },
+      'POST /invitations/accept': { status, body },
+    })
+    await page.goto('/invite/tok123')
+    await expect(page.getByText('olarak giriş yaptınız')).toBeVisible()
+    await page.getByRole('button', { name: 'Daveti kabul et' }).click()
+    await expect(page.getByRole('status')).toContainText('başka bir e-posta adresine')
+    await expect(page.getByText(body.message)).toHaveCount(0)
+    await page.getByRole('button', { name: 'Başka bir hesapla devam et' }).click()
+    // signed out and back on the invitation: a new address sets its password here
+    await expect(page.getByLabel('Yeni parola', { exact: true })).toBeVisible()
+    await expect(page).toHaveURL(/\/invite\/tok123$/)
+    expect(api.count('POST /logout')).toBe(1)
+  })
+}
+
 test('import shows ignored and unknown key names and the job steps', async ({ page }) => {
   const api = await mockApi(page, {
     ...signedIn(),
@@ -301,9 +327,18 @@ test('next is followed only when it stays on this origin', async ({ page }) => {
     await page.getByRole('button', { name: 'Giriş yap' }).click()
   }
   await mockApi(page, routes)
+  const errors: string[] = []
+  page.on('pageerror', (e) => errors.push(e.message))
   await signIn('/\\evil.com')
   await expect(page).toHaveURL(/\/org\/acme$/)
   await expect(page.getByRole('heading', { name: 'Projeler' })).toBeVisible()
+  // same origin once resolved, but a path of `//evil.com`: history.replaceState would throw
+  for (const sly of ['/.\\/evil.com', '/.//evil.com']) {
+    await signIn(sly)
+    await expect(page).toHaveURL(/\/org\/acme$/)
+    await expect(page.getByRole('heading', { name: 'Projeler' })).toBeVisible()
+  }
+  expect(errors).toEqual([])
   await signIn('//evil.com/x')
   await expect(page).toHaveURL(/\/org\/acme$/)
   // values that do not parse as a URL at all must not throw (a blank page)

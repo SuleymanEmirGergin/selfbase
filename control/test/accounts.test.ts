@@ -182,7 +182,7 @@ describe('sessions and tokens', () => {
 
     const orgs = await withToken(token, 'GET', '/v1/organizations')
     expect(orgs.status).toBe(200)
-    expect(await orgs.json()).toEqual([{ id: 'default', name: 'Default' }])
+    expect(await orgs.json()).toEqual([{ id: 'default', slug: 'default', name: 'Default' }])
     expect((await withToken(token, 'GET', '/platform/me')).status).toBe(200)
 
     const list = await (await as(cookie, 'GET', '/platform/access-tokens')).json()
@@ -235,7 +235,7 @@ describe('v1 organizations', () => {
     expect(await org.json()).toEqual({ id: 'default', name: 'Default', plan: 'free', opt_in_tags: [], allowed_release_channels: ['ga'] })
     const members = await withToken(token, 'GET', '/v1/organizations/default/members')
     expect(await members.json()).toEqual([
-      { user_id: expect.any(String), user_name: OWNER, email: OWNER, role_name: 'Owner', mfa_enabled: false },
+      { user_id: expect.any(String), user_name: OWNER, email: OWNER, role_name: 'Owner', mfa_enabled: false, avatar_url: null },
     ])
     expect((await withToken(token, 'GET', '/v1/organizations/nope')).status).toBe(404)
   })

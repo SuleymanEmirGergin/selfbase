@@ -13,6 +13,13 @@ const GRANTS: Record<Role, Action[]> = {
 // An unknown role (a newer server) grants nothing rather than crashing the project area.
 export const can = (role: Role, action: Action) => (GRANTS[role] ?? []).includes(action)
 
+const ORDER: Role[] = ['read_only', 'developer', 'administrator', 'owner']
+/** The caller's role on a project: the better of the org-wide role and a role on this project (control's authz best()). */
+export function projectRole(org: OrgRef | undefined, ref: string): Role {
+  const roles = [org?.role, org?.projects.find((p) => p.ref === ref)?.role].filter((r): r is Role => !!r)
+  return roles.reduce<Role | null>((a, r) => (a === null || ORDER.indexOf(r) > ORDER.indexOf(a) ? r : a), null) ?? 'read_only'
+}
+
 export type ProjectCtx = {
   ref: string
   project: ProjectDetail

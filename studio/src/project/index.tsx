@@ -6,7 +6,7 @@ import type { Me } from '../api.ts'
 import { Link, usePath } from '../router.tsx'
 import { ErrorBox, Icon, Loading } from '../ui.tsx'
 import { StatusBadge, useLoad } from '../org/common.tsx'
-import { Ctx, can } from './context.ts'
+import { Ctx, can, projectRole } from './context.ts'
 import type { Action, ProjectCtx } from './context.ts'
 import { Paused } from './parts.tsx'
 import Home from './Home.tsx'
@@ -60,7 +60,7 @@ export default function ProjectArea({ me, onSignOut }: { me: Me; onSignOut: () =
   const ctx = useMemo<ProjectCtx | null>(() => {
     if (!project || project.ref !== ref) return null
     const org = me.organizations.find((o) => o.id === project.organization_id)
-    const role = org?.role ?? 'read_only'
+    const role = projectRole(org, ref)
     return { ref, project, org, api: projectAdmin(ref), can: (a) => can(role, a), reload }
   }, [project, ref, me, reload])
 

@@ -6,6 +6,7 @@ import { config } from './config.ts'
 import { notFound, onError } from './errors.ts'
 import { audit, bodyCap } from './audit.ts'
 import { authenticate } from './session.ts'
+import { paused } from './paused.ts'
 import { platformAuth } from './routes/platform-auth.ts'
 import { platformOrgs, v1Orgs } from './routes/platform-orgs.ts'
 import { platformProjects } from './routes/platform-projects.ts'
@@ -16,6 +17,7 @@ export const app = new Hono()
 app.onError(onError)
 app.notFound(notFound)
 
+app.use('*', paused) // before any route: only PUBLIC_URL's host is served
 app.get('/health', (c) => c.json({ ok: true }))
 
 // size cap before anything parses a JSON body; then audit, so refused writes are recorded too

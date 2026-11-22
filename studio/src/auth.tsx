@@ -89,14 +89,37 @@ export function AcceptInvite({ token }: { token: string }) {
   // undefined: still asking whether there is a session
   const [me, setMe] = useState<Me | null | undefined>(undefined)
   const [hasAccount, setHasAccount] = useState(false)
+  const [otherAccount, setOtherAccount] = useState(false)
   useEffect(() => { platform.me().then(setMe, () => setMe(null)) }, [])
   const signedInAccept = useSubmit(async () => {
-    await platform.acceptInvitation(token)
+    try {
+      await platform.acceptInvitation(token)
+    } catch (err) {
+      // 403: the invitation is for another account; 422: for a new address (it needs a password, so no session)
+      if (err instanceof ApiError && (err.status === 403 || err.status === 422)) return setOtherAccount(true)
+      throw err
+    }
     location.assign('/') // a full reload, so the new organization is in the session's list
   })
+  const signOutHere = async () => {
+    await platform.logout().catch(() => {})
+    setOtherAccount(false)
+    setMe(null) // back on this invitation, signed out
+  }
   const signInLink = `/sign-in?next=${encodeURIComponent(`/invite/${token}`)}`
 
   if (me === undefined) return <Card title="Daveti kabul et">{null}</Card>
+  if (me && otherAccount) {
+    return (
+      <Card title="Daveti kabul et">
+        <div className="note" role="status">
+          Bu davet başka bir e-posta adresine gönderilmiş; <strong>{me.email}</strong> hesabıyla kabul edilemez. Çıkış yapıp davetin
+          gönderildiği adresle devam edin.
+        </div>
+        <button type="button" className="btn primary block" onClick={signOutHere}>Başka bir hesapla devam et</button>
+      </Card>
+    )
+  }
   if (me) {
     return (
       <Card title="Daveti kabul et" lead={<><strong>{me.email}</strong> olarak giriş yaptınız. Davet bu hesaba eklenecek.</>} onSubmit={signedInAccept.submit}>

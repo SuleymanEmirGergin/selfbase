@@ -238,6 +238,19 @@ test('an unknown role renders the project area without crashing and grants nothi
   await expect(page.getByRole('button', { name: 'göster' })).toHaveCount(0)
 })
 
+test('a project-scoped developer (no org-wide role) sees the write controls of that project', async ({ page }) => {
+  const r = routes()
+  r['GET /me'] = { body: fx('me-project-developer') }
+  await mockApi(page, r)
+  await page.goto(`/project/${REF}/home`)
+  const menu = page.getByRole('navigation', { name: 'Ana menü' })
+  await expect(menu.getByRole('link', { name: 'SQL', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'göster' })).toBeVisible()
+  await page.goto(`/project/${REF}/editor`)
+  await page.getByRole('complementary', { name: 'Tablolar' }).getByRole('button', { name: 'notes' }).click()
+  await expect(page.getByRole('button', { name: 'Satır ekle' })).toBeVisible()
+})
+
 test('a project in transition gets no data screens and shows its status', async ({ page }) => {
   const r = routes()
   r[`GET ${P}`] = { body: { ...fx('project-detail'), status: 'COMING_UP' } }

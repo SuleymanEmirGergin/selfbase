@@ -14,6 +14,7 @@ import type { Role } from '../authz.ts'
 import { sessionUser } from '../session.ts'
 import type { Env } from '../session.ts'
 import { createConfirmedUser, tx } from './platform-auth.ts'
+import { op } from './v1.ts'
 
 export const platformOrgs = new Hono<Env>()
 export const v1Orgs = new Hono<Env>()
@@ -263,22 +264,23 @@ platformOrgs.get('/organizations/:slug/audit-log', async (c) => {
 
 const ROLE_NAMES: Record<Role, string> = { owner: 'Owner', administrator: 'Administrator', developer: 'Developer', read_only: 'Read only' }
 
-// v1-list-all-organizations; Supabase's organization id is its slug
-v1Orgs.get('/organizations', async (c) => c.json((await orgsOf(c.get('user').id)).map((o) => ({ id: o.slug, name: o.name }))))
+// Supabase's organization id is its slug
+op(v1Orgs, 'get', '/organizations', 'v1-list-all-organizations', async (c) =>
+  c.json((await orgsOf(c.get('user').id)).map((o) => ({ id: o.slug, slug: o.slug, name: o.name }))))
 
-// v1-get-an-organization; plan and release channels have no meaning here: neutral values
-v1Orgs.get('/organizations/:slug', async (c) => {
+// plan and release channels have no meaning here: neutral values
+op(v1Orgs, 'get', '/organizations/:slug', 'v1-get-an-organization', async (c) => {
   const org = await memberOrg(c)
   return c.json({ id: org.slug, name: org.name, plan: 'free', opt_in_tags: [], allowed_release_channels: ['ga'] })
 })
 
-// v1-list-organization-members: one entry per user, their org-wide role first
-v1Orgs.get('/organizations/:slug/members', async (c) => {
+// one entry per user, their org-wide role first
+op(v1Orgs, 'get', '/organizations/:slug/members', 'v1-list-organization-members', async (c) => {
   const org = await memberOrg(c)
   const { rows } = await pool.query(
     `select distinct on (m.user_id) m.user_id, u.email, m.role from control.memberships m join auth.users u on u.id = m.user_id
       where m.org_id = $1 order by m.user_id, m.project_id nulls first`,
     [org.id],
   )
-  return c.json(rows.map((r) => ({ user_id: r.user_id, user_name: r.email, email: r.email, role_name: ROLE_NAMES[r.role as Role], mfa_enabled: false })))
+  return c.json(rows.map((r) => ({ user_id: r.user_id, user_name: r.email, email: r.email, role_name: ROLE_NAMES[r.role as Role], mfa_enabled: false, avatar_url: null })))
 })

@@ -1,0 +1,16 @@
+{
+  "id": "4f1c2a9e-0000-4000-8000-000000000003",
+  "email": "dev@example.test",
+  "organizations": [
+    {
+      "id": "8a0f2c1e-0000-4000-8000-0000000000a1",
+      "slug": "acme",
+      "name": "Acme",
+      "role": null,
+      "projects": [
+        { "ref": "corteqsprojectrefaaa", "role": "developer" },
+        { "ref": "stagingprojectrefbbb", "role": "read_only" }
+      ]
+    }
+  ]
+}

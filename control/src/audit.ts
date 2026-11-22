@@ -16,10 +16,13 @@ const limit = bodyLimit({
   maxSize: BODY_LIMIT,
   onError: (c) => c.json({ error: 'payload_too_large', message: 'request body larger than 256 KiB' }, 413),
 })
-/** Caps every request body before audit or a handler parses it, except on the routes in largeBodyRoutes. */
+/**
+ * Caps every request body before audit or a handler parses it, except non-JSON bodies on the routes in
+ * largeBodyRoutes (audit parses every JSON body, so JSON is always capped).
+ */
 export const bodyCap = createMiddleware((c, next) => {
   const route = apiRoute(c)
-  return route && largeBodyRoutes.has(route) ? next() : limit(c, next)
+  return route && largeBodyRoutes.has(route) && !isJson(c) ? next() : limit(c, next)
 })
 
 export const audit = createMiddleware<Env>(async (c, next) => {
@@ -31,13 +34,18 @@ export const audit = createMiddleware<Env>(async (c, next) => {
     if (body && typeof body === 'object' && !Array.isArray(body)) bodyKeys = Object.keys(body)
   }
   await next()
+  await writeAudit(c, { status: c.res.status, body_keys: bodyKeys })
+})
+
+/** The row for this request, from c.get('audit'); reads that disclose a secret call it themselves (GETs are not audited). */
+export async function writeAudit(c: Context<Env>, details: Record<string, unknown>): Promise<void> {
   const scope = c.get('audit') ?? {}
   await pool
     .query(
       `insert into control.audit_log (actor, org_id, project_id, action, target, ip, details) values ($1, $2, $3, $4, $5, $6, $7)`,
       [c.get('user')?.email ?? 'anonymous', scope.orgId ?? null, scope.projectId ?? null, `${c.req.method} ${apiRoute(c) ?? c.req.path}`,
-        scope.target ?? null, clientIp(c), { status: c.res.status, body_keys: bodyKeys }],
+        scope.target ?? null, clientIp(c), details],
     )
-    // the answer already happened; a lost row is logged, without the request's data
+    // the answer already happened (or is about to); a lost row is logged, without the request's data
     .catch((e: Error) => console.error(`audit: ${e.message}`))
-})
+}

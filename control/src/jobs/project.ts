@@ -191,7 +191,9 @@ defineJob('project.restore', 'light', [
     await admit(c, { size: p.size as Size, excludeProjectId: p.id })
     await c.query(`update control.projects set status = 'RESTORING', paused_at = null where id = $1`, [p.id])
   })),
-  step('start', (ctx) => ctx.provisioner.start(need(ctx).ref)),
+  // ensure, not start: a domain or config changed while paused must reach the containers (their router labels).
+  // The provisioner's ensure recreates what changed and starts every stopped container.
+  step('start', (ctx) => ensure(ctx)),
   ...healthySteps,
   activate,
 ], failTo('RESTORE_FAILED', ['admit']))
