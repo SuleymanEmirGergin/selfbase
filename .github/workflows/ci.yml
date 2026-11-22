@@ -24,7 +24,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: docker compose -p sb-ci -f template/compose.test.yml up -d --build --wait db rest
+      # rest is not in --wait: it exits and restarts until core's global setup has migrated db (which then waits for it)
+      - run: docker compose -p sb-ci -f template/compose.test.yml up -d --build --wait db db-empty db-v1 && docker compose -p sb-ci -f template/compose.test.yml up -d rest
       - run: npm run typecheck --workspaces --if-present
       - run: npm test --workspaces --if-present
       - run: node --test scripts/test/workspace.test.mjs scripts/test/compose-env.test.mjs
@@ -37,8 +38,7 @@ jobs:
         image: [db, core, fn, rest, pooler, job, control, provisioner]
     steps:
       - uses: actions/checkout@v4
-      # shortcut: db/Dockerfile still copies bootstrap/ relative to db/, so it builds with context db until Task 3 rewrites it
-      - run: docker build -f ${{ matrix.image }}/Dockerfile -t selfbase-${{ matrix.image }}:ci ${{ matrix.image == 'db' && 'db' || '.' }}
+      - run: docker build -f ${{ matrix.image }}/Dockerfile -t selfbase-${{ matrix.image }}:ci .
 
   # Reserved for Task 17 (end-to-end stack test).
   e2e:

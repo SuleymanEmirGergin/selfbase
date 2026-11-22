@@ -31,7 +31,8 @@ function sources(dir) {
 const reads = (texts, re) => new Set(texts.flatMap((t) => [...t.matchAll(re)].map((m) => m[1])))
 
 // Set by the compose file itself or the image, not meant for the operator.
-const CORE_INTERNAL = ['DB_HOST', 'DB_PORT', 'PORT', 'PANEL_DIR']
+// AUTHENTICATOR_PASSWORD defaults to POSTGRES_PASSWORD, the password rest's PGRST_DB_URI uses in plain compose.
+const CORE_INTERNAL = ['DB_HOST', 'DB_PORT', 'PORT', 'PANEL_DIR', 'PLATFORM_DIR', 'AUTHENTICATOR_PASSWORD']
 const FN_INTERNAL = ['PORT']
 
 function check(service, vars, internal) {

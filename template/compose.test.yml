@@ -1,19 +1,49 @@
-# Throwaway test stack (db + rest). Values here are test-only, never real secrets.
-# Parallel checkouts: docker compose -p <name> -f template/compose.test.yml up -d, with TEST_DB_PORT / TEST_REST_PORT set.
+# Throwaway test stack. Values here are test-only, never real secrets.
+# Parallel checkouts: docker compose -p <name> -f template/compose.test.yml up -d --build --wait db db-empty db-v1 rest,
+# with TEST_DB_PORT / TEST_REST_PORT / TEST_DB_EMPTY_PORT / TEST_DB_V1_PORT set.
+# The db image has no schema of its own: core's test global setup applies the platform migrations to `db`.
+x-db: &db
+  build:
+    context: ..
+    dockerfile: db/Dockerfile
+  environment:
+    POSTGRES_PASSWORD: test-postgres-password
+  tmpfs:
+    - /var/lib/postgresql/data
+  healthcheck:
+    test: ["CMD", "pg_isready", "-U", "postgres", "-h", "localhost"]
+    interval: 2s
+    timeout: 3s
+    retries: 30
+
 services:
   db:
-    build: ../db
-    environment:
-      POSTGRES_PASSWORD: test-postgres-password
+    <<: *db
     ports:
       - "127.0.0.1:${TEST_DB_PORT:-54329}:5432"
-    tmpfs:
-      - /var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD", "pg_isready", "-U", "postgres", "-h", "localhost"]
-      interval: 2s
-      timeout: 3s
-      retries: 30
+
+  # scratch cluster for core/test/platform.test.ts: migrations on an empty database (the test resets it)
+  db-empty:
+    <<: *db
+    ports:
+      - "127.0.0.1:${TEST_DB_EMPTY_PORT:-54332}:5432"
+
+  # a v1 database: the entrypoint runs v1's bootstrap files with psql, after the image's 10_postgis.sh like v1 did
+  db-v1:
+    <<: *db
+    ports:
+      - "127.0.0.1:${TEST_DB_V1_PORT:-54333}:5432"
+    volumes:
+      - ../core/test/fixtures/v1-bootstrap/00-roles.sql:/docker-entrypoint-initdb.d/00-roles.sql:ro
+      - ../core/test/fixtures/v1-bootstrap/01-extensions.sql:/docker-entrypoint-initdb.d/01-extensions.sql:ro
+      - ../core/test/fixtures/v1-bootstrap/02-auth.sql:/docker-entrypoint-initdb.d/02-auth.sql:ro
+      - ../core/test/fixtures/v1-bootstrap/03-storage.sql:/docker-entrypoint-initdb.d/03-storage.sql:ro
+      - ../core/test/fixtures/v1-bootstrap/04-shims.sql:/docker-entrypoint-initdb.d/04-shims.sql:ro
+      - ../core/test/fixtures/v1-bootstrap/05-realtime.sql:/docker-entrypoint-initdb.d/05-realtime.sql:ro
+      - ../core/test/fixtures/v1-bootstrap/11-auth-flows.sql:/docker-entrypoint-initdb.d/11-auth-flows.sql:ro
+      - ../core/test/fixtures/v1-bootstrap/40-compat.sql:/docker-entrypoint-initdb.d/40-compat.sql:ro
+      - ../core/test/fixtures/v1-bootstrap/50-admin.sql:/docker-entrypoint-initdb.d/50-admin.sql:ro
+      - ../core/test/fixtures/v1-bootstrap/60-guards.sql:/docker-entrypoint-initdb.d/60-guards.sql:ro
 
   rest:
     image: postgrest/postgrest:v14.1
@@ -28,11 +58,9 @@ services:
       PGRST_ADMIN_SERVER_HOST: localhost
     ports:
       - "127.0.0.1:${TEST_REST_PORT:-54330}:3000"
+    # No healthcheck: authenticator can log in only once core's global setup has migrated `db`. Until then PostgREST
+    # exits on the failed login and is restarted; the global setup waits for it.
+    restart: on-failure
     depends_on:
       db:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD", "postgrest", "--ready"]
-      interval: 2s
-      timeout: 3s
-      retries: 30

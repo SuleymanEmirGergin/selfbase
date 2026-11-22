@@ -16,7 +16,9 @@ x-defaults: &defaults
 services:
   db:
     <<: *defaults
-    build: ../db
+    build:
+      context: ..
+      dockerfile: db/Dockerfile
     mem_limit: 1g
     cpus: 2
     shm_size: 256m # Docker's 64m default breaks parallel queries ("could not resize shared memory segment")
@@ -108,8 +110,10 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      # not service_healthy: rest can log in only after core has migrated and set the authenticator password;
+      # until then it exits and its restart policy brings it back
       rest:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
       interval: 10s

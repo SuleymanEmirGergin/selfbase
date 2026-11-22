@@ -22,6 +22,9 @@ export const config = {
     password: env.POSTGRES_PASSWORD || '',
     database: 'postgres',
   },
+  // core logs in as authenticator for end-user queries and sets its password at every start (db/platform/0001)
+  authenticatorPassword: env.AUTHENTICATOR_PASSWORD || env.POSTGRES_PASSWORD || '',
+  platformDir: env.PLATFORM_DIR || '/app/db/platform',
   jwtSecret: env.JWT_SECRET || '',
   publicUrl: env.PUBLIC_URL || 'http://localhost:8080',
   siteUrl: env.SITE_URL || 'http://localhost:5173',

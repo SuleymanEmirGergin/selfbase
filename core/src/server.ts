@@ -2,10 +2,18 @@ import type { Server } from 'node:http'
 import { serve } from '@hono/node-server'
 import { app } from './app.ts'
 import { config } from './config.ts'
-import { closeDb } from './db.ts'
+import { closeDb, pool } from './db.ts'
+import { applyMigrations, setRolePassword } from './platform/migrate.ts'
 import { attachRealtime, stopRealtime } from './realtime/index.ts'
 import { startNetQueue, stopNetQueue } from './netqueue/index.ts'
 
+// Schema first, then the login PostgREST and asUser() use; a failure names the file only (never SQL or secrets)
+await applyMigrations(pool, { dir: config.platformDir, ledger: 'selfbase.platform_migrations', lockKey: 7213014, adoptV1: true })
+  .then(() => setRolePassword(pool, 'authenticator', config.authenticatorPassword))
+  .catch((e: Error) => {
+    console.error(`startup: ${e.message}`)
+    process.exit(1)
+  })
 const server = serve({ fetch: app.fetch, port: config.port }, (info) => console.log(`core listening on :${info.port}`))
 attachRealtime(server as Server)
 startNetQueue()

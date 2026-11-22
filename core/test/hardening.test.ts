@@ -2,7 +2,6 @@
 // query guards, auth rate limits, body limit, health, config parsing, queue upkeep and the upgrade SQL.
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
-import { readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import type { Server } from 'node:http'
 import pg from 'pg'
@@ -258,19 +257,5 @@ describe('http_queue upkeep and the upgrade SQL', () => {
     const left = (await pool.query(`select url from selfbase.http_queue where url like $1 || '%' order by url`, [tag])).rows.map((r) => r.url)
     expect(left).toEqual([`${tag}new-done`, `${tag}old-pending`])
     await pool.query(`delete from selfbase.http_queue where url like $1 || '%'`, [tag])
-  })
-
-  it('db/upgrade/2026-11-22.sql is idempotent and matches the bootstrap', async () => {
-    const sql = readFileSync(new URL('../../db/upgrade/2026-11-22.sql', import.meta.url), 'utf8')
-    await pool.query(sql)
-    await pool.query(sql)
-    const idx = await pool.query(`select indexdef from pg_indexes where schemaname = 'selfbase' and indexname = 'http_queue_pending_idx'`)
-    expect(idx.rows[0].indexdef).toMatch(/WHERE \(status = 'pending'::text\)/)
-    const roles = await pool.query(`select r.rolname, s.setconfig from pg_db_role_setting s join pg_roles r on r.oid = s.setrole
-      where r.rolname in ('anon', 'authenticated') order by 1`)
-    expect(roles.rows).toEqual([
-      { rolname: 'anon', setconfig: ['statement_timeout=3s'] },
-      { rolname: 'authenticated', setconfig: ['statement_timeout=8s'] },
-    ])
   })
 })

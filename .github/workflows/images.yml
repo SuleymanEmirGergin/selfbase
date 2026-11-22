@@ -28,11 +28,9 @@ jobs:
       - name: build and push
         env:
           IMAGE: ${{ env.REGISTRY }}/selfbase-${{ matrix.image }}
-          # shortcut: db/Dockerfile still copies bootstrap/ relative to db/, so it builds with context db until Task 3 rewrites it
-          CONTEXT: ${{ matrix.image == 'db' && 'db' || '.' }}
         run: |
           version="${GITHUB_REF_NAME#v}"
           sha="sha-${GITHUB_SHA::7}"
-          docker build -f "${{ matrix.image }}/Dockerfile" -t "$IMAGE:$version" -t "$IMAGE:$sha" "$CONTEXT"
+          docker build -f "${{ matrix.image }}/Dockerfile" -t "$IMAGE:$version" -t "$IMAGE:$sha" .
           docker push "$IMAGE:$version"
           docker push "$IMAGE:$sha"
