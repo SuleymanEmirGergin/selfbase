@@ -58,8 +58,11 @@ router.post('/signup', async (c) => {
   checkPassword(body.password)
   const data = body.data && typeof body.data === 'object' ? body.data : {}
   const existing = await findByEmail(email)
-  // same bcrypt cost on both branches so timing does not reveal registered emails; mails go out in the background
-  const repeatHash = existing ? await hashPassword(body.password) : null
+  // one bcrypt operation on every branch so timing does not reveal registered emails; mails go out in the background
+  const unconfirmed = !!existing && !existing.email_confirmed_at
+  let samePassword = false
+  if (unconfirmed) samePassword = await bcrypt.compare(body.password, existing.encrypted_password || DUMMY_HASH)
+  else if (existing) await hashPassword(body.password)
   const redirectTo = c.req.query('redirect_to')
   const user = existing
     ? null
@@ -69,14 +72,15 @@ router.post('/signup', async (c) => {
       })
   if (!user) {
     // GoTrue: with confirmation on, an obfuscated user so signup does not reveal registered emails;
-    // a still unconfirmed address takes this request's password and data (so an earlier signup by someone else
-    // is not what the owner confirms) and gets its confirmation mail again (rate limited)
+    // a still unconfirmed address gets its confirmation mail again (rate limited). A different password means two
+    // people claim it: the account loses its password and the mailbox owner sets one after the link (type=recovery).
+    // The same password is a double submit and changes nothing.
     if (config.authConfirmEmail) {
-      if (existing && !existing.email_confirmed_at)
-        background(pool.query(
-          `update auth.users set encrypted_password = $2, raw_user_meta_data = $3, updated_at = now() where id = $1 and email_confirmed_at is null`,
-          [existing.id, repeatHash, data],
-        ).then(() => sendConfirmation(existing, redirectTo)))
+      if (unconfirmed)
+        background((samePassword ? Promise.resolve() : pool.query(
+          `update auth.users set encrypted_password = null, updated_at = now() where id = $1 and email_confirmed_at is null`,
+          [existing!.id],
+        )).then(() => sendConfirmation(existing!, redirectTo)))
       return c.json(fakeUser(email, data))
     }
     throw authError(422, 'user_already_exists', 'User already registered')
@@ -130,8 +134,6 @@ router.put('/user', async (c) => {
     if (typeof phone !== 'string') throw authError(400, 'validation_failed', 'phone must be a string')
   }
   const hash = password === undefined ? null : await hashPassword(password)
-  // first, so a 429 (SMS interval) or a failed hook writes nothing; the code is checked against phone_change
-  if (phone !== undefined) await sendPhoneOtp(user, phone)
 
   await withTx(async (tx) => {
     if (data !== undefined)
@@ -159,6 +161,8 @@ router.put('/user', async (c) => {
   // the pending change stays recorded when this is 429; a later PUT sends the link
   if (newEmail && config.authConfirmEmail && !(await sendEmailChange(user, newEmail)))
     throw authError(429, 'over_email_send_rate_limit', `For security purposes, you can only request this after ${config.authEmailInterval} seconds.`)
+  // after the commit, so the code always matches a recorded phone_change; on 429/500 the change stays pending
+  if (phone !== undefined) await sendPhoneOtp(user, phone)
   return c.json(toUserJson((await findById(user.id))!))
 })
 

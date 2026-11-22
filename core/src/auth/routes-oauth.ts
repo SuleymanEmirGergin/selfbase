@@ -107,6 +107,9 @@ async function googleUser(sub: string, email: string, p: GoogleProfile): Promise
 }
 
 router.get('/callback', async (c) => {
+  // the nonce cookie is single use: cleared on every callback, accepted or not
+  const cookieNonce = getCookie(c, NONCE_COOKIE)
+  deleteCookie(c, NONCE_COOKIE, nonceCookie())
   let target: string
   let nonce: unknown
   try {
@@ -114,12 +117,11 @@ router.get('/callback', async (c) => {
     target = safeRedirect(payload.redirect_to as string)
     nonce = payload.nonce
   } catch {
-    throw authError(400, 'bad_oauth_state', 'OAuth state parameter is missing or invalid')
+    // returned (not thrown) so the cookie-clearing header goes out with the 400
+    return c.json({ code: 400, error_code: 'bad_oauth_state', msg: 'OAuth state parameter is missing or invalid' }, 400)
   }
   const fail = (error: string, error_code: string, error_description: string) =>
     c.redirect(withFragment(target, { error, error_code, error_description }), 302)
-  const cookieNonce = getCookie(c, NONCE_COOKIE)
-  deleteCookie(c, NONCE_COOKIE, nonceCookie())
   if (!cookieNonce || cookieNonce !== nonce) return fail('access_denied', 'bad_oauth_callback', 'OAuth callback was not started in this browser')
 
   const code = c.req.query('code')

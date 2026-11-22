@@ -5,7 +5,7 @@ import { config } from '../config.ts'
 import type { AppEnv } from '../jwt.ts'
 import { authError, findById, toUserJson } from './users.ts'
 import type { UserRow } from './users.ts'
-import { issueSession, isBanned } from './sessions.ts'
+import { issueSession, isBanned, sessionActive } from './sessions.ts'
 import { sha256, storeToken } from './mail.ts'
 
 const router = new Hono<AppEnv>()
@@ -21,16 +21,21 @@ export async function sendPhoneOtp(user: UserRow, phone: string): Promise<void> 
     console.error('AUTH_SMS_HOOK_SECRET is not set: phone OTP not sent')
     throw failed()
   }
+  const tooSoon = () => authError(429, 'over_sms_send_rate_limit', `For security purposes, you can only request this after ${SMS_INTERVAL} seconds.`)
+  // one SMS per number per interval, whichever account asks (tokens are stored only after a successful send)
+  // shortcut: check-then-send, so two accounts racing within milliseconds can both send once; lock the number if that matters
+  const recent = await pool.query(
+    `select 1 from auth.one_time_tokens where token_type = 'phone_change_token' and relates_to = $1
+       and created_at > now() - make_interval(secs => $2) limit 1`, [phone, SMS_INTERVAL])
+  if (recent.rowCount) throw tooSoon()
   // per-user minimum gap between SMS sends (same 60 s as for mails)
   const slot = await pool.query(
     `update auth.users set phone_change_sent_at = now()
      where id = $1 and coalesce(phone_change_sent_at, '-infinity') <= now() - make_interval(secs => $2)`,
     [user.id, SMS_INTERVAL],
   )
-  if (!slot.rowCount)
-    throw authError(429, 'over_sms_send_rate_limit', `For security purposes, you can only request this after ${SMS_INTERVAL} seconds.`)
+  if (!slot.rowCount) throw tooSoon()
   const otp = String(randomInt(0, 1_000_000)).padStart(6, '0')
-  await storeToken(user.id, 'phone_change_token', sha256(phone + otp), phone)
   const body = JSON.stringify({ user: toUserJson(user), sms: { otp } })
   const id = `msg_${randomUUID()}`
   const ts = String(Math.floor(Date.now() / 1000))
@@ -43,7 +48,12 @@ export async function sendPhoneOtp(user: UserRow, phone: string): Promise<void> 
     signal: AbortSignal.timeout(10_000),
   }).catch(() => null)
   await res?.body?.cancel()
-  if (!res?.ok) throw failed()
+  if (!res?.ok) {
+    // nothing went out: give the slot back so the user can retry at once
+    await pool.query(`update auth.users set phone_change_sent_at = null where id = $1`, [user.id])
+    throw failed()
+  }
+  await storeToken(user.id, 'phone_change_token', sha256(phone + otp), phone)
 }
 
 router.post('/verify', async (c) => {
@@ -53,28 +63,34 @@ router.post('/verify', async (c) => {
   if (!config.authPhoneEnabled) throw phoneDisabled()
   const { phone, token } = body
   if (typeof phone !== 'string' || typeof token !== 'string') throw authError(400, 'validation_failed', 'phone and token are required')
+  // only the signed-in owner can spend the code's attempts: the token is looked up by the user, never by the number
+  const claims = c.get('claims')
+  if (!claims?.sub) throw authError(401, 'no_authorization', 'This endpoint requires a signed-in user')
+  if (!(await sessionActive(claims.session_id))) throw authError(403, 'session_not_found', 'Session from session_id claim in JWT does not exist')
+  const user = await findById(claims.sub)
+  if (!user) throw authError(403, 'user_not_found', 'User from sub claim in JWT does not exist')
+  if (isBanned(user)) throw authError(400, 'user_banned', 'User is banned')
   const invalid = () => authError(403, 'otp_expired', 'Token has expired or is invalid')
+  if (!user.phone_change || user.phone_change !== phone) throw invalid()
   // every guess counts (row lock serialises them), so a 6-digit code survives at most MAX_ATTEMPTS tries
   const hit = (await pool.query(
     `update auth.one_time_tokens set attempts = attempts + 1, updated_at = now()
-     where token_type = 'phone_change_token' and relates_to = $1
-     returning id, user_id, token_hash = $2 and attempts <= $3 and created_at > now() - make_interval(secs => $4) as ok`,
-    [phone, sha256(phone + token), MAX_ATTEMPTS, config.authOtpExpiry],
-  )).rows.find((r) => r.ok)
+     where user_id = $1 and token_type = 'phone_change_token'
+     returning id, relates_to = $2 and token_hash = $3 and attempts <= $4 and created_at > now() - make_interval(secs => $5) as ok`,
+    [user.id, phone, sha256(phone + token), MAX_ATTEMPTS, config.authOtpExpiry],
+  )).rows[0]
   // the delete decides between two concurrent correct guesses
-  if (!hit || !(await pool.query(`delete from auth.one_time_tokens where id = $1`, [hit.id])).rowCount) throw invalid()
+  if (!hit?.ok || !(await pool.query(`delete from auth.one_time_tokens where id = $1`, [hit.id])).rowCount) throw invalid()
   const applied = await pool.query(
     `update auth.users set phone = phone_change, phone_change = '', phone_confirmed_at = now(), updated_at = now()
      where id = $1 and phone_change = $2`,
-    [hit.user_id, phone],
+    [user.id, phone],
   ).catch((err) => {
     if (err.code === '23505') throw authError(422, 'phone_exists', 'Phone number already registered')
     throw err
   })
   if (!applied.rowCount) throw invalid()
-  const user = (await findById(hit.user_id))!
-  if (isBanned(user)) throw authError(400, 'user_banned', 'User is banned')
-  return c.json(await issueSession(user))
+  return c.json(await issueSession((await findById(user.id))!))
 })
 
 export default router

@@ -196,18 +196,59 @@ describe('email links', () => {
     await mails(e, 2)
   })
 
-  it('repeat signup of an unconfirmed email replaces the earlier password and data', async () => {
-    const e = email()
+  // contested unconfirmed account: nobody's password survives, the mailbox owner sets one after the link
+  const signupAs = (e: string, password: string, who: string) =>
+    call('POST', '/signup', { email: e, password, data: { who } })
+  const passwordOk = async (e: string, password: string) =>
+    (await call('POST', '/token?grant_type=password', { email: e, password })).status === 200
+  const hashOf = async (e: string) =>
+    (await pool.query('select encrypted_password from auth.users where email = $1', [e])).rows[0].encrypted_password
+  /** Waits for background work, then the owner opens the (only) confirmation link and gets a session. */
+  async function ownerConfirms(e: string) {
+    await sleep(300)
+    const res = await open(linkIn((await mails(e))[0].html))
+    expect(fragment(res).get('access_token')).toBeTruthy()
+    return fragment(res).get('type')
+  }
+
+  for (const [label, first, second] of [['attacker first', 'attacker', 'owner'], ['owner first', 'owner', 'attacker']]) {
+    it(`contested signup (${label}): no password survives, the link gives type=recovery`, async () => {
+      config.authConfirmEmail = true
+      const e = email()
+      const pw = { attacker: 'attacker-password', owner: 'owner-password' } as Record<string, string>
+      expect((await signupAs(e, pw[first], first)).status).toBe(200)
+      expect((await signupAs(e, pw[second], second)).status).toBe(200)
+      expect(await ownerConfirms(e)).toBe('recovery')
+      expect(await hashOf(e)).toBeNull()
+      expect(await passwordOk(e, pw.attacker)).toBe(false)
+      expect(await passwordOk(e, pw.owner)).toBe(false)
+      // metadata stays what the first signup stored
+      expect((await pool.query('select raw_user_meta_data from auth.users where email = $1', [e])).rows[0].raw_user_meta_data).toEqual({ who: first })
+    })
+  }
+
+  it('looping repeat signups inside the window send no more mail and keep the hash null', async () => {
     config.authConfirmEmail = true
-    await call('POST', '/signup', { email: e, password: 'attacker-password', data: { who: 'attacker' } })
+    const e = email()
+    await signupAs(e, 'owner-password', 'owner')
     await mails(e)
-    await pool.query(`update auth.users set confirmation_sent_at = now() - interval '61 seconds' where email = $1`, [e])
-    expect((await call('POST', '/signup', { email: e, password: PW, data: { who: 'owner' } })).status).toBe(200)
-    const link = linkIn((await mails(e, 2))[1].html)
-    expect(fragment(await open(link)).get('type')).toBe('signup')
-    expect((await call('POST', '/token?grant_type=password', { email: e, password: 'attacker-password' })).status).toBe(400)
-    expect((await call('POST', '/token?grant_type=password', { email: e, password: PW })).status).toBe(200)
-    expect((await pool.query('select raw_user_meta_data from auth.users where email = $1', [e])).rows[0].raw_user_meta_data).toEqual({ who: 'owner' })
+    for (let i = 0; i < 5; i++) expect((await signupAs(e, `attacker-${i}-password`, 'attacker')).status).toBe(200)
+    await sleep(300)
+    expect(await mailCount(e)).toBe(1)
+    expect(await hashOf(e)).toBeNull()
+  })
+
+  it('a double submit with the same password changes nothing and the link gives type=signup', async () => {
+    config.authConfirmEmail = true
+    const e = email()
+    await signupAs(e, PW, 'owner')
+    await mails(e)
+    const before = await hashOf(e)
+    await signupAs(e, PW, 'owner')
+    await sleep(300)
+    expect(await hashOf(e)).toBe(before)
+    expect(await ownerConfirms(e)).toBe('signup')
+    expect(await passwordOk(e, PW)).toBe(true)
   })
 
   it('magic link and recovery on an unconfirmed user drop the unproven password; signup link keeps it', async () => {
@@ -301,6 +342,7 @@ let fakeUrl: string
 let lastTokenRequest: URLSearchParams | null = null
 let googleUser: Record<string, unknown> = {}
 let tokenStatus = 200
+let hookStatus = 200
 const readAll = async (req: IncomingMessage) => {
   let s = ''
   for await (const chunk of req) s += chunk
@@ -320,7 +362,8 @@ beforeAll(async () => {
       res.statusCode = req.headers.authorization === 'Bearer fake-google-access' ? 200 : 401
       res.end(JSON.stringify(googleUser))
     } else if (req.url === '/send-phone-otp-hook') {
-      hookCalls.push({ headers: req.headers, body })
+      if (hookStatus === 200) hookCalls.push({ headers: req.headers, body })
+      res.statusCode = hookStatus
       res.end('{}')
     } else {
       res.statusCode = 404
@@ -508,7 +551,10 @@ describe('google oauth', () => {
     for (const s of [null, '', 'garbage', `${h}.${evil}.${state.split('.')[2]}`, expired, otherKey, unsigned, anonKey]) {
       const res = await callback(s === null ? 'code=x' : `code=x&state=${encodeURIComponent(s)}`)
       expect(res.status, String(s)).toBe(400)
-      expect(await res.text()).not.toContain(GOOGLE_SECRET)
+      expect(res.headers.get('set-cookie'), String(s)).toMatch(/^sb-oauth-nonce=;.*Max-Age=0/) // nonce cleared
+      const text = await res.text()
+      expect(JSON.parse(text)).toMatchObject({ code: 400, error_code: 'bad_oauth_state' })
+      expect(text).not.toContain(GOOGLE_SECRET)
     }
   })
 
@@ -541,9 +587,24 @@ describe('phone', () => {
     expect(await v.json()).toMatchObject({ error_code: 'phone_provider_disabled' })
   })
 
+  const enablePhone = () => Object.assign(config, { authPhoneEnabled: true, fnUrl: fakeUrl,
+    authSmsHookSecret: `v1,whsec_${Buffer.from('test-hook-secret-bytes').toString('base64')}` })
+  /** PUT /user {phone}; returns the OTP the hook received. */
+  async function requestOtp(jwt: string, p: string) {
+    hookCalls.length = 0
+    const res = await call('PUT', '/user', { phone: p }, jwt)
+    expect(res.status).toBe(200)
+    return JSON.parse(hookCalls[0].body).sms.otp as string
+  }
+  const guess = (jwt: string, p: string, token: string) => call('POST', '/verify', { type: 'phone_change', phone: p, token }, jwt)
+  const wrongFor = (otp: string) => (otp === '000000' ? '111111' : '000000')
+  const allowResend = (id: string) => pool.query(`update auth.users set phone_change_sent_at = now() - interval '61 seconds' where id = $1`, [id])
+  const attemptsOf = async (id: string) =>
+    (await pool.query(`select attempts from auth.one_time_tokens where user_id = $1 and token_type = 'phone_change_token'`, [id])).rows[0]?.attempts
+
   it('when enabled: signed hook gets a 6-digit OTP, /verify phone_change sets phone and phone_confirmed_at', async () => {
     const secret = Buffer.from('test-hook-secret-bytes').toString('base64')
-    Object.assign(config, { authPhoneEnabled: true, fnUrl: fakeUrl, authSmsHookSecret: `v1,whsec_${secret}` })
+    enablePhone()
     const s = await session()
     const p = phone()
     hookCalls.length = 0
@@ -557,11 +618,11 @@ describe('phone', () => {
     expect(payload.user.id).toBe(s.user.id)
     expect(payload.sms.otp).toMatch(/^\d{6}$/)
 
-    const wrong = await call('POST', '/verify', { type: 'phone_change', phone: p, token: payload.sms.otp === '000000' ? '111111' : '000000' })
+    const wrong = await guess(s.access_token, p, wrongFor(payload.sms.otp))
     expect(wrong.status).toBe(403)
     expect(await wrong.json()).toMatchObject({ error_code: 'otp_expired' })
 
-    const ok = await call('POST', '/verify', { type: 'phone_change', phone: p, token: payload.sms.otp })
+    const ok = await guess(s.access_token, p, payload.sms.otp)
     expect(ok.status).toBe(200)
     const sess = await ok.json()
     expect((await verify(sess.access_token)).sub).toBe(s.user.id)
@@ -569,35 +630,37 @@ describe('phone', () => {
     expect(row.phone).toBe(p)
     expect(row.phone_confirmed_at).toBeTruthy()
     expect(row.phone_change).toBe('')
-    expect((await call('POST', '/verify', { type: 'phone_change', phone: p, token: payload.sms.otp })).status).toBe(403)
+    expect((await guess(s.access_token, p, payload.sms.otp)).status).toBe(403)
   })
 
-  const enablePhone = () => Object.assign(config, { authPhoneEnabled: true, fnUrl: fakeUrl,
-    authSmsHookSecret: `v1,whsec_${Buffer.from('test-hook-secret-bytes').toString('base64')}` })
-  /** PUT /user {phone}; returns the OTP the hook received. */
-  async function requestOtp(token: string, p: string) {
-    hookCalls.length = 0
-    const res = await call('PUT', '/user', { phone: p }, token)
-    expect(res.status).toBe(200)
-    return JSON.parse(hookCalls[0].body).sms.otp as string
-  }
-  const guess = (p: string, token: string) => call('POST', '/verify', { type: 'phone_change', phone: p, token })
-  const wrongFor = (otp: string) => (otp === '000000' ? '111111' : '000000')
-  const allowResend = (id: string) => pool.query(`update auth.users set phone_change_sent_at = now() - interval '61 seconds' where id = $1`, [id])
+  it('verify needs the signed-in owner: anonymous is 401, another user cannot spend the attempts', async () => {
+    enablePhone()
+    const victim = await session()
+    const p = phone()
+    const otp = await requestOtp(victim.access_token, p)
+    const anon = await guess(anonKey, p, wrongFor(otp))
+    expect(anon.status).toBe(401)
+    expect((await call('POST', '/verify', { type: 'phone_change', phone: p, token: otp }, 'x')).status).toBe(401) // bad JWT
+    const attacker = await session()
+    for (let i = 0; i < 6; i++) expect((await guess(attacker.access_token, p, wrongFor(otp))).status).toBe(403)
+    expect((await guess(attacker.access_token, p, otp)).status).toBe(403)
+    expect(await attemptsOf(victim.user.id)).toBe(0)
+    expect((await guess(victim.access_token, p, otp)).status).toBe(200)
+  })
 
   it('a code dies after 5 guesses: the 6th fails even when right; 4 wrong + right succeeds', async () => {
     enablePhone()
     const s = await session()
     const p = phone()
     const otp = await requestOtp(s.access_token, p)
-    for (let i = 0; i < 5; i++) expect((await guess(p, wrongFor(otp))).status).toBe(403)
-    expect((await guess(p, otp)).status).toBe(403)
+    for (let i = 0; i < 5; i++) expect((await guess(s.access_token, p, wrongFor(otp))).status).toBe(403)
+    expect((await guess(s.access_token, p, otp)).status).toBe(403)
 
     const s2 = await session()
     const p2 = phone()
     const otp2 = await requestOtp(s2.access_token, p2)
-    for (let i = 0; i < 4; i++) expect((await guess(p2, wrongFor(otp2))).status).toBe(403)
-    expect((await guess(p2, otp2)).status).toBe(200)
+    for (let i = 0; i < 4; i++) expect((await guess(s2.access_token, p2, wrongFor(otp2))).status).toBe(403)
+    expect((await guess(s2.access_token, p2, otp2)).status).toBe(200)
   })
 
   it('reissuing a code does not reset the guess count', async () => {
@@ -605,14 +668,15 @@ describe('phone', () => {
     const s = await session()
     const p = phone()
     const first = await requestOtp(s.access_token, p)
-    for (let i = 0; i < 3; i++) expect((await guess(p, wrongFor(first))).status).toBe(403)
+    for (let i = 0; i < 3; i++) expect((await guess(s.access_token, p, wrongFor(first))).status).toBe(403)
     await allowResend(s.user.id)
+    await pool.query(`update auth.one_time_tokens set created_at = now() - interval '61 seconds' where user_id = $1`, [s.user.id])
     const second = await requestOtp(s.access_token, p)
-    for (let i = 0; i < 2; i++) expect((await guess(p, wrongFor(second))).status).toBe(403)
-    expect((await guess(p, second)).status).toBe(403)
+    for (let i = 0; i < 2; i++) expect((await guess(s.access_token, p, wrongFor(second))).status).toBe(403)
+    expect((await guess(s.access_token, p, second)).status).toBe(403)
   })
 
-  it('SMS sends are 60 s apart per user: 429 over_sms_send_rate_limit and nothing recorded', async () => {
+  it('SMS sends are 60 s apart per user: 429 over_sms_send_rate_limit', async () => {
     enablePhone()
     const s = await session()
     await requestOtp(s.access_token, phone())
@@ -622,9 +686,41 @@ describe('phone', () => {
     expect(res.status).toBe(429)
     expect(await res.json()).toMatchObject({ code: 429, error_code: 'over_sms_send_rate_limit' })
     expect(hookCalls).toHaveLength(0)
-    expect((await pool.query('select phone_change from auth.users where id = $1', [s.user.id])).rows[0].phone_change).not.toBe(other)
     await allowResend(s.user.id)
     expect((await requestOtp(s.access_token, other))).toMatch(/^\d{6}$/)
+  })
+
+  it('one number gets one SMS per 60 s, whichever account asks', async () => {
+    enablePhone()
+    const a = await session()
+    const b = await session()
+    const p = phone()
+    await requestOtp(a.access_token, p)
+    hookCalls.length = 0
+    const res = await call('PUT', '/user', { phone: p }, b.access_token)
+    expect(res.status).toBe(429)
+    expect(await res.json()).toMatchObject({ error_code: 'over_sms_send_rate_limit' })
+    expect(hookCalls).toHaveLength(0)
+    await pool.query(`update auth.one_time_tokens set created_at = now() - interval '61 seconds' where user_id = $1`, [a.user.id])
+    expect(await requestOtp(b.access_token, p)).toMatch(/^\d{6}$/)
+  })
+
+  it('a failed hook call gives the slot back, so the user can retry at once', async () => {
+    enablePhone()
+    const s = await session()
+    const p = phone()
+    hookStatus = 500
+    try {
+      const res = await call('PUT', '/user', { phone: p }, s.access_token)
+      expect(res.status).toBe(500)
+      expect(await res.json()).toMatchObject({ error_code: 'unexpected_failure' })
+    } finally {
+      hookStatus = 200
+    }
+    // the change was recorded before the send; the retry sends at once and the code verifies
+    expect((await pool.query('select phone_change from auth.users where id = $1', [s.user.id])).rows[0].phone_change).toBe(p)
+    const otp = await requestOtp(s.access_token, p)
+    expect((await guess(s.access_token, p, otp)).status).toBe(200)
   })
 
   it('an empty AUTH_SMS_HOOK_SECRET refuses to send (500, generic error)', async () => {

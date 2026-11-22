@@ -79,7 +79,9 @@ router.get('/verify', async (c) => {
   if (!row?.fresh || !(await applyVerification(kind, row.user_id, row.relates_to))) return expired()
   const user = (await findById(row.user_id))!
   if (isBanned(user)) return fail('user_banned', 'User is banned')
-  return c.redirect(withFragment(target, { ...sessionParams(await issueSession(user)), type: kind }), 302)
+  // a contested signup lost its password (repeat signup): type=recovery makes the client let the owner set one
+  const passwordless = kind === 'signup' && !user.encrypted_password && (user.identities ?? []).every((i) => i.provider === 'email')
+  return c.redirect(withFragment(target, { ...sessionParams(await issueSession(user)), type: passwordless ? 'recovery' : kind }), 302)
 })
 
 export default router
