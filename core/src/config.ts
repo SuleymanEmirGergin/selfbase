@@ -21,7 +21,7 @@ export const config = {
   authRedirectAllowlist: list(env.AUTH_REDIRECT_ALLOWLIST),
   authConfirmEmail: bool(env.AUTH_CONFIRM_EMAIL, true),
   authPhoneEnabled: bool(env.AUTH_PHONE_ENABLED, false),
-  authMinPassword: Number(env.AUTH_MIN_PASSWORD || 8),
+  authMinPassword: Number(env.AUTH_MIN_PASSWORD || 6),
   smtp: {
     host: env.SMTP_HOST || '',
     port: Number(env.SMTP_PORT || 587),
