@@ -1,11 +1,13 @@
 [
   {
+    "id": "5b2d3c4e-0000-4000-8000-0000000000f1",
     "user_id": "4f1c2a9e-0000-4000-8000-000000000001",
     "email": "owner@example.test",
     "role": "owner",
     "project_ref": null
   },
   {
+    "id": "5b2d3c4e-0000-4000-8000-0000000000f2",
     "user_id": "4f1c2a9e-0000-4000-8000-000000000002",
     "email": "dev@example.test",
     "role": "developer",

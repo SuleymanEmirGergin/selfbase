@@ -84,6 +84,12 @@ describe('control schema', () => {
     await migrate()
     await migrate()
     expect((await pool.query(`select count(*)::int as n from control.nodes`)).rows[0].n).toBe(1)
-    expect((await pool.query(`select version from control.migrations`)).rows).toEqual([{ version: '0001' }])
+    expect((await pool.query(`select version from control.migrations order by version`)).rows).toEqual([{ version: '0001' }, { version: '0002' }])
+  })
+
+  test('0002 and later are safe to run again by hand', async () => {
+    const { readdirSync, readFileSync } = await import('node:fs')
+    for (const f of readdirSync(config.controlMigrationsDir).filter((f) => f.endsWith('.sql') && f > '0002'))
+      await pool.query(readFileSync(`${config.controlMigrationsDir}/${f}`, 'utf8'))
   })
 })

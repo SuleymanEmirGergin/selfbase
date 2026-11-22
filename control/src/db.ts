@@ -1,17 +1,8 @@
 // control-db: the pool, and the schema control applies at start. Import this before any selfbase-core module.
 import pg from 'pg'
 import { config } from './config.ts'
+import './core-env.ts'
 
-// core's modules read their settings from process.env when they load; point them at control-db first
-Object.assign(process.env, {
-  DB_HOST: config.dbHost,
-  DB_PORT: String(config.dbPort),
-  POSTGRES_PASSWORD: config.dbPassword,
-  JWT_SECRET: config.jwtSecret,
-  PUBLIC_URL: config.publicUrl,
-  SITE_URL: config.publicUrl,
-  AUTH_DISABLE_SIGNUP: 'true',
-})
 // dynamic so it can never be hoisted above the assignment
 const { applyMigrations } = await import('selfbase-core/src/platform/migrate.ts')
 
@@ -49,4 +40,6 @@ export async function migrate(): Promise<void> {
 /** Closes the pool (tests, shutdown). Safe to call twice. */
 export async function closeDb(): Promise<void> {
   if (!pool.ended) await pool.end()
+  // core's own pools (core.ts), opened lazily against the same database
+  await (await import('./core.ts')).closeCoreDb()
 }
