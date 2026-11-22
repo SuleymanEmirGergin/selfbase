@@ -48,6 +48,9 @@ export const background = (p: Promise<unknown>) => void p.catch(logFailure)
 
 let transport: Transporter | undefined
 let warned = false
+/** nodemailer options: implicit TLS on 465; elsewhere STARTTLS is required, so a stripped upgrade never sends SMTP_PASS in clear. */
+export const smtpOptions = ({ host, port, user, pass }: typeof config.smtp) =>
+  ({ host, port, secure: port === 465, requireTLS: port !== 465, auth: user ? { user, pass } : undefined })
 async function deliver(to: string, subject: string, html: string): Promise<void> {
   if (!config.smtp.host) {
     if (!warned) console.warn('SMTP_HOST is empty: auth mails are written to selfbase.mail_log and not delivered')
@@ -55,9 +58,8 @@ async function deliver(to: string, subject: string, html: string): Promise<void>
     await pool.query(`insert into selfbase.mail_log (to_email, subject, html) values ($1, $2, $3)`, [to, subject, html])
     return
   }
-  const { host, port, user, pass, from } = config.smtp
-  transport ??= nodemailer.createTransport({ host, port, secure: port === 465, auth: user ? { user, pass } : undefined })
-  await transport.sendMail({ from, to, subject, html })
+  transport ??= nodemailer.createTransport(smtpOptions(config.smtp))
+  await transport.sendMail({ from: config.smtp.from, to, subject, html })
 }
 
 /**
@@ -65,22 +67,44 @@ async function deliver(to: string, subject: string, html: string): Promise<void>
  * the mail in the background. False when the slot was taken (inside the interval): nothing is sent.
  */
 async function sendLink(user: UserRow, kind: MailKind, redirectTo: string | undefined, to: string): Promise<boolean> {
-  const slot = await pool.query(
-    `update auth.users set ${SENT_AT[kind]} = now() where id = $1
-       and coalesce(greatest(confirmation_sent_at, recovery_sent_at, email_change_sent_at), '-infinity') <= now() - make_interval(secs => $2)`,
-    [user.id, config.authEmailInterval],
-  )
-  if (!slot.rowCount) return false
-  const token = randomBytes(32).toString('base64url')
-  await storeToken(user.id, TOKEN_TYPES[kind], sha256(token), to)
-  const q = new URLSearchParams({ token, type: kind, redirect_to: safeRedirect(redirectTo) })
-  const { subject, html } = render(kind, { ConfirmationURL: `${config.publicUrl}/auth/v1/verify?${q}`, Email: to, SiteURL: config.siteUrl })
-  background(deliver(to, subject, html))
+  if (!(await takeSlot(user, kind))) return false
+  await mailLink(user, kind, TOKEN_TYPES[kind], redirectTo, to, to)
   return true
+}
+
+const takeSlot = async (user: UserRow, kind: MailKind) => !!(await pool.query(
+  `update auth.users set ${SENT_AT[kind]} = now() where id = $1
+     and coalesce(greatest(confirmation_sent_at, recovery_sent_at, email_change_sent_at), '-infinity') <= now() - make_interval(secs => $2)`,
+  [user.id, config.authEmailInterval],
+)).rowCount
+
+/** Stores a fresh link token of tokenType (relating to relatesTo) and mails the link to `to` in the background. */
+async function mailLink(user: UserRow, kind: MailKind, tokenType: string, redirectTo: string | undefined, relatesTo: string, to: string) {
+  const token = randomBytes(32).toString('base64url')
+  await storeToken(user.id, tokenType, sha256(token), relatesTo)
+  const q = new URLSearchParams({ token, type: kind, redirect_to: safeRedirect(redirectTo) })
+  // Email is the address the link is about: for an email change, the new address in both mails
+  const { subject, html } = render(kind, { ConfirmationURL: `${config.publicUrl}/auth/v1/verify?${q}`, Email: relatesTo, SiteURL: config.siteUrl })
+  background(deliver(to, subject, html))
 }
 
 export const sendConfirmation = (user: UserRow, redirectTo?: string) => sendLink(user, 'signup', redirectTo, user.email!)
 export const sendRecovery = (user: UserRow, redirectTo?: string) => sendLink(user, 'recovery', redirectTo, user.email!)
 export const sendMagicLink = (user: UserRow, redirectTo?: string) => sendLink(user, 'magiclink', redirectTo, user.email!)
-// shortcut: single confirmation to the new address only (no "secure email change" mail to the old one); add it if the old address must approve
-export const sendEmailChange = (user: UserRow, newEmail: string) => sendLink(user, 'email_change', undefined, newEmail)
+
+/**
+ * Email change link to the new address and, with AUTH_SECURE_EMAIL_CHANGE (GoTrue's secure email change), a second
+ * one to the current address; GET /verify applies the change once every link sent has been used. Both tokens are
+ * replaced on each request, so a new request invalidates the previous links. False inside the mail interval.
+ */
+export async function sendEmailChange(user: UserRow, newEmail: string): Promise<boolean> {
+  if (!(await takeSlot(user, 'email_change'))) return false
+  const secure = config.authSecureEmailChange && !!user.email
+  if (!secure) await pool.query(`delete from auth.one_time_tokens where user_id = $1 and token_type = $2`, [user.id, CURRENT_EMAIL_TOKEN])
+  await pool.query(`update auth.users set email_change_confirm_status = 0 where id = $1`, [user.id])
+  await mailLink(user, 'email_change', TOKEN_TYPES.email_change, undefined, newEmail, newEmail)
+  if (secure) await mailLink(user, 'email_change', CURRENT_EMAIL_TOKEN, undefined, newEmail, user.email!)
+  return true
+}
+/** one_time_tokens type of the email change link sent to the current address (GoTrue's column name) */
+export const CURRENT_EMAIL_TOKEN = 'email_change_token_current'

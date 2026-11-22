@@ -101,6 +101,17 @@ describe('storage', () => {
     expect(got.headers.get('content-type')).toBe('text/html')
     expect(got.headers.get('x-content-type-options')).toBe('nosniff')
     expect(got.headers.get('content-security-policy')).toBe("default-src 'none'; sandbox")
+    expect(got.headers.get('content-disposition')).toBeNull()
+  })
+
+  it('serves application/pdf inline and nosniff but without the sandbox (PDF viewers refuse it)', async () => {
+    const name = fresh('cv.pdf')
+    expect((await upload(PUB, name, '%PDF-1.4', tokService, { 'content-type': 'application/pdf' })).status).toBe(200)
+    const got = await req(`/object/public/${PUB}/${name}`)
+    expect(got.headers.get('content-type')).toBe('application/pdf')
+    expect(got.headers.get('x-content-type-options')).toBe('nosniff')
+    expect(got.headers.get('content-disposition')).toBe('inline')
+    expect(got.headers.get('content-security-policy')).toBeNull()
   })
 
   it('serves byte ranges', async () => {

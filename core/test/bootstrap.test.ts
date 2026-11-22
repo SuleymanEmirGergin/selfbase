@@ -75,7 +75,8 @@ describe('bootstrap', () => {
   })
 
   it('GET /rest/v1/ is proxied to PostgREST', async () => {
-    const key = process.env.ANON_KEY!
+    // service key: the anonymous OpenAPI root takes longer than anon's 3 s statement timeout on this schema
+    const key = process.env.SERVICE_ROLE_KEY!
     const res = await app.request('/rest/v1/', { headers: { apikey: key, authorization: `Bearer ${key}` } })
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toMatch(/openapi|json/)

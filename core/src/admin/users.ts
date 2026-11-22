@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { pool } from '../db.ts'
-import { checkPassword, findById, hashPassword, toUserJson, withTx } from '../auth/users.ts'
+import { checkPassword, findById, hashPassword, SELECT_USER, toUserJson, withTx } from '../auth/users.ts'
 import type { UserRow } from '../auth/users.ts'
 import { adminError, audit, readBody } from './ident.ts'
 
@@ -20,7 +20,8 @@ router.get('/users', async (c) => {
   const like = '%' + search.replace(/[\\%_]/g, '\\$&') + '%'
   const where = `where ($1 = '' or u.email ilike $2 or u.id::text = $1)`
   const [page, count] = await Promise.all([
-    pool.query(`select u.* from auth.users u ${where} order by u.created_at desc, u.id limit $3 offset $4`, [search, like, limit, offset]),
+    // with identities, so the panel's provider column shows google etc.
+    pool.query(`${SELECT_USER} ${where} order by u.created_at desc, u.id limit $3 offset $4`, [search, like, limit, offset]),
     pool.query(`select count(*)::int as n from auth.users u ${where}`, [search, like]),
   ])
   return c.json({ users: page.rows.map(userJson), total: count.rows[0].n })

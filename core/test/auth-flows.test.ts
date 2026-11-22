@@ -222,10 +222,47 @@ describe('email links', () => {
       expect(await hashOf(e)).toBeNull()
       expect(await passwordOk(e, pw.attacker)).toBe(false)
       expect(await passwordOk(e, pw.owner)).toBe(false)
-      // metadata stays what the first signup stored
-      expect((await pool.query('select raw_user_meta_data from auth.users where email = $1', [e])).rows[0].raw_user_meta_data).toEqual({ who: first })
+      // metadata becomes the latest signup's (GoTrue), not what the first one stored
+      expect((await pool.query('select raw_user_meta_data from auth.users where email = $1', [e])).rows[0].raw_user_meta_data).toEqual({ who: second })
     })
   }
+
+  it('AUTH_SET_PASSWORD_URL: a contested signup lands there (allowlisted) with type=recovery; a normal one keeps redirect_to', async () => {
+    const saved = config.authSetPasswordUrl
+    config.authConfirmEmail = true
+    config.authSetPasswordUrl = 'http://localhost:5173/reset-password'
+    try {
+      const e = email()
+      const signupTo = (pw: string) => app.request(`/auth/v1/signup?redirect_to=${encodeURIComponent('http://localhost:5173/welcome')}`, {
+        method: 'POST', headers: { apikey: anonKey, 'content-type': 'application/json' }, body: JSON.stringify({ email: e, password: pw }),
+      })
+      await signupTo('first-password')
+      await signupTo('second-password')
+      await sleep(300)
+      const res = await open(linkIn((await mails(e))[0].html))
+      expect(res.headers.get('location')!.split('#')[0]).toBe('http://localhost:5173/reset-password')
+      expect(fragment(res).get('type')).toBe('recovery')
+
+      const plain = email()
+      const r = await app.request(`/auth/v1/signup?redirect_to=${encodeURIComponent('http://localhost:5173/welcome')}`, {
+        method: 'POST', headers: { apikey: anonKey, 'content-type': 'application/json' }, body: JSON.stringify({ email: plain, password: PW }),
+      })
+      expect(r.status).toBe(200)
+      const ok = await open(linkIn((await mails(plain))[0].html))
+      expect(ok.headers.get('location')!.split('#')[0]).toBe('http://localhost:5173/welcome')
+
+      // outside the allowlist it falls back to SITE_URL like any redirect
+      config.authSetPasswordUrl = 'https://evil.example.test/reset'
+      const e2 = email()
+      await signupAs(e2, 'first-password', 'a')
+      await signupAs(e2, 'second-password', 'b')
+      await sleep(300)
+      const bad = await open(linkIn((await mails(e2))[0].html))
+      expect(bad.headers.get('location')!.split('#')[0]).toBe(config.siteUrl)
+    } finally {
+      config.authSetPasswordUrl = saved
+    }
+  })
 
   it('looping repeat signups inside the window send no more mail and keep the hash null', async () => {
     config.authConfirmEmail = true
@@ -282,20 +319,78 @@ describe('email links', () => {
     expect(await mailCount(s.user.email)).toBe(0)
   })
 
-  it('PUT /user with a new email sends a link to the new address that applies the change', async () => {
-    const s = await session()
-    const next = email()
+  const emailOf = async (id: string) => (await pool.query('select email, email_change from auth.users where id = $1', [id])).rows[0]
+  /** PUT /user {email} and the two links: [to the new address, to the current one] */
+  async function requestChange(s: { access_token: string; user: { id: string; email: string } }, next: string, count = 1) {
     const res = await call('PUT', '/user', { email: next }, s.access_token)
     expect(res.status).toBe(200)
     expect((await res.json()).email).toBe(s.user.email)
-    const link = linkIn((await mails(next))[0].html)
-    expect(new URL(link).searchParams.get('type')).toBe('email_change')
-    const v = await open(link)
-    expect(fragment(v).get('type')).toBe('email_change')
-    const row = (await pool.query('select email, email_change from auth.users where id = $1', [s.user.id])).rows[0]
-    expect(row).toEqual({ email: next, email_change: '' })
-    const ident = (await pool.query(`select identity_data->>'email' as e from auth.identities where user_id = $1 and provider = 'email'`, [s.user.id])).rows[0]
-    expect(ident.e).toBe(next)
+    return [linkIn((await mails(next, count)).at(-1).html), linkIn((await mails(s.user.email, count)).at(-1).html)]
+  }
+
+  it('AUTH_SECURE_EMAIL_CHANGE=false: one link to the new address applies the change', async () => {
+    const saved = config.authSecureEmailChange
+    config.authSecureEmailChange = false
+    try {
+      const s = await session()
+      const next = email()
+      const res = await call('PUT', '/user', { email: next }, s.access_token)
+      expect(res.status).toBe(200)
+      expect((await res.json()).email).toBe(s.user.email)
+      const link = linkIn((await mails(next))[0].html)
+      expect(new URL(link).searchParams.get('type')).toBe('email_change')
+      await sleep(200)
+      expect(await mailCount(s.user.email)).toBe(0)
+      const v = await open(link)
+      expect(fragment(v).get('type')).toBe('email_change')
+      expect(await emailOf(s.user.id)).toEqual({ email: next, email_change: '' })
+      const ident = (await pool.query(`select identity_data->>'email' as e from auth.identities where user_id = $1 and provider = 'email'`, [s.user.id])).rows[0]
+      expect(ident.e).toBe(next)
+    } finally {
+      config.authSecureEmailChange = saved
+    }
+  })
+
+  for (const order of ['new first', 'current first']) {
+    it(`secure email change (${order}): applies only once both links are used`, async () => {
+      const s = await session()
+      const next = email()
+      const [toNew, toCurrent] = await requestChange(s, next)
+      const [first, second] = order === 'new first' ? [toNew, toCurrent] : [toCurrent, toNew]
+      const step = await open(first)
+      expect(fragment(step).get('access_token')).toBeNull()
+      expect(fragment(step).get('message')).toMatch(/other email/)
+      expect(await emailOf(s.user.id)).toEqual({ email: s.user.email, email_change: next })
+      expect(fragment(await open(first)).get('error_code')).toBe('otp_expired') // single use
+      const done = await open(second)
+      expect(fragment(done).get('type')).toBe('email_change')
+      expect(fragment(done).get('access_token')).toBeTruthy()
+      expect(await emailOf(s.user.id)).toEqual({ email: next, email_change: '' })
+    })
+  }
+
+  it('secure email change: one link alone, or with the other expired, changes nothing', async () => {
+    const s = await session()
+    const next = email()
+    const [toNew, toCurrent] = await requestChange(s, next)
+    await open(toNew)
+    expect(await emailOf(s.user.id)).toEqual({ email: s.user.email, email_change: next })
+    await pool.query(`update auth.one_time_tokens set created_at = now() - interval '2 hours' where user_id = $1`, [s.user.id])
+    expect(fragment(await open(toCurrent)).get('error_code')).toBe('otp_expired')
+    expect((await emailOf(s.user.id)).email).toBe(s.user.email)
+  })
+
+  it('secure email change: a new request invalidates both earlier links', async () => {
+    const s = await session()
+    const next = email()
+    const [oldNew, oldCurrent] = await requestChange(s, next)
+    await pool.query(`update auth.users set email_change_sent_at = now() - interval '61 seconds' where id = $1`, [s.user.id])
+    const [toNew, toCurrent] = await requestChange(s, next, 2)
+    expect(fragment(await open(oldNew)).get('error_code')).toBe('otp_expired')
+    expect(fragment(await open(oldCurrent)).get('error_code')).toBe('otp_expired')
+    await open(toCurrent)
+    await open(toNew)
+    expect(await emailOf(s.user.id)).toEqual({ email: next, email_change: '' })
   })
 })
 

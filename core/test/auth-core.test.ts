@@ -123,7 +123,11 @@ describe('auth core', () => {
     expect(res.status).toBe(200)
   })
 
-  it('refresh rotates to a new pair; reusing the old token is 400 and revokes the new one', async () => {
+  // rotation time of a revoked token, moved into the past (outside the reuse interval)
+  const age = (token: string, seconds: number) =>
+    pool.query(`update auth.refresh_tokens set updated_at = now() - make_interval(secs => $2) where token = $1`, [token, seconds])
+
+  it('refresh rotates to a new pair; reusing the old token after the reuse interval is 400 and revokes the new one', async () => {
     const s = await signUp()
     const r1 = await refresh(s.refresh_token)
     expect(r1.status).toBe(200)
@@ -132,11 +136,47 @@ describe('auth core', () => {
     expect(s2.access_token).toBeTruthy()
     expect((await verify(s2.access_token)).session_id).toBe((await verify(s.access_token)).session_id)
 
+    await age(s.refresh_token, 11)
     const reuse = await refresh(s.refresh_token)
     expect(reuse.status).toBe(400)
     expect(await reuse.json()).toMatchObject({ error_code: 'refresh_token_already_used' })
     const after = await refresh(s2.refresh_token)
     expect(after.status).toBe(400)
+  })
+
+  it('a retry inside the reuse interval gets the same new refresh token and the session survives', async () => {
+    const s = await signUp()
+    const s2 = await (await refresh(s.refresh_token)).json()
+    const retry = await refresh(s.refresh_token)
+    expect(retry.status).toBe(200)
+    const s3 = await retry.json()
+    expect(s3.refresh_token).toBe(s2.refresh_token)
+    expect((await verify(s3.access_token)).session_id).toBe((await verify(s2.access_token)).session_id)
+    expect((await call('GET', '/user', undefined, s3.access_token)).status).toBe(200)
+    expect((await refresh(s2.refresh_token)).status).toBe(200) // the child is still the live token
+  })
+
+  it('a token two generations old revokes the session even inside the reuse interval', async () => {
+    const s = await signUp()
+    const s2 = await (await refresh(s.refresh_token)).json()
+    const s3 = await (await refresh(s2.refresh_token)).json()
+    const reuse = await refresh(s.refresh_token)
+    expect(reuse.status).toBe(400)
+    expect(await reuse.json()).toMatchObject({ error_code: 'refresh_token_already_used' })
+    expect((await refresh(s3.refresh_token)).status).toBe(400)
+  })
+
+  it('AUTH_REFRESH_REUSE_INTERVAL=0 is the strict behaviour: any reuse revokes', async () => {
+    const saved = config.authRefreshReuseInterval
+    config.authRefreshReuseInterval = 0
+    try {
+      const s = await signUp()
+      const s2 = await (await refresh(s.refresh_token)).json()
+      expect((await refresh(s.refresh_token)).status).toBe(400)
+      expect((await refresh(s2.refresh_token)).status).toBe(400)
+    } finally {
+      config.authRefreshReuseInterval = saved
+    }
   })
 
   it('unknown refresh token is 400', async () => {
@@ -193,6 +233,13 @@ describe('auth core', () => {
     expect((await refresh(s.refresh_token)).status).toBe(400)
     expect((await call('GET', '/user', undefined, b.access_token)).status).toBe(200)
     expect((await refresh(b.refresh_token)).status).toBe(200)
+  })
+
+  it('a banned user can still log out: 204 and the session is revoked', async () => {
+    const s = await signUp()
+    await pool.query(`update auth.users set banned_until = now() + interval '1 day' where id = $1`, [s.user.id])
+    expect((await call('POST', '/logout', undefined, s.access_token)).status).toBe(204)
+    expect((await pool.query('select 1 from auth.refresh_tokens where user_id = $1 and not revoked', [s.user.id])).rowCount).toBe(0)
   })
 
   it('logout revokes the session: refresh fails and /user is 403', async () => {

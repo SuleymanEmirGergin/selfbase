@@ -29,14 +29,14 @@ export const checkEmail = (email: unknown): string => {
 }
 
 /** The signed-in user behind the bearer token, with a live session. */
-async function requireUser(c: Ctx) {
+async function requireUser(c: Ctx, { allowBanned = false } = {}) {
   const claims = c.get('claims')
   if (!claims) throw authError(401, 'no_authorization', 'This endpoint requires a Bearer token')
   if (!claims.sub) throw authError(403, 'bad_jwt', 'invalid claim: missing sub claim')
   if (!(await sessionActive(claims.session_id))) throw authError(403, 'session_not_found', 'Session from session_id claim in JWT does not exist')
   const user = await findById(claims.sub)
   if (!user) throw authError(403, 'user_not_found', 'User from sub claim in JWT does not exist')
-  if (isBanned(user)) throw authError(400, 'user_banned', 'User is banned')
+  if (isBanned(user) && !allowBanned) throw authError(400, 'user_banned', 'User is banned')
   return { user, claims }
 }
 
@@ -73,13 +73,14 @@ router.post('/signup', async (c) => {
   if (!user) {
     // GoTrue: with confirmation on, an obfuscated user so signup does not reveal registered emails;
     // a still unconfirmed address gets its confirmation mail again (rate limited). A different password means two
-    // people claim it: the account loses its password and the mailbox owner sets one after the link (type=recovery).
-    // The same password is a double submit and changes nothing.
+    // people claim it: the account loses its password and the mailbox owner sets one after the link (type=recovery),
+    // and the metadata becomes the latest sign-up's (GoTrue). The same password is a double submit and changes nothing.
     if (config.authConfirmEmail) {
       if (unconfirmed)
         background((samePassword ? Promise.resolve() : pool.query(
-          `update auth.users set encrypted_password = null, updated_at = now() where id = $1 and email_confirmed_at is null`,
-          [existing!.id],
+          `update auth.users set encrypted_password = null, raw_user_meta_data = $2, updated_at = now()
+            where id = $1 and email_confirmed_at is null`,
+          [existing!.id, data],
         )).then(() => sendConfirmation(existing!, redirectTo)))
       return c.json(fakeUser(email, data))
     }
@@ -167,7 +168,8 @@ router.put('/user', async (c) => {
 })
 
 router.post('/logout', async (c) => {
-  const { user, claims } = await requireUser(c)
+  // a banned user can still sign out (it only revokes)
+  const { user, claims } = await requireUser(c, { allowBanned: true })
   const scope = c.req.query('scope') ?? 'global'
   if (scope === 'local') await revokeSession(claims.session_id!)
   else if (scope === 'global' || scope === 'others')

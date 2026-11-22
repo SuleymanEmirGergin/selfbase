@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import type { PoolClient } from 'pg'
 import { pool } from '../db.ts'
+import { config } from '../config.ts'
 import { sign } from '../jwt.ts'
 import { authError, findById, toUserJson } from './users.ts'
 import type { UserJson, UserRow } from './users.ts'
@@ -52,17 +53,27 @@ export async function issueSession(user: UserRow): Promise<SessionJson> {
 
 /**
  * Exchanges a refresh token for a new pair in the same session. A token that was already rotated is
- * reuse (likely theft): the whole session is revoked and the call fails.
+ * reuse (likely theft): the whole session is revoked and the call fails. Exception (GoTrue's reuse interval): within
+ * AUTH_REFRESH_REUSE_INTERVAL seconds of its rotation, while its direct child is still the live token, the retry
+ * (lost response, two tabs) gets that same child back with a fresh access token.
  */
-// shortcut: no reuse grace window, so two tabs refreshing the same token at once end the session; add GoTrue's 10 s reuse interval if that bites
 export async function rotate(refreshToken: string): Promise<SessionJson> {
   const client = await pool.connect()
   let result: { user_id: string; session_id: string; token: string } | 'reused'
   try {
     await client.query('begin')
-    const old = (await client.query(`select * from auth.refresh_tokens where token = $1 for update`, [refreshToken])).rows[0]
+    const old = (await client.query(
+      `select *, updated_at > now() - make_interval(secs => $2) as recent from auth.refresh_tokens where token = $1 for update`,
+      [refreshToken, config.authRefreshReuseInterval],
+    )).rows[0]
     if (!old) throw authError(400, 'refresh_token_not_found', 'Invalid Refresh Token: Refresh Token Not Found')
-    if (old.revoked) {
+    // a live child has never been rotated itself (rotation revokes it), so this only ever reaches one generation back
+    const child = old.revoked && config.authRefreshReuseInterval > 0 && old.recent
+      ? (await client.query(`select token from auth.refresh_tokens where parent = $1 and not revoked`, [old.token])).rows[0]
+      : undefined
+    if (child) {
+      result = { user_id: old.user_id, session_id: old.session_id, token: child.token }
+    } else if (old.revoked) {
       await revokeIn(client, old.session_id)
       result = 'reused'
     } else {

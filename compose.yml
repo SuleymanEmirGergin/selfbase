@@ -18,7 +18,8 @@ services:
     restart: unless-stopped
     environment:
       PGRST_DB_URI: postgres://authenticator:${POSTGRES_PASSWORD}@db:5432/postgres
-      PGRST_DB_SCHEMAS: public,storage
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_MAX_ROWS: "1000"
       PGRST_DB_ANON_ROLE: anon
       PGRST_DB_EXTRA_SEARCH_PATH: public,extensions
       PGRST_JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
@@ -45,13 +46,18 @@ services:
       DB_HOST: db
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       JWT_SECRET: ${JWT_SECRET}
-      ANON_KEY: ${ANON_KEY}
-      SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
-      PUBLIC_URL: ${PUBLIC_URL}
+      PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL (public https origin of core)}
       TRUST_PROXY: ${TRUST_PROXY:-true}
-      SITE_URL: ${SITE_URL}
+      SITE_URL: ${SITE_URL:?set SITE_URL (the app origin)}
       AUTH_REDIRECT_ALLOWLIST: ${AUTH_REDIRECT_ALLOWLIST:-}
       AUTH_CONFIRM_EMAIL: ${AUTH_CONFIRM_EMAIL:-true}
+      AUTH_SECURE_EMAIL_CHANGE: ${AUTH_SECURE_EMAIL_CHANGE:-true}
+      AUTH_REFRESH_REUSE_INTERVAL: ${AUTH_REFRESH_REUSE_INTERVAL:-10}
+      AUTH_SET_PASSWORD_URL: ${AUTH_SET_PASSWORD_URL:-}
+      AUTH_RATE_LIMIT_SIGN_IN: ${AUTH_RATE_LIMIT_SIGN_IN:-30}
+      AUTH_RATE_LIMIT_VERIFY: ${AUTH_RATE_LIMIT_VERIFY:-30}
+      AUTH_RATE_LIMIT_REFRESH: ${AUTH_RATE_LIMIT_REFRESH:-150}
+      AUTH_RATE_LIMIT_EMAIL: ${AUTH_RATE_LIMIT_EMAIL:-30}
       AUTH_PHONE_ENABLED: ${AUTH_PHONE_ENABLED:-false}
       AUTH_MIN_PASSWORD: ${AUTH_MIN_PASSWORD:-6}
       AUTH_OTP_EXPIRY: ${AUTH_OTP_EXPIRY:-3600}
@@ -69,9 +75,8 @@ services:
       GOOGLE_USERINFO_URL: ${GOOGLE_USERINFO_URL:-https://openidconnect.googleapis.com/v1/userinfo}
       PANEL_ADMIN_EMAIL: ${PANEL_ADMIN_EMAIL:-}
       PANEL_ADMIN_PASSWORD_HASH: ${PANEL_ADMIN_PASSWORD_HASH:-}
-      STORAGE_DIR: ${STORAGE_DIR:-/data/storage}
+      STORAGE_DIR: /data/storage # fixed: it is the storage volume's mount point below
       STORAGE_MAX_UPLOAD_BYTES: ${STORAGE_MAX_UPLOAD_BYTES:-52428800}
-      FUNCTIONS_DIR: ${FUNCTIONS_DIR:-}
       PGRST_URL: ${PGRST_URL:-http://rest:3000}
       FN_URL: ${FN_URL:-http://fn:8000}
     volumes:

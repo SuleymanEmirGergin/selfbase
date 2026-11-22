@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import bcrypt from 'bcryptjs'
 import { Hono } from 'hono'
-import type { Context } from 'hono'
 import { createMiddleware } from 'hono/factory'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import { SignJWT, jwtVerify } from 'jose'
 import { config } from '../config.ts'
+import { clientIp } from '../ip.ts'
 import { adminError, readBody } from './ident.ts'
 
 // The panel session is NOT an API token: it carries {panel:true} and no role, so jwt.ts verify() rejects it,
@@ -18,18 +18,6 @@ const LOCK_MS = 15 * 60 * 1000
 const key = () => new TextEncoder().encode(config.jwtSecret)
 // compared against when the email is wrong or login is disabled, so timing reveals neither
 const DUMMY_HASH = bcrypt.hashSync(randomUUID(), 10)
-
-/**
- * Client IP: the socket address, or, when TRUST_PROXY=true, the RIGHTMOST X-Forwarded-For entry (the one our proxy
- * appended); entries to its left are client-supplied and spoofable.
- */
-function clientIp(c: Context): string {
-  if (process.env.TRUST_PROXY === 'true') {
-    const xff = c.req.header('x-forwarded-for')?.split(',').map((s) => s.trim()).filter(Boolean)
-    if (xff?.length) return xff[xff.length - 1]
-  }
-  return (c.env as any)?.incoming?.socket?.remoteAddress ?? 'unknown'
-}
 
 // shortcut: in-memory per-IP counter, correct only for a single core instance; move to the database when scaling out
 const fails = new Map<string, { count: number; resetAt: number }>()
@@ -46,10 +34,8 @@ const locked = (ip: string) => {
   return !!f && f.count >= MAX_FAILS
 }
 
-const isLocalHttp = (c: Context) => {
-  const u = new URL(c.req.url)
-  return u.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname)
-}
+// decided from PUBLIC_URL like the OAuth nonce cookie: behind a TLS proxy the request itself arrives as plain http
+const secure = () => new URL(config.publicUrl).protocol === 'https:'
 
 /** 403 for a POST/PATCH/DELETE whose Origin header is another site (the panel is same-origin). */
 export const sameOrigin = createMiddleware(async (c, next) => {
@@ -92,7 +78,7 @@ router.post('/login', async (c) => {
   const now = Math.floor(Date.now() / 1000)
   const token = await new SignJWT({ panel: true, email: config.panelAdminEmail, iat: now, exp: now + TTL })
     .setProtectedHeader({ alg: 'HS256', typ: 'JWT' }).sign(key())
-  setCookie(c, PANEL_COOKIE, token, { httpOnly: true, sameSite: 'Strict', path: '/admin', secure: !isLocalHttp(c), maxAge: TTL })
+  setCookie(c, PANEL_COOKIE, token, { httpOnly: true, sameSite: 'Strict', path: '/admin', secure: secure(), maxAge: TTL })
   return c.json({ email: config.panelAdminEmail })
 })
 
@@ -101,7 +87,7 @@ export const panelRoutes = new Hono<PanelEnv>()
 // shortcut: stateless cookie, so logout only clears it in this browser; a copied cookie stays valid until its 12 h expiry.
 // Rotate JWT_SECRET to kill all panel sessions, or add a server-side session table if that is not enough.
 panelRoutes.post('/logout', (c) => {
-  deleteCookie(c, PANEL_COOKIE, { path: '/admin', secure: !isLocalHttp(c), httpOnly: true, sameSite: 'Strict' })
+  deleteCookie(c, PANEL_COOKIE, { path: '/admin', secure: secure(), httpOnly: true, sameSite: 'Strict' })
   return c.json({})
 })
 

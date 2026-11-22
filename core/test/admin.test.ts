@@ -101,18 +101,25 @@ describe('panel session', () => {
     expect((await asCookie(cookie.split('=')[1] + 'x')).status).toBe(401)
   })
 
-  it('sets an HttpOnly SameSite=Strict cookie, Secure except on http localhost', async () => {
+  it('sets an HttpOnly SameSite=Strict cookie, Secure when PUBLIC_URL is https (not from the request host)', async () => {
     const local = (await login(ADMIN_EMAIL, ADMIN_PW)).headers.get('set-cookie')!
     expect(local).toMatch(/HttpOnly/)
     expect(local).toMatch(/SameSite=Strict/)
     expect(local).toMatch(/Path=\/admin/)
     expect(local).not.toMatch(/Secure/)
-    const remote = await app.request('http://panel.example.test/admin/login', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-forwarded-for': randomUUID() },
-      body: JSON.stringify({ email: ADMIN_EMAIL, password: ADMIN_PW }),
-    })
-    expect(remote.headers.get('set-cookie')).toMatch(/Secure/)
+    const saved = config.publicUrl
+    config.publicUrl = 'https://panel.example.test'
+    try {
+      // a TLS proxy forwarding to http://127.0.0.1:8080 still gets a Secure cookie
+      const behindProxy = await app.request('http://127.0.0.1:8080/admin/login', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-forwarded-for': randomUUID() },
+        body: JSON.stringify({ email: ADMIN_EMAIL, password: ADMIN_PW }),
+      })
+      expect(behindProxy.headers.get('set-cookie')).toMatch(/Secure/)
+    } finally {
+      config.publicUrl = saved
+    }
   })
 
   it('panel cookie is never a valid API token', async () => {
@@ -427,6 +434,12 @@ describe('users', () => {
     const { body } = await json(await call('GET', `/users?search=${encodeURIComponent(u.email)}&limit=10`))
     expect(body.total).toBe(1)
     expect(body.users[0]).toMatchObject({ id: u.id, email: u.email, banned_until: null })
+    // identities come along, so the panel's provider column is right for non-email users
+    expect(body.users[0].identities.map((i: { provider: string }) => i.provider)).toEqual(['email'])
+    await pool.query(`insert into auth.identities (provider_id, user_id, identity_data, provider) values ($1, $2, '{}', 'google')`,
+      [randomUUID(), u.id])
+    const again = await json(await call('GET', `/users?search=${encodeURIComponent(u.email)}&limit=10`))
+    expect(again.body.users[0].identities.map((i: { provider: string }) => i.provider).sort()).toEqual(['email', 'google'])
   })
 
   it('banning blocks sign-in and revokes sessions; unban restores', async () => {
