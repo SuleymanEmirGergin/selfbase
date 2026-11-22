@@ -1,2 +1,3 @@
-// Job workers (startWorkers) and reconcile; filled by a later task.
-export {}
+// Job engine and the job types control runs; importing this registers every job.
+export { defineJob, enqueue, startWorkers, type Job, type JobCtx, type Project } from './engine.ts'
+export { createProject, withAdmission } from './project.ts'

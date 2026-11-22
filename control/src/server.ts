@@ -1,14 +1,21 @@
 import type { Server } from 'node:http'
 import { serve } from '@hono/node-server'
 import { config } from './config.ts'
-import { closeDb, migrate } from './db.ts'
+import { closeDb, migrate, pool } from './db.ts'
 import { app } from './app.ts'
+import { startWorkers } from './jobs/index.ts'
+import { httpProvisioner } from './provisioner.ts'
+import { startReconcile } from './reconcile.ts'
 
 // Schema first; a failure names the migration file only (never SQL or secrets)
 await migrate().catch((e: Error) => {
   console.error(`startup: ${e.message}`)
   process.exit(1)
 })
+// jobs left running by the previous process resume at their recorded step
+const provisioner = httpProvisioner(config.provisionerUrl, config.provisionerToken)
+startWorkers({ db: pool, provisioner })
+startReconcile({ db: pool, provisioner })
 const server = serve({ fetch: app.fetch, port: config.port }, (info) => console.log(`selfbase-control listening on :${info.port}`))
 
 // Deploys send SIGTERM: stop taking requests, let the ones in flight finish, then close the pool.
