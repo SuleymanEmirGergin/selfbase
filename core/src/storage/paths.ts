@@ -15,6 +15,8 @@ export class StorageError extends Error {
 const badKey = () => new StorageError(400, 'InvalidKey', 'Invalid key')
 
 /** Disk path of an object: <STORAGE_DIR>/<bucket>/<name>. Throws InvalidKey for anything that could escape STORAGE_DIR. */
+// shortcut: assumes a case-sensitive filesystem without alternate data streams (Linux); on Windows/macOS hosts
+// distinct keys like `A`/`a` or `x:y` can alias one file. Map keys to safe file names before supporting such hosts.
 export function resolveObjectPath(bucket: string, name: string): string {
   for (const key of [bucket, name]) {
     if (!key || key.startsWith('/') || key.includes('\\') || key.includes('\0')) throw badKey()

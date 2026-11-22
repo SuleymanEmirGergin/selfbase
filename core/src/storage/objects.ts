@@ -60,7 +60,10 @@ export async function uploadObject(
           params,
         ), params[0])
     await mkdir(dirname(file), { recursive: true })
-    // write then rename so a failed upsert never leaves a half-written file in place
+    // write then rename so a failed upsert never leaves a half-written file in place.
+    // shortcut: the rename happens after the row write but before commit, so a failed commit can leave
+    // the new file without its row (or an upsert's old file replaced); add a reconciler if that shows up
+
     const tmp = `${file}.${randomUUID()}.tmp`
     try {
       await writeFile(tmp, data)
@@ -83,6 +86,7 @@ export async function readMeta(claims: JwtClaims | null, bucket: string, name: s
 }
 
 /** Object metadata bypassing RLS: only for public buckets and verified signed URLs. */
+// The bucket's public flag, or the RLS check done when the URL was signed, is the authorization (as in Supabase Storage).
 export async function readMetaUnchecked(bucket: string, name: string): Promise<Meta> {
   resolveObjectPath(bucket, name)
   const { rows } = await pool.query('select metadata from storage.objects where bucket_id = $1 and name = $2', [bucket, name])
@@ -103,8 +107,19 @@ function parseRange(header: string | undefined, size: number): { start: number; 
 export async function fileResponse(bucket: string, name: string, meta: Meta, range: string | undefined): Promise<Response> {
   const file = resolveObjectPath(bucket, name)
   const size = await stat(file).then((s) => s.size, () => { throw notFound() })
-  const headers = new Headers({ 'content-type': meta?.mimetype || 'application/octet-stream', 'accept-ranges': 'bytes' })
-  if (meta?.cacheControl) headers.set('cache-control', meta.cacheControl)
+  // objects share the panel's origin: never let a stored text/html run or be sniffed into script
+  const headers = new Headers({
+    'content-type': 'application/octet-stream',
+    'accept-ranges': 'bytes',
+    'x-content-type-options': 'nosniff',
+    'content-security-policy': "default-src 'none'; sandbox",
+  })
+  // stored metadata is not trusted to be a valid header value; a bad one is skipped, not thrown
+  const trySet = (k: string, v: unknown) => {
+    try { if (typeof v === 'string' && v) headers.set(k, v) } catch { /* keep default */ }
+  }
+  trySet('content-type', meta?.mimetype)
+  trySet('cache-control', meta?.cacheControl)
   const r = parseRange(range, size)
   if (r === 'invalid') return new Response(null, { status: 416, headers: { 'content-range': `bytes */${size}` } })
   const { start, end } = r ?? { start: 0, end: size - 1 }
@@ -114,14 +129,17 @@ export async function fileResponse(bucket: string, name: string, meta: Meta, ran
   return new Response(body, { status: r ? 206 : 200, headers })
 }
 
-/** Deletes the rows the caller may delete, then their files. */
+/** Deletes the rows the caller may delete, then (after commit) their files. */
 export async function removeObjects(claims: JwtClaims | null, bucket: string, names: string[]) {
   for (const n of names) resolveObjectPath(bucket, n)
-  return asUser(claims, async (c) => {
-    const { rows } = await c.query('delete from storage.objects where bucket_id = $1 and name = any($2) returning *', [bucket, names])
-    for (const row of rows) await rm(resolveObjectPath(bucket, row.name), { force: true })
-    return rows
-  })
+  const rows = await asUser(claims, async (c) =>
+    (await c.query('delete from storage.objects where bucket_id = $1 and name = any($2) returning *', [bucket, names])).rows)
+  // a failed unlink leaves an orphan file, never a row without its file
+  for (const row of rows) {
+    await rm(resolveObjectPath(bucket, row.name), { force: true })
+      .catch((err: NodeJS.ErrnoException) => console.error(`storage: unlink failed for ${bucket}/${row.name}: ${err.code}`))
+  }
+  return rows
 }
 
 /** One folder level under prefix, like Supabase's list: files with their row, sub-folders with id null. */
@@ -144,7 +162,8 @@ export async function listObjects(claims: JwtClaims | null, bucket: string, pref
                from storage.objects where bucket_id = $1 and name like $2) o
          order by split_part(rest, '/', 1), strpos(rest, '/') > 0
        ) t order by name, folder limit $4 offset $5`,
-      [bucket, like, dir.length + 1, limit, offset],
+      // Postgres substr counts code points, not UTF-16 units
+      [bucket, like, [...dir].length + 1, limit, offset],
     ))
   return rows
 }
