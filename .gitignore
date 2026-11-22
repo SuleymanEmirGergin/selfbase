@@ -11,3 +11,4 @@ dist/
 .test-functions/
 .env.*
 !.env.example
+.claude/
