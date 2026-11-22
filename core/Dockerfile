@@ -1,14 +1,14 @@
 # Build context is the repo root (compose.yml: context ., dockerfile core/Dockerfile)
 
 # Admin panel: static build, served by core at /panel/*
-FROM node:24-slim AS panel
+FROM node:24.22.2-slim AS panel
 WORKDIR /app/panel
 COPY panel/package.json panel/package-lock.json ./
 RUN npm ci
 COPY panel/ ./
 RUN npm run build
 
-FROM node:24-slim
+FROM node:24.22.2-slim
 
 ENV NODE_ENV=production
 WORKDIR /app/core

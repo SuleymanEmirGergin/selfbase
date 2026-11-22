@@ -1639,6 +1639,9 @@ export declare class RealtimeChannel {
     bindings: Binding[];
     protected statusCallback: SubscribeCallback | undefined;
     protected timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+    protected rejoinTimer: ReturnType<typeof setTimeout> | undefined;
+    protected rejoinTries: number;
+    protected joinTimeout: number;
     constructor(subTopic: string, socket: RealtimeClient);
     on<T extends {
         [key: string]: any;
@@ -1653,6 +1656,8 @@ export declare class RealtimeChannel {
         [key: string]: any;
     }>(type: "postgres_changes", filter: RealtimePostgresChangesFilter<"DELETE">, callback: (payload: RealtimePostgresDeletePayload<T>) => void): RealtimeChannel;
     subscribe(callback?: SubscribeCallback, timeout?: number): RealtimeChannel;
+    _join(): void;
+    protected scheduleRejoin(): void;
     unsubscribe(): Promise<RealtimeChannelSendResponse>;
     _resubscribeAll(): void;
     _onSubscribed(ref: string): void;
@@ -1667,6 +1672,7 @@ interface RealtimeClientOptions {
     transport?: typeof WebSocket;
     heartbeatIntervalMs?: number;
     reconnectAfterMs?: (tries: number) => number;
+    rejoinAfterMs?: (tries: number) => number;
 }
 export declare class RealtimeClient {
     endPoint: string;
@@ -1684,6 +1690,7 @@ export declare class RealtimeClient {
     protected pendingPong: boolean;
     constructor(endPoint: string, options: RealtimeClientOptions);
     makeRef(): string;
+    rejoinDelay(tries: number): number;
     channel(name: string, _opts?: unknown): RealtimeChannel;
     getChannels(): RealtimeChannel[];
     removeChannel(channel: RealtimeChannel): Promise<RealtimeRemoveChannelResponse>;

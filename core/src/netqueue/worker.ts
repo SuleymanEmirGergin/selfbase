@@ -25,6 +25,10 @@ export function rewriteUrl(url: string, bases: Bases = { fnUrl: config.fnUrl, co
 }
 
 type Row = { id: string; method: string; url: string; headers: unknown; body: unknown }
+
+/** Deletes finished rows (done, failed, blocked) older than 7 days; pending rows always stay. */
+export const pruneQueue = () =>
+  pool.query(`delete from selfbase.http_queue where status <> 'pending' and created_at < now() - interval '7 days'`)
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 /** Sends pending selfbase.http_queue rows on NOTIFY selfbase_http and on a periodic scan. */
@@ -113,11 +117,15 @@ export function startWorker(opts: NetQueueOptions = {}) {
 
   const listener = listen('selfbase_http', kick, kick)
   const timer = setInterval(kick, opts.scanMs ?? 30_000)
+  const prune = () => void pruneQueue().catch((err) => console.error('netqueue prune:', (err as Error).message))
+  const pruneTimer = setInterval(prune, 3600_000)
+  prune()
   return {
     ready: listener.ready,
     async stop() {
       stopped = true
       clearInterval(timer)
+      clearInterval(pruneTimer)
       await listener.stop()
       await running
     },

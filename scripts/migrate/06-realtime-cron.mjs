@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Re-creates what lived outside the dumped schemas, from 01's catalog files:
-//   - tables in the supabase_realtime publication -> selfbase.enable_realtime + the same publication
+//   - tables in the supabase_realtime publication -> selfbase.enable_realtime + the same publication; then
+//     every table already in the publication without the trigger gets it too (no id column: reported)
 //   - cron.job rows -> cron.schedule (same name, schedule, command). Registered INACTIVE unless
 //     --activate is given, so the source and selfbase never both run the pipelines: run once without
 //     the flag, and again with --activate at cutover (source jobs inactive keep inactive either way).
@@ -9,7 +10,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { connect, hostDbVar, loadEnv, requireEnv } from './05-rewrite-urls.mjs'
+import { connect, hostDbVar, loadEnv, REALTIME_FOLLOW, requireEnv } from './05-rewrite-urls.mjs'
 
 // From `grep "vault.decrypted_secrets where name ="` over corteqsemir's migrations. Both are shared
 // secrets the edge functions compare with their env var (value below); that env var wins here too,
@@ -46,6 +47,11 @@ for (const t of catalog('realtime_tables')) {
     console.error(`06: realtime ${t.schema}.${t.table}: ${e.message}`)
     failed++
   }
+}
+
+for (const { rel, what } of (await db.query(REALTIME_FOLLOW)).rows) {
+  if (what === 'enabled') console.log(`06: realtime ${rel} (already in the publication)`)
+  else console.warn(`06: WARNING: ${rel} is in the supabase_realtime publication but has no id column; no realtime for it`)
 }
 
 for (const j of catalog('cron_jobs')) {

@@ -88,5 +88,5 @@ echo "replay: baseline + $count migrations applied, $failed failed, in $(( $(dat
 [ "$failed" = 0 ]
 EOF
 } | MSYS_NO_PATHCONV=1 docker run --rm -i "${net[@]}" -e TARGET_DB_URL -e REPLAY_CONTINUE \
-      -e PGOPTIONS="-c client_min_messages=warning" -v "$src:/src:ro" postgres:17 bash -s
+      -e PGOPTIONS="-c client_min_messages=warning" -v "$src:/src:ro" postgres:17.12 bash -s
 # (MSYS_NO_PATHCONV keeps Git Bash on Windows from rewriting the container paths.)

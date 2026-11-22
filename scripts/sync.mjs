@@ -5,10 +5,14 @@
 //        mark as applied every file the source's history (supabase_migrations.schema_migrations, copied by
 //        02-restore) records; --baseline-all marks every file when that history is empty or matches none
 //   node scripts/sync.mjs --repo <path> --mark-applied <file> [...]     record one file as applied without running it
+//   node scripts/sync.mjs --repo <path> --from-empty [--dry-run]        first normal run on a database that really has
+//        none of these migrations; without it a run over an empty selfbase.applied_migrations is refused
+// After a run, every table in the supabase_realtime publication gets selfbase.enable_realtime (one
+// without an id column is reported, not fatal).
 // Identity of a migration is its file name, recorded in selfbase.applied_migrations (created here) with a
 // sha256 of the file. Each file runs in ONE explicit transaction (its own BEGIN ... COMMIT wrapper, or
 // one sync adds) together with its record and its version in supabase_migrations.schema_migrations, as
-// postgres through psql in postgres:17 with the file on stdin; the first failure stops the run (exit 1).
+// postgres through psql in postgres:17.12 with the file on stdin; the first failure stops the run (exit 1).
 // A file psql could run differently from how it is scanned here (meta-commands other than \echo,
 // \qecho, \warn, \encoding and `\set ON_ERROR_STOP on`, psql variables), with transaction control
 // beyond one wrapper, or with a statement that cannot run in a transaction, is refused before any of it runs.
@@ -29,7 +33,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { lstatSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { loadEnv, refuseSupabaseTarget, requireEnv } from './migrate/05-rewrite-urls.mjs'
+import { loadEnv, REALTIME_FOLLOW, refuseSupabaseTarget, requireEnv } from './migrate/05-rewrite-urls.mjs'
 
 const lib = fileURLToPath(new URL('./migrate/lib.sh', import.meta.url)).replace(/\\/g, '/')
 export const LOCK_KEY = 7213013 // pg_advisory_lock key held for a whole sync run
@@ -188,7 +192,7 @@ export function scan(sql) {
 const lit = (s) => `'${s.replace(/'/g, "''")}'`
 const VERSION = /^(\d{14})_(.*)\.sql$/
 
-// psql in postgres:17 via lib.sh's container_run: the script and data go on stdin, the URL is split
+// psql in postgres:17.12 via lib.sh's container_run: the script and data go on stdin, the URL is split
 // into PG* variables inside the container (password in PGPASSWORD), both output streams are redacted.
 const net = () => (process.env.DOCKER_NETWORK ? ['--network', process.env.DOCKER_NETWORK] : [])
 const bashEnv = () => ({ ...process.env, MSYS_NO_PATHCONV: '1', PGOPTIONS: '-c client_min_messages=warning' })
@@ -252,12 +256,13 @@ async function main() {
   const [repo] = values('--repo')
   const toMark = values('--mark-applied')
   if (!repo || repo.startsWith('--') || toMark.some((v) => !v || v.startsWith('--'))) {
-    console.error('usage: sync.mjs --repo <app repo> [--baseline | --baseline-all | --mark-applied <file> ...] [--dry-run]')
+    console.error('usage: sync.mjs --repo <app repo> [--baseline | --baseline-all | --from-empty | --mark-applied <file> ...] [--dry-run]')
     process.exit(2)
   }
   const dryRun = flag('--dry-run')
   const baselineAll = flag('--baseline-all')
   const baseline = baselineAll || flag('--baseline')
+  const fromEmpty = flag('--from-empty')
   loadEnv()
   const [url] = requireEnv('TARGET_DB_URL')
   refuseSupabaseTarget(url)
@@ -360,6 +365,12 @@ select 'V', version, coalesce(name, '') from supabase_migrations.schema_migratio
     console.error('sync: selfbase.applied_migrations is empty but the source history is not: run --baseline first')
     process.exit(2)
   }
+  if (!applied.size && pending.length && !fromEmpty) {
+    console.error('sync: selfbase.applied_migrations is empty, so no sync has recorded anything here yet. After a migration ' +
+      'from Supabase run --baseline (or --baseline-all) first; only if this database really has none of these ' +
+      'migrations, run again with --from-empty (nothing applied)')
+    process.exit(2)
+  }
   // Files sharing a version the source recorded, none marked yet and none named by the history: one of
   // them ran on the source, so applying any could repeat it.
   const unresolved = pending.filter((f) => history.has(f.version) && sameVersion(f).length > 1 &&
@@ -378,7 +389,7 @@ select 'V', version, coalesce(name, '') from supabase_migrations.schema_migratio
     }
     return
   }
-  if (!pending.length) { console.log('sync: nothing to apply'); lock.stdin.end(); return }
+  if (!pending.length) { console.log('sync: nothing to apply'); followRealtime(); lock.stdin.end(); return }
 
   let done = 0
   const stop = (msg) => {
@@ -447,8 +458,16 @@ delete from selfbase.sync_inflight where name = ${lit(f.name)};`)
   }
   reload(done)
   console.log(`sync: ${done} migrations applied`)
-  console.log('sync: new tables that need realtime: select selfbase.enable_realtime(\'<schema>.<table>\');')
+  followRealtime()
   lock.stdin.end()
+}
+
+// Realtime follows the publication: a migration's ALTER PUBLICATION supabase_realtime ADD TABLE is enough.
+function followRealtime() {
+  for (const [rel, what] of query(REALTIME_FOLLOW)) {
+    if (what === 'enabled') console.log(`sync: realtime enabled for ${rel}`)
+    else console.error(`sync: WARNING: ${rel} is in the supabase_realtime publication but has no id column; no realtime for it`)
+  }
 }
 
 function reload(done) {

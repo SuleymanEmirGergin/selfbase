@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs inside the compose `backup` service (postgres:17; PG* env points at db, the storage volume is
+# Runs inside the compose `backup` service (postgres:17.12; PG* env points at db, the storage volume is
 # mounted read-only at /data/storage, BACKUP_DIR or the backups volume at /backups).
 #   docker compose run --rm backup /scripts/backup.sh     one backup now
 #   backup.sh --daily                                     the service's command: one backup a day at 03:15 UTC
@@ -11,6 +11,7 @@
 # and a "backup: FAILED" line.
 # shortcut: backups live on the same server, add off-site copy before production
 set -euo pipefail
+umask 077 # the dump holds every row and the auth password hashes: owner-only files and directories
 
 if [ "${1:-}" = --daily ]; then
   while :; do

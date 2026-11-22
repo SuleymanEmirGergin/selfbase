@@ -3,17 +3,29 @@
 # Reads .env the same way the Node scripts do (05's loadEnv): KEY=value per line, value taken
 # literally to the end of the line (no quotes, no inline comments, no expansion), a trailing \r
 # dropped, lines starting with # skipped. Variables already set in the environment win.
+# A key set twice is refused (return 2, nothing exported): readers would disagree on which one counts.
 load_env() {
-  local line k v
+  local line k v n=0
+  local -A seen=()
+  local -a keys=() vals=()
   [ -f "$1" ] || return 0
   while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
     line="${line%$'\r'}"
     [[ $line =~ ^[[:space:]]*(#|$) || $line != *=* ]] && continue
     k="${line%%=*}"; v="${line#*=}"
     k="${k#"${k%%[![:space:]]*}"}"; k="${k%"${k##*[![:space:]]}"}"
     [[ $k =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-    [ -n "${!k+x}" ] || export "$k=$v"
+    if [ -n "${seen[$k]+x}" ]; then
+      echo "$1: $k is set twice (lines ${seen[$k]} and $n); keep one" >&2
+      return 2
+    fi
+    seen[$k]=$n; keys+=("$k"); vals+=("$v")
   done < "$1"
+  for n in "${!keys[@]}"; do
+    k="${keys[$n]}"
+    [ -n "${!k+x}" ] || export "$k=${vals[$n]}"
+  done
 }
 
 # Host part of a postgres URL (no credentials, no port, IPv6 brackets and trailing dots removed).
@@ -68,11 +80,11 @@ pgenv() {
   unset "$1"
 }
 
-# Runs a bash script read from stdin in postgres:17, with pgenv defined in it. The script (and any
+# Runs a bash script read from stdin in postgres:17.12, with pgenv defined in it. The script (and any
 # data after an `exec psql ...` line, which bash leaves unread) goes on stdin, never into docker's argv.
 # Arguments: docker run options (network, -e NAME, mounts).
 container_run() {
-  { declare -f pgenv; cat; } | MSYS_NO_PATHCONV=1 docker run --rm -i "$@" postgres:17 bash -s
+  { declare -f pgenv; cat; } | MSYS_NO_PATHCONV=1 docker run --rm -i "$@" postgres:17.12 bash -s
 }
 
 _lib_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -81,7 +93,7 @@ _lib_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # Reads the root .env like the scripts (in a subshell, so the calling shell is untouched), refuses a
 # Supabase host, and passes the password via PGPASSWORD inside the container. Optional: DOCKER_NETWORK.
 psql_target() (
-  load_env "$_lib_root/.env"
+  load_env "$_lib_root/.env" || exit 2
   [ -n "${TARGET_DB_URL:-}" ] || { echo "TARGET_DB_URL is not set" >&2; exit 2; }
   refuse_supabase_target TARGET_DB_URL || exit 2
   net=()

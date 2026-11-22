@@ -120,6 +120,11 @@ export async function fileResponse(bucket: string, name: string, meta: Meta, ran
   }
   trySet('content-type', meta?.mimetype)
   trySet('cache-control', meta?.cacheControl)
+  // browser PDF viewers refuse sandboxed documents, and they run no document script in the page origin
+  if (meta?.mimetype === 'application/pdf') {
+    headers.delete('content-security-policy')
+    headers.set('content-disposition', 'inline')
+  }
   const r = parseRange(range, size)
   if (r === 'invalid') return new Response(null, { status: 416, headers: { 'content-range': `bytes */${size}` } })
   const { start, end } = r ?? { start: 0, end: size - 1 }

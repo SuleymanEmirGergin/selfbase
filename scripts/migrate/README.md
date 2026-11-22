@@ -21,9 +21,9 @@ percent-encoded inside the URL variables.
 | `PUBLIC_URL` | 05 | selfbase public origin |
 | `SERVICE_ROLE_KEY` | 06 | Fallback value for the vault secrets (see 06) |
 | `NOTIFY_DISPATCH_SECRET`, `RADAR_NEWS_CRON_SECRET` | 06 | Optional; the edge functions' values for the two vault secrets |
-| `STORAGE_DIR` | 04 | Host folder that becomes core's storage volume |
+| `STORAGE_DIR` | 04 | Folder on this computer the files are downloaded to; give it on the command line (`STORAGE_DIR=./data/storage`), then copy it into core's `<project>_storage` volume (docs/REHBER.md section 7) |
 
-`pg_dump`/`psql` 17 run from the `postgres:17` image. The container script goes in on stdin and
+`pg_dump`/`psql` 17 run from the `postgres:17.12` image. The container script goes in on stdin and
 turns the URL into `PG*` variables (password in `PGPASSWORD`), so no password appears in a command
 line, neither docker's nor psql's; 05 and 06 hand the URL to `pg` in-process. 01, 02 and the 03 pipe
 (`psql_target` from `lib.sh`) run in a container, so `TARGET_DB_URL` there must be reachable from a container: set `DOCKER_NETWORK` to the
@@ -44,7 +44,7 @@ bash scripts/migrate/02-restore.sh pre                            # 2. extension
 node scripts/migrate/03-auth-storage.sql.mjs rows | psql_target   # 3. auth users, identities, storage rows
 bash scripts/migrate/02-restore.sh post                           # 4. indexes, constraints (FKs to auth.users), row-count check
 node scripts/migrate/03-auth-storage.sql.mjs policies | psql_target  # 5. storage policies, auth/storage triggers
-node scripts/migrate/04-files.mjs                                 # 6. storage files -> STORAGE_DIR
+STORAGE_DIR=./data/storage node scripts/migrate/04-files.mjs      # 6. storage files -> ./data/storage, then copy into the volume
 node scripts/migrate/05-rewrite-urls.mjs --dry-run                # 7. see what will change
 node scripts/migrate/05-rewrite-urls.mjs                          #    rewrite
 node scripts/migrate/06-realtime-cron.mjs                         # 8. realtime, cron (inactive), vault

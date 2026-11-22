@@ -5,10 +5,15 @@ import { ROLES } from './jwt.ts'
 import type { JwtClaims } from './jwt.ts'
 
 /** Superuser pool for core's own bookkeeping. End-user requests must go through asUser(), never this. */
-export const pool = new pg.Pool({ ...config.db, max: 10 })
+export const pool = new pg.Pool({ ...config.db, max: 10, connectionTimeoutMillis: 10_000 })
 
 // Same login PostgREST uses: NOINHERIT and can only switch to the API roles, never superuser.
-const userPool = new pg.Pool({ ...config.db, user: 'authenticator', max: 10 })
+const userPool = new pg.Pool({ ...config.db, user: 'authenticator', max: 10, connectionTimeoutMillis: 10_000 })
+
+// An idle client whose backend dies (database restart) emits 'error' on the pool; unhandled, it would end the process.
+// The pool drops that client and the next query opens a fresh one.
+pool.on('error', (e) => console.error('db pool:', e.message))
+userPool.on('error', (e) => console.error('db user pool:', e.message))
 
 /** Runs fn in a transaction as the JWT's role with request.jwt.claims set, like PostgREST does. */
 export async function asUser<T>(claims: JwtClaims | null, fn: (c: PoolClient) => Promise<T>): Promise<T> {
@@ -33,7 +38,7 @@ export async function asUser<T>(claims: JwtClaims | null, fn: (c: PoolClient) =>
   }
 }
 
-/** Closes both pools (tests, shutdown). */
+/** Closes both pools (tests, shutdown). Safe to call twice. */
 export async function closeDb(): Promise<void> {
-  await Promise.all([pool.end(), userPool.end()])
+  await Promise.all([pool, userPool].filter((p) => !p.ended).map((p) => p.end()))
 }

@@ -52,6 +52,10 @@ test('parseEnv matches lib.sh load_env: literal values, CRLF stripped', () => {
   assert.deepEqual(env, { A: 'plain', B: 'p@ss$wo"rd#x y', C: ' spaced' })
 })
 
+test('parseEnv refuses a key set twice, like lib.sh load_env', () => {
+  assert.throws(() => parseEnv('A=1\nJWT_SECRET=\r\n# c\nJWT_SECRET=x\n'), /^Error: \.env: JWT_SECRET is set twice \(lines 2 and 4\); keep one$/)
+})
+
 test('Supabase hosts are refused as target', () => {
   assert.equal(isSupabaseHost('postgres://postgres.abc:p@aws-1-eu-west-2.pooler.supabase.com:5432/postgres'), true)
   assert.equal(isSupabaseHost('postgres://postgres:p@abcdefghijklmnopqrst.supabase.co:5432/postgres'), true)

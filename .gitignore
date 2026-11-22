@@ -13,3 +13,6 @@ dist/
 .env.*
 !.env.example
 .claude/
+panel.env
+backups/
+.local-test-login

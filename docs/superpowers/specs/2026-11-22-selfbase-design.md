@@ -44,7 +44,7 @@ entegrasyonu zor" dedi. Bu yüzden hazır bir BaaS'a geçmek yerine kendi ince p
 
 ## 5. Kısıtlar
 
-- **Sunucu:** mevcut Coolify (http://<server-ip>:8000, v4.7.6, takım <coolify-team>). Sunucu paylaşımlı. Kurulumdan önce boş RAM/CPU/disk ölçülür. Yetmiyorsa durulur ve kullanıcıya sorulur.
+- **Sunucu:** mevcut Coolify (http://<coolify-host>:8000, v4.7.6, takım <coolify-team>). Sunucu paylaşımlı. Kurulumdan önce boş RAM/CPU/disk ölçülür. Yetmiyorsa durulur ve kullanıcıya sorulur.
 - **Ekip merge kuralları (corteqsemir):** tek iş = tek dal, küçük commit'ler. `main`'e push yok, kendi PR'ını merge etmek yok. `.env*` commit edilmez. Yeni kütüphane için önce sorulur. Cadde dışı dosyalara dokunuluyorsa commit mesajında adı geçer. `scripts/ops/*` ve `check-migrations.mjs` asla çalıştırılmaz. Build sonrası `git restore public docs/agent` yapılır.
   Kullanıcı "aynı anda hepsi" seçti: uygulama kodu ayrı bir dalda paralel değişir, ama **ekip onayı olmadan PR açılmaz ve push edilmez** (sadece yerel dal + demo).
 - **Sırlar:** Claude hiçbir secret anahtarı ya da test şifresini yazmaz veya görmez. Sırlar `.env` dosyasına ve Coolify env'ine kullanıcı tarafından girilir. Claude `.env.example` üretir.

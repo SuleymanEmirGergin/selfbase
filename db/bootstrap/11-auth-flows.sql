@@ -1,4 +1,4 @@
--- Task 3: auth mail flows
+-- Auth mail flows: the outgoing mail log and one-time token rules
 
 -- Outgoing auth mails when SMTP_HOST is empty (tests and local development read them here)
 create table selfbase.mail_log (

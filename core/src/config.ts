@@ -1,7 +1,12 @@
 // All runtime settings, read once from the environment (see .env.example).
 const env = process.env
 
-const bool = (v: string | undefined, dflt: boolean) => (v === undefined || v === '' ? dflt : v === 'true')
+// anything but true/false/empty is a typo that would silently flip a security setting, so it stops startup
+const bool = (v: string | undefined, dflt: boolean) => {
+  if (v === undefined || v === '') return dflt
+  if (v !== 'true' && v !== 'false') throw new Error(`boolean setting must be true or false, got "${v}"`)
+  return v === 'true'
+}
 const list = (v: string | undefined) => (v ?? '').split(',').map((s) => s.trim()).filter(Boolean)
 
 export const config = {
@@ -14,8 +19,6 @@ export const config = {
     database: 'postgres',
   },
   jwtSecret: env.JWT_SECRET || '',
-  anonKey: env.ANON_KEY || '',
-  serviceRoleKey: env.SERVICE_ROLE_KEY || '',
   publicUrl: env.PUBLIC_URL || 'http://localhost:8080',
   siteUrl: env.SITE_URL || 'http://localhost:5173',
   authRedirectAllowlist: list(env.AUTH_REDIRECT_ALLOWLIST),
@@ -27,6 +30,19 @@ export const config = {
   authEmailInterval: Number(env.AUTH_EMAIL_INTERVAL || 60),
   // Standard Webhooks secret for FN_URL/send-phone-otp-hook, "v1,whsec_<base64>"
   authSmsHookSecret: env.AUTH_SMS_HOOK_SECRET || '',
+  // with AUTH_CONFIRM_EMAIL on, an email change needs a link from the old and the new address
+  authSecureEmailChange: bool(env.AUTH_SECURE_EMAIL_CHANGE, true),
+  // seconds after a rotation in which a retried refresh token gets the same new session instead of revoking it; 0 = strict
+  authRefreshReuseInterval: Number(env.AUTH_REFRESH_REUSE_INTERVAL || 10),
+  // where a contested sign-up (password dropped) lands to set one; empty = the sign-up's redirect_to
+  authSetPasswordUrl: env.AUTH_SET_PASSWORD_URL || '',
+  // per-IP requests per 5 minutes (docs/auth-settings.md); 0 disables that limit
+  authRateLimits: {
+    signIn: Number(env.AUTH_RATE_LIMIT_SIGN_IN || 30),
+    verify: Number(env.AUTH_RATE_LIMIT_VERIFY || 30),
+    refresh: Number(env.AUTH_RATE_LIMIT_REFRESH || 150),
+    email: Number(env.AUTH_RATE_LIMIT_EMAIL || 30),
+  },
   smtp: {
     host: env.SMTP_HOST || '',
     port: Number(env.SMTP_PORT || 587),
@@ -45,7 +61,6 @@ export const config = {
   panelAdminPasswordHash: env.PANEL_ADMIN_PASSWORD_HASH || '',
   panelDir: env.PANEL_DIR || '../panel/dist',
   storageDir: env.STORAGE_DIR || '/data/storage',
-  functionsDir: env.FUNCTIONS_DIR || '',
   pgrstUrl: env.PGRST_URL || 'http://rest:3000',
   fnUrl: env.FN_URL || 'http://fn:8000',
 }

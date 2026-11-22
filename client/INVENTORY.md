@@ -1,6 +1,6 @@
 # supabase-js surface used by CorteQS (inventory, 2026-11-22)
 
-Source: `D:\Dev\corteqsemir` at the time of Task 8, `src/` and `supabase/functions/` (tests excluded), supabase-js 2.108.2.
+Source: the CorteQS app repository (corteqsemir) as of 2026-11-22, `src/` and `supabase/functions/` (tests excluded), supabase-js 2.108.2.
 Method: grep for `@supabase/` imports and for `.auth.`, `.storage.`, `.functions.`, `.channel(` call chains, then a full
 `tsc` run of the app (`tsconfig.app.json`, 2753 files) with `@supabase/supabase-js` mapped to `dist/selfbase.d.ts`: 0 errors,
 same as with the real package.

@@ -53,6 +53,19 @@ export function getEnvValue(input, key) {
   return unescapeCompose(v)
 }
 
+/** Message for the first key set twice in an env file (compose takes the last, the bash reader would refuse), else null. */
+export function duplicateKey(input, name) {
+  const seen = new Map()
+  const lines = (input.startsWith(BOM) ? input.slice(1) : input).split(/\r?\n/)
+  for (const [n, line] of lines.entries()) {
+    const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(line)
+    if (!m) continue
+    if (seen.has(m[1])) return `${name}: ${m[1]} is set twice (lines ${seen.get(m[1])} and ${n + 1}); keep one, then run this again`
+    seen.set(m[1], n + 1)
+  }
+  return null
+}
+
 export function validatePassword(pw) {
   if (Array.from(pw).length < MIN_PASSWORD) return `the password must be at least ${MIN_PASSWORD} characters`
   if (Buffer.byteLength(pw, 'utf8') > MAX_PASSWORD_BYTES) return `the password must be at most ${MAX_PASSWORD_BYTES} bytes in UTF-8 (bcrypt would silently ignore the rest)`
@@ -127,6 +140,8 @@ async function main() {
   if (i >= 0 && !args[i + 1]) { console.error('usage: set-panel-password.mjs [--env <path>]'); process.exit(2) }
   const file = resolve(i >= 0 ? args[i + 1] : '.env')
   const text = existsSync(file) ? readFileSync(file, 'utf8') : ''
+  const dup = duplicateKey(text, file)
+  if (dup) { console.error(`set-panel-password: ${dup}`); process.exit(2) }
   const current = getEnvValue(text, 'PANEL_ADMIN_EMAIL')
 
   const email = (await readLine(`Admin email${current ? ` [${current}]` : ''}: `, { echo: true })).trim() || current

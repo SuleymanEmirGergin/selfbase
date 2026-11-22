@@ -5,8 +5,11 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-const appDir = process.env.CORTEQS_DIR ?? 'D:/Dev/corteqsemir'
-const appTypes = join(appDir, 'src/integrations/supabase/types.ts')
+// The app repository (corteqsemir) checkout; unset, this file is skipped with a message saying so.
+const appDir = process.env.CORTEQS_DIR ?? ''
+const appTypes = appDir && join(appDir, 'src/integrations/supabase/types.ts')
+if (!appDir) console.warn('types.test.ts skipped: set CORTEQS_DIR to the app repository checkout to run it')
+else if (!existsSync(appTypes)) throw new Error(`CORTEQS_DIR is set but ${appTypes} does not exist`)
 
 const check = `
 import { createClient, type Session, type User, type SupabaseClient, type AuthError, type RealtimePostgresChangesPayload } from '@supabase/supabase-js'
@@ -63,7 +66,7 @@ void main
 void (null as unknown as RealtimePostgresChangesPayload<{ id: string }>)
 `
 
-describe.skipIf(!existsSync(appTypes))('types', () => {
+describe.skipIf(!appDir)('types (needs CORTEQS_DIR)', () => {
   it("createClient<Database>().from('profile_pages').select('id') infers { id: string }[] (tsc --noEmit)", () => {
     const dir = mkdtempSync(join(tmpdir(), 'selfbase-types-'))
     try {

@@ -43,7 +43,7 @@ export function toUserJson(row: UserRow) {
   }
 }
 
-const SELECT_USER = `select u.*, coalesce((select json_agg(i) from auth.identities i where i.user_id = u.id), '[]') as identities
+export const SELECT_USER =`select u.*, coalesce((select json_agg(i) from auth.identities i where i.user_id = u.id), '[]') as identities
   from auth.users u`
 
 export async function findById(id: string): Promise<UserRow | null> {

@@ -36,7 +36,9 @@ function repo(files) {
   return d
 }
 const put = (d, n, t) => writeFileSync(join(d, 'supabase', 'migrations', 'applied', n), t)
-const sync = (d, ...flags) => spawnSync(process.execPath, [script, '--repo', d, ...flags], { env, encoding: 'utf8' })
+const rawSync = (d, ...flags) => spawnSync(process.execPath, [script, '--repo', d, ...flags], { env, encoding: 'utf8' })
+// Every test starts from an empty history, so the first normal run needs --from-empty (refused without it, see below).
+const sync = (d, ...flags) => rawSync(d, '--from-empty', ...flags)
 const applied = () => sql('select coalesce(string_agg(name, \',\' order by name), \'\') from selfbase.applied_migrations')
 
 const M1 = '20260101000000_one.sql'
@@ -73,7 +75,6 @@ describe('sync', () => {
     assert.match(r.stdout, /applied 20260102000000_two\.sql/)
     assert.match(r.stdout, /1 migrations applied/)
     assert.match(r.stderr, /PostgREST schema reload sent/)
-    assert.match(r.stdout, /selfbase\.enable_realtime/)
     assert.equal(sql('select count(*) from t13.a'), '1')
     assert.equal(applied(), `${M1},${M2}`)
     noGuard()
@@ -321,6 +322,54 @@ describe('sync', () => {
     assert.equal(sql('select count(*) from t13.a'), '1')
   })
 
+  test('a normal run over an empty history is refused without --from-empty, also as a dry run', () => {
+    const d = repo({ [M1]: ok1 })
+    for (const flags of [[], ['--dry-run']]) {
+      const r = rawSync(d, ...flags)
+      assert.equal(r.status, 2, r.stderr)
+      assert.match(r.stderr, /applied_migrations is empty.*--baseline \(or --baseline-all\) first.*--from-empty \(nothing applied\)/)
+    }
+    assert.equal(sql("select to_regclass('t13.a') is null"), 't')
+    assert.equal(rawSync(d, '--from-empty').status, 0)
+    assert.equal(applied(), M1)
+    put(d, M2, 'create table t13.b (id int);\n')
+    const r = rawSync(d) // once something is recorded, plain runs work
+    assert.equal(r.status, 0, r.stderr)
+    assert.equal(applied(), `${M1},${M2}`)
+  })
+
+  const trigger = (t) => sql(`select count(*) from pg_trigger where tgrelid = 't13.${t}'::regclass and tgname = 'selfbase_realtime'`)
+  test('realtime follows the publication: tables added to it get the trigger, one without id is reported', () => {
+    const d = repo({ [M1]: 'create table t13.rt (id int primary key, v text);\ncreate table t13.noid (k int);\n' +
+      'alter publication supabase_realtime add table t13.rt, t13.noid;\n' })
+    let r = sync(d)
+    assert.equal(r.status, 0, r.stderr)
+    assert.match(r.stdout, /realtime enabled for t13\.rt/)
+    assert.match(r.stderr, /WARNING: t13\.noid is in the supabase_realtime publication but has no id column/)
+    assert.equal(trigger('rt'), '1')
+    r = sync(d) // idempotent: the trigger is there, nothing enabled again
+    assert.match(r.stdout, /nothing to apply/)
+    assert.doesNotMatch(r.stdout, /realtime enabled/)
+    assert.equal(trigger('rt'), '1')
+  })
+
+  test('06-realtime-cron also enables realtime for publication tables without the trigger', () => {
+    sql('create table t13.rt6 (id int primary key); create table t13.noid6 (k int); ' +
+      'alter publication supabase_realtime add table t13.rt6, t13.noid6;')
+    const port = spawnSync('docker', ['compose', '-p', P, '-f', 'compose.test.yml', 'port', 'db', '5432'], { cwd: root, encoding: 'utf8' })
+      .stdout.trim().split(':').at(-1)
+    const dump = mkdtempSync(join(tmpdir(), 'dump-'))
+    mkdirSync(join(dump, 'catalog'))
+    for (const f of ['realtime_tables', 'cron_jobs']) writeFileSync(join(dump, 'catalog', `${f}.json`), '[]')
+    const r = spawnSync(process.execPath, [fileURLToPath(new URL('../migrate/06-realtime-cron.mjs', import.meta.url))], {
+      env: { ...process.env, TARGET_DB_URL_HOST: `postgres://postgres:test-postgres-password@127.0.0.1:${port}/postgres`,
+        SERVICE_ROLE_KEY: 'test-only', DUMP_DIR: dump }, encoding: 'utf8' })
+    assert.equal(r.status, 0, r.stderr)
+    assert.match(r.stdout, /06: realtime t13\.rt6 \(already in the publication\)/)
+    assert.match(r.stderr, /WARNING: t13\.noid6 .* no id column/)
+    assert.equal(trigger('rt6'), '1')
+  })
+
   test('a Supabase target is refused and the URL is never printed', () => {
     const secret = 'Sup3rS3cret'
     const r = spawnSync(process.execPath, [script, '--repo', repo({ [M1]: ok1 })],
@@ -355,6 +404,9 @@ describe('backup', { skip: !BP && 'set BACKUP_TEST_PROJECT to a running compose.
     const ts = backup()
     assert.match(inBackup(`cat /backups/${ts}/MANIFEST`), /^db\.dump \d+ [0-9a-f]{64}\nglobals\.sql \d+ [0-9a-f]{64}\nstorage\.tar\.gz \d+ [0-9a-f]{64}$/)
     assert.match(inBackup(`head -c 300 /backups/${ts}/globals.sql`), /PostgreSQL database cluster dump/)
+    // private to the backup's owner: the dump holds every row and the auth password hashes
+    assert.deepEqual(inBackup(`stat -c '%a %n' /backups/${ts} /backups/${ts}/*`).trim().split('\n').sort(),
+      [`700 /backups/${ts}`, ...['MANIFEST', 'db.dump', 'globals.sql', 'storage.tar.gz'].map((f) => `600 /backups/${ts}/${f}`)].sort())
     db("delete from public.t13_keep where id = 2; update public.t13_keep set v = 'x'")
     ok(core('rm /data/storage/t13/f.txt && echo new > /data/storage/t13/new.txt'))
 

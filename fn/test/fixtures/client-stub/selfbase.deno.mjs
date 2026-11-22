@@ -1,4 +1,4 @@
-// Stand-in for client/dist/selfbase.deno.mjs (Task 8), mounted at the same path /client.
+// Stand-in for client/dist/selfbase.deno.mjs (the built client), mounted at the same path /client.
 export const __selfbase = true
 
 const tolerant = () =>

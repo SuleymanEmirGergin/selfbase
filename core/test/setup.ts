@@ -23,6 +23,11 @@ Object.assign(process.env, {
   AUTH_CONFIRM_EMAIL: 'true',
   AUTH_PHONE_ENABLED: 'false',
   AUTH_MIN_PASSWORD: '6',
+  // every test request comes from one "IP"; the rate limit test turns the limits on itself
+  AUTH_RATE_LIMIT_SIGN_IN: '0',
+  AUTH_RATE_LIMIT_VERIFY: '0',
+  AUTH_RATE_LIMIT_REFRESH: '0',
+  AUTH_RATE_LIMIT_EMAIL: '0',
   SMTP_HOST: '',
   PANEL_ADMIN_EMAIL: 'admin@example.test',
   PANEL_ADMIN_PASSWORD_HASH: '',

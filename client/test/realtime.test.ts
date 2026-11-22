@@ -114,6 +114,69 @@ describe('realtime', () => {
     await sb.removeAllChannels()
   })
 
+  const subscribes = (table: string) =>
+    fake.rt.conns.flatMap((c) => c.received).filter((m) => m.type === 'subscribe' && m.table === table).length
+
+  it('a CHANNEL_ERROR (transient, e.g. statement timeout) rejoins on its backoff timer while the socket stays open', async () => {
+    fake.settings.subscribeError = 'canceling statement due to statement timeout'
+    const sb = createClient(fake.url, ANON_KEY, { ...opts, realtime: { rejoinAfterMs: () => 300 } })
+    const statuses: string[] = []
+    sb.channel('flaky')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'flaky' }, () => {})
+      .subscribe((s) => void statuses.push(s))
+    await waitFor(() => statuses.includes('CHANNEL_ERROR'))
+    const conn = fake.rt.conns.at(-1)!
+    fake.settings.subscribeError = ''
+    await waitFor(() => statuses.includes('SUBSCRIBED'), 3000)
+    expect(fake.rt.conns.at(-1)).toBe(conn) // same socket, no reconnect needed
+    expect(statuses.at(-1)).toBe('SUBSCRIBED')
+    await sb.removeAllChannels()
+  })
+
+  it('a TIMED_OUT channel rejoins when the socket opens again', async () => {
+    fake.settings.ack = false
+    // a rejoin timer far away, so only the socket open can bring it back
+    const sb = createClient(fake.url, ANON_KEY, { ...opts, realtime: { rejoinAfterMs: () => 60_000 } })
+    const statuses: string[] = []
+    sb.channel('restart')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'restart' }, () => {})
+      .subscribe((s) => void statuses.push(s), 200)
+    await waitFor(() => statuses.includes('TIMED_OUT'))
+    fake.settings.ack = true
+    fake.rt.dropAll() // e.g. core restarting for a deploy
+    await waitFor(() => statuses.includes('SUBSCRIBED'), 5000)
+    expect(statuses).toEqual(['TIMED_OUT', 'SUBSCRIBED'])
+    await sb.removeAllChannels()
+  })
+
+  it('a permanent error backs off instead of retrying in a tight loop', async () => {
+    fake.settings.subscribeError = 'relation "public.nope" does not exist'
+    const sb = createClient(fake.url, ANON_KEY, opts)
+    sb.channel('nope').on('postgres_changes', { event: '*', schema: 'public', table: 'nope' }, () => {}).subscribe()
+    await new Promise((r) => setTimeout(r, 3500))
+    // default backoff 1 s, 2 s, 5 s ...: the first try, then retries after 1 s and 3 s
+    expect(subscribes('nope')).toBe(3)
+    fake.settings.subscribeError = ''
+    await sb.removeAllChannels()
+  })
+
+  it('an unsubscribed errored channel stays unsubscribed', async () => {
+    fake.settings.subscribeError = 'at most 100 subscriptions per connection'
+    const sb = createClient(fake.url, ANON_KEY, { ...opts, realtime: { rejoinAfterMs: () => 100 } })
+    const statuses: string[] = []
+    const keep = sb.channel('keep').on('postgres_changes', { event: '*', schema: 'public', table: 'keep' }, () => {})
+    const ch = sb.channel('gone').on('postgres_changes', { event: '*', schema: 'public', table: 'gone' }, () => {})
+    ch.subscribe((s) => void statuses.push(s))
+    await waitFor(() => statuses.includes('CHANNEL_ERROR'))
+    await ch.unsubscribe()
+    fake.settings.subscribeError = ''
+    keep.subscribe() // keeps the socket open
+    await new Promise((r) => setTimeout(r, 600))
+    expect(subscribes('gone')).toBe(1)
+    expect(statuses).toEqual(['CHANNEL_ERROR', 'CLOSED'])
+    await sb.removeAllChannels()
+  })
+
   it('close code 1013 (try again later) waits the longest backoff step before reconnecting', async () => {
     const sb = createClient(fake.url, ANON_KEY, opts)
     let ok = false

@@ -1,6 +1,11 @@
 -- Supabase compatibility shims needed to load the CorteQS baseline dump and its migrations
--- unedited (Task 10). Each block names the migration or dump section that needs it.
+-- unedited. Each block names the migration or dump section that needs it.
 -- Runs after the postgis image's 10_postgis.sh.
+
+-- The image's tiger/topology extensions go (CorteQS uses neither). tiger depends on fuzzystrmatch,
+-- and Postgres 17.6+ refuses to move an extension others depend on, so it is dropped first.
+drop extension postgis_tiger_geocoder, postgis_topology;
+drop schema if exists tiger, tiger_data, topology; -- left behind empty by the two extensions (tiger_data not in every postgis release)
 
 -- 10_postgis.sh puts fuzzystrmatch in public; CorteQS does not use it, Supabase keeps it in extensions.
 alter extension fuzzystrmatch set schema extensions;
@@ -8,12 +13,10 @@ alter extension fuzzystrmatch set schema extensions;
 -- Real shim: CorteQS has vector, pg_trgm, unaccent and postgis in public (the baseline uses
 -- public.vector, public.gin_trgm_ops, public.geography, and SQL functions with search_path=public
 -- call unaccent(); 20260730120000_cadde_v1_002_hashtags_mentions and 5 others fail otherwise).
--- postgis is not relocatable, so it is reinstalled; the image's tiger/topology extensions go.
+-- postgis is not relocatable, so it is reinstalled.
 alter extension vector set schema public;
 alter extension pg_trgm set schema public;
 alter extension unaccent set schema public;
-drop extension postgis_tiger_geocoder, postgis_topology;
-drop schema tiger, tiger_data, topology; -- left behind empty by the two extensions
 drop extension postgis;
 create extension postgis with schema public;
 

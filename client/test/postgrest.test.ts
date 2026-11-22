@@ -77,9 +77,12 @@ describe('postgrest', () => {
   it('rpc() and schema() work', async () => {
     const sb = createClient(fake.url, SERVICE_KEY, opts)
     expect(await sb.rpc('t8_add', { a: 2, b: 3 })).toMatchObject({ data: 5, error: null })
+    const notes = await sb.schema('public').from('t8_notes').select('id')
+    expect(notes.error).toBeNull()
+    expect(fake.requests.at(-1)!.headers['accept-profile']).toBe('public')
+    // selfbase exposes only public over REST (like Supabase); storage goes through /storage/v1
     const buckets = await sb.schema('storage').from('buckets').select('id')
-    expect(buckets.error).toBeNull()
-    expect(Array.isArray(buckets.data)).toBe(true)
+    expect(buckets.error).toMatchObject({ code: 'PGRST106' })
   })
 
   it('global fetch option is used', async () => {

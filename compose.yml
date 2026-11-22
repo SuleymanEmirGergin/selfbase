@@ -1,7 +1,23 @@
 # selfbase stack. Values come from .env (see .env.example). Only core is published, on loopback by default (CORE_BIND).
+# Every service: rotated json-file logs (10m x 3), no privilege gain through setuid binaries, at most
+# 512 processes. Per service below: mem_limit and cpus (change them there; docker compose up -d applies).
+x-defaults: &defaults
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+  security_opt:
+    - no-new-privileges:true
+  pids_limit: 512
+
 services:
   db:
+    <<: *defaults
     build: ./db
+    mem_limit: 1g
+    cpus: 2
+    shm_size: 256m # Docker's 64m default breaks parallel queries ("could not resize shared memory segment")
     restart: unless-stopped
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
@@ -14,11 +30,15 @@ services:
       retries: 30
 
   rest:
+    <<: *defaults
     image: postgrest/postgrest:v14.1
+    mem_limit: 256m
+    cpus: 1
     restart: unless-stopped
     environment:
       PGRST_DB_URI: postgres://authenticator:${POSTGRES_PASSWORD}@db:5432/postgres
-      PGRST_DB_SCHEMAS: public,storage
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_MAX_ROWS: "1000"
       PGRST_DB_ANON_ROLE: anon
       PGRST_DB_EXTRA_SEARCH_PATH: public,extensions
       PGRST_JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
@@ -34,9 +54,12 @@ services:
       retries: 30
 
   core:
+    <<: *defaults
     build:
       context: .
       dockerfile: core/Dockerfile
+    mem_limit: 512m
+    cpus: 1
     init: true
     restart: unless-stopped
     ports:
@@ -45,13 +68,18 @@ services:
       DB_HOST: db
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       JWT_SECRET: ${JWT_SECRET}
-      ANON_KEY: ${ANON_KEY}
-      SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
-      PUBLIC_URL: ${PUBLIC_URL}
+      PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL (public https origin of core)}
       TRUST_PROXY: ${TRUST_PROXY:-true}
-      SITE_URL: ${SITE_URL}
+      SITE_URL: ${SITE_URL:?set SITE_URL (the app origin)}
       AUTH_REDIRECT_ALLOWLIST: ${AUTH_REDIRECT_ALLOWLIST:-}
       AUTH_CONFIRM_EMAIL: ${AUTH_CONFIRM_EMAIL:-true}
+      AUTH_SECURE_EMAIL_CHANGE: ${AUTH_SECURE_EMAIL_CHANGE:-true}
+      AUTH_REFRESH_REUSE_INTERVAL: ${AUTH_REFRESH_REUSE_INTERVAL:-10}
+      AUTH_SET_PASSWORD_URL: ${AUTH_SET_PASSWORD_URL:-}
+      AUTH_RATE_LIMIT_SIGN_IN: ${AUTH_RATE_LIMIT_SIGN_IN:-30}
+      AUTH_RATE_LIMIT_VERIFY: ${AUTH_RATE_LIMIT_VERIFY:-30}
+      AUTH_RATE_LIMIT_REFRESH: ${AUTH_RATE_LIMIT_REFRESH:-150}
+      AUTH_RATE_LIMIT_EMAIL: ${AUTH_RATE_LIMIT_EMAIL:-30}
       AUTH_PHONE_ENABLED: ${AUTH_PHONE_ENABLED:-false}
       AUTH_MIN_PASSWORD: ${AUTH_MIN_PASSWORD:-6}
       AUTH_OTP_EXPIRY: ${AUTH_OTP_EXPIRY:-3600}
@@ -69,9 +97,8 @@ services:
       GOOGLE_USERINFO_URL: ${GOOGLE_USERINFO_URL:-https://openidconnect.googleapis.com/v1/userinfo}
       PANEL_ADMIN_EMAIL: ${PANEL_ADMIN_EMAIL:-}
       PANEL_ADMIN_PASSWORD_HASH: ${PANEL_ADMIN_PASSWORD_HASH:-}
-      STORAGE_DIR: ${STORAGE_DIR:-/data/storage}
+      STORAGE_DIR: /data/storage # fixed: it is the storage volume's mount point below
       STORAGE_MAX_UPLOAD_BYTES: ${STORAGE_MAX_UPLOAD_BYTES:-52428800}
-      FUNCTIONS_DIR: ${FUNCTIONS_DIR:-}
       PGRST_URL: ${PGRST_URL:-http://rest:3000}
       FN_URL: ${FN_URL:-http://fn:8000}
     volumes:
@@ -90,22 +117,27 @@ services:
   # Deno function host. SUPABASE_DIR is the host path of the app's supabase/ folder (functions/ + config.toml);
   # unset, an empty placeholder is mounted and every function name answers 404.
   fn:
+    <<: *defaults
     build: ./fn
+    mem_limit: 512m
+    cpus: 1
     restart: unless-stopped
     env_file:
       - path: fn.env
         required: false
     environment:
       SUPABASE_URL: http://core:8080
-      SUPABASE_ANON_KEY: ${ANON_KEY}
-      SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
-      SUPABASE_DB_URL: postgres://postgres:${POSTGRES_PASSWORD}@db:5432/postgres
+      SUPABASE_ANON_KEY: ${ANON_KEY:?set ANON_KEY}
+      SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY:?set SERVICE_ROLE_KEY}
+      # No SUPABASE_DB_URL: functions pull third-party code at runtime and get no database credentials.
+      # A function that really needs direct DB access gets it from fn.env, added there deliberately.
       JWT_SECRET: ${JWT_SECRET}
       FUNCTIONS_DIR: /supabase/functions
       FN_IMPORT_TIMEOUT_MS: ${FN_IMPORT_TIMEOUT_MS:-30000}
     volumes:
       - ${SUPABASE_DIR:-./fn/empty}:/supabase:ro
       - ./client/dist:/client:ro
+      - denocache:/deno-dir # downloaded function dependencies survive restarts
     healthcheck:
       test: ["CMD", "nc", "-z", "127.0.0.1", "8000"]
       interval: 10s
@@ -115,7 +147,10 @@ services:
   # Daily backup (03:15 UTC) of the database and the storage volume, see scripts/backup.sh.
   # One-shot: docker compose run --rm backup /scripts/backup.sh   Restore: scripts/restore.sh <timestamp>
   backup:
-    image: postgres:17
+    <<: *defaults
+    image: postgres:17.12
+    mem_limit: 512m
+    cpus: 0.5
     init: true # bash in --daily mode would ignore SIGTERM as PID 1
     restart: unless-stopped
     command: ["bash", "/scripts/backup.sh", "--daily"]
@@ -137,3 +172,4 @@ volumes:
   pgdata:
   storage:
   backups:
+  denocache:

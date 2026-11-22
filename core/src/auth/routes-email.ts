@@ -4,7 +4,7 @@ import { config } from '../config.ts'
 import type { AppEnv } from '../jwt.ts'
 import { authError, createUser, findByEmail, findById, withTx } from './users.ts'
 import { issueSession, isBanned } from './sessions.ts'
-import { background, sendConfirmation, sendMagicLink, sendRecovery, sha256, TOKEN_TYPES } from './mail.ts'
+import { background, CURRENT_EMAIL_TOKEN, sendConfirmation, sendMagicLink, sendRecovery, sha256, TOKEN_TYPES } from './mail.ts'
 import type { MailKind } from './templates.ts'
 import { safeRedirect, sessionParams, withFragment } from './redirect.ts'
 import { checkEmail, readBody } from './routes-core.ts'
@@ -47,8 +47,8 @@ router.post('/resend', async (c) => {
 const applyVerification = (type: MailKind, userId: string, email: string) =>
   withTx(async (tx) => {
     const r = type === 'email_change'
-      ? await tx.query(`update auth.users set email = email_change, email_change = '', email_confirmed_at = coalesce(email_confirmed_at, now()),
-          updated_at = now() where id = $1 and email_change = $2`, [userId, email])
+      ? await tx.query(`update auth.users set email = email_change, email_change = '', email_change_confirm_status = 0,
+          email_confirmed_at = coalesce(email_confirmed_at, now()), updated_at = now() where id = $1 and email_change = $2`, [userId, email])
       : await tx.query(`update auth.users set email_confirmed_at = coalesce(email_confirmed_at, now()),
           -- a magic or recovery link proves the address, not a password set before anyone proved it (pre-account takeover)
           encrypted_password = case when email_confirmed_at is null and $3 then null else encrypted_password end,
@@ -62,6 +62,20 @@ const applyVerification = (type: MailKind, userId: string, email: string) =>
     throw err
   })
 
+/**
+ * Secure email change: true while the other address's link for this change is still unused. The first link used
+ * only records the step (email_change_confirm_status 1); the change applies with the second, in either order.
+ */
+async function otherLinkPending(userId: string, newEmail: string): Promise<boolean> {
+  const { rowCount } = await pool.query(
+    `select 1 from auth.one_time_tokens where user_id = $1 and token_type = any($2) and relates_to = $3`,
+    [userId, [TOKEN_TYPES.email_change, CURRENT_EMAIL_TOKEN], newEmail],
+  )
+  if (!rowCount) return false
+  await pool.query(`update auth.users set email_change_confirm_status = 1, updated_at = now() where id = $1 and email_change = $2`, [userId, newEmail])
+  return true
+}
+
 router.get('/verify', async (c) => {
   const { token, type, redirect_to } = c.req.query()
   const target = safeRedirect(redirect_to)
@@ -70,18 +84,25 @@ router.get('/verify', async (c) => {
   const expired = () => fail('otp_expired', 'Email link is invalid or has expired')
   if (!token || !type || !Object.hasOwn(TOKEN_TYPES, type)) return expired()
   const kind = type as MailKind
+  // an email change link was mailed to the new or (secure email change) the current address
+  const types = kind === 'email_change' ? [TOKEN_TYPES[kind], CURRENT_EMAIL_TOKEN] : [TOKEN_TYPES[kind]]
   // single use: the token row is gone whatever happens next
   const row = (await pool.query(
-    `delete from auth.one_time_tokens where token_hash = $1 and token_type = $2
+    `delete from auth.one_time_tokens where token_hash = $1 and token_type = any($2)
      returning user_id, relates_to, created_at > now() - make_interval(secs => $3) as fresh`,
-    [sha256(token), TOKEN_TYPES[kind], config.authOtpExpiry],
+    [sha256(token), types, config.authOtpExpiry],
   )).rows[0]
-  if (!row?.fresh || !(await applyVerification(kind, row.user_id, row.relates_to))) return expired()
+  if (!row?.fresh) return expired()
+  if (kind === 'email_change' && (await otherLinkPending(row.user_id, row.relates_to)))
+    return c.redirect(withFragment(target, { message: 'Confirmation link accepted. Please proceed to confirm link sent to the other email' }), 302)
+  if (!(await applyVerification(kind, row.user_id, row.relates_to))) return expired()
   const user = (await findById(row.user_id))!
   if (isBanned(user)) return fail('user_banned', 'User is banned')
   // a contested signup lost its password (repeat signup): type=recovery makes the client let the owner set one
   const passwordless = kind === 'signup' && !user.encrypted_password && (user.identities ?? []).every((i) => i.provider === 'email')
-  return c.redirect(withFragment(target, { ...sessionParams(await issueSession(user)), type: passwordless ? 'recovery' : kind }), 302)
+  // AUTH_SET_PASSWORD_URL goes through the allowlist like any redirect (outside it: SITE_URL)
+  const landing = passwordless && config.authSetPasswordUrl ? safeRedirect(config.authSetPasswordUrl) : target
+  return c.redirect(withFragment(landing, { ...sessionParams(await issueSession(user)), type: passwordless ? 'recovery' : kind }), 302)
 })
 
 export default router
