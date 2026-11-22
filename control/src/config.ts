@@ -1,12 +1,26 @@
 // All runtime settings, read once from the environment. A missing or bad value stops startup naming the key
 // (never its value).
+import { readFileSync } from 'node:fs'
+import { isIP } from 'node:net'
 import { fileURLToPath } from 'node:url'
 
 export type Config = ReturnType<typeof loadConfig>
 
 export const HOSTNAME_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
 
-export function loadConfig(env: Record<string, string | undefined> = process.env) {
+export function loadConfig(input: Record<string, string | undefined> = process.env) {
+  // secrets come from <KEY>_FILE (compose secrets: not in the container's Config.Env, which a socket proxy's inspect
+  // shows); the plain <KEY> is the fallback for development and tests
+  const env = { ...input }
+  for (const k of ['SELFBASE_MASTER_KEY', 'CONTROL_DB_PASSWORD', 'CONTROL_JWT_SECRET', 'PROVISIONER_TOKEN']) {
+    const f = input[`${k}_FILE`]
+    if (!f) continue
+    try {
+      env[k] = readFileSync(f, 'utf8').trim()
+    } catch {
+      fail(`${k}_FILE cannot be read`)
+    }
+  }
   const need = (k: string) => env[k] || fail(`${k} is required`)
   const num = (k: string, dflt: number) => {
     const v = env[k]
@@ -29,6 +43,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const publicUrl = env.PUBLIC_URL || `https://selfbase.${base}`
   if (!/^https?:$/.test(URL.parse(publicUrl)?.protocol ?? '') || !URL.parse(publicUrl)?.hostname) fail('PUBLIC_URL must be an http(s) URL with a hostname')
   for (const h of legacyHostnames) if (!HOSTNAME_RE.test(h)) fail('LEGACY_HOSTNAMES must be a comma-separated list of hostnames')
+  const proxyMode = oneOf('PROXY_MODE', 'coolify', ['coolify', 'own'])
+  const trustedProxyIps = (env.TRUSTED_PROXY_HOSTS || '').split(',').map((h) => h.trim()).filter(Boolean)
+  if (trustedProxyIps.some((h) => !isIP(h))) fail('TRUSTED_PROXY_HOSTS takes IP addresses only (the proxy container is PROXY_CONTAINER)')
 
   return {
     port: num('PORT', 8080),
@@ -43,7 +60,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     baseDomain: base,
     publicUrl,
     nodeName: env.NODE_NAME || 'main',
-    proxyMode: oneOf('PROXY_MODE', 'coolify', ['coolify', 'own']),
+    proxyMode,
+    // proxyMode picks the provisioner's default PROXY_CONTAINER (selfbase-traefik / coolify-proxy)
+    // fixed proxy addresses whose X-Forwarded-For counts, besides the proxy container's (from the provisioner, which
+    // reads PROXY_CONTAINER by exact name). Addresses only: a name would be resolved by DNS, which is steerable.
+    trustedProxyIps,
     proxyNetwork: env.PROXY_NETWORK || 'coolify',
     templateVersion: need('TEMPLATE_VERSION'),
     memoryBudgetMb: num('MEMORY_BUDGET_MB', 16384),

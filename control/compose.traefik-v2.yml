@@ -1,0 +1,7 @@
+# Only with PROXY_TRAEFIK_MAJOR=2 (a Traefik v2 proxy): the paused catch-all in v2's HostRegexp syntax. Add it through
+# COMPOSE_FILE=compose.yml:compose.traefik-v2.yml in the env file (install-check asks for it).
+services:
+  control:
+    labels:
+      traefik.http.routers.selfbase-paused.rule: HostRegexp(`{sub:[a-z]{20}|sb-[a-z0-9-]+}.${BASE_DOMAIN}`)
+      # v2 quotes the text outside {name:regex} itself, so BASE_DOMAIN's dots are literal here. Not run against v2 yet.

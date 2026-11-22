@@ -8,7 +8,7 @@ export const SERVICES = ['db', 'rest', 'core', 'fn', 'pooler']
 type P = { network: boolean; controlAttached: boolean; services: Map<string, ServiceState> }
 
 const missing = (service: string): ServiceState => ({ service, exists: false, state: null, health: null, specHash: null,
-  templateVersion: null, memLimitMb: null, proxyAttached: false })
+  templateVersion: null, memLimitMb: null, proxyAttached: false, projectIp: null })
 
 export class FakeProvisioner implements Provisioner {
   calls: { method: string; args: any[] }[] = []
@@ -131,5 +131,9 @@ export class FakeProvisioner implements Provisioner {
   async stats(ref: string, service: string) {
     await this.rec('stats', [ref, service])
     return { mem_usage_mb: 0, mem_limit_mb: 0, cpu_percent: 0 }
+  }
+  async proxy() {
+    await this.rec('proxy', [])
+    return { container: 'coolify-proxy', addresses: [] as string[] }
   }
 }

@@ -1,11 +1,12 @@
 // Real Docker: the provisioner in compose.test.yml, behind the socket proxy, against the fixture template.
 import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { api, docker, down, IMAGE, PROXY_NET, tryDocker, up } from './fixtures/stack.ts'
+import { api, docker, down, IMAGE, PROXY_CONTAINER, PROXY_NET, tryDocker, up } from './fixtures/stack.ts'
 
 const REF = 'sbtestopsaaaaaaaaaaa'
 const MISSING = 'sbtestopsbbbbbbbbbbb'
 const UNLABELLED = 'sbtestopsccccccccccc'
+const IMPOSTOR = 'selfbase-test-impostor'
 const input = (over: Record<string, unknown> = {}) => ({ templateVersion: 'test', size: 'micro', subnet: '10.207.250.0/27',
   hosts: ['sbtest.example.com'], env: { MARKER: 'one' }, ...over })
 const id = (name: string) => docker('inspect', '-f', '{{.Id}}', name)
@@ -58,6 +59,9 @@ test('ensure creates network, volumes and labelled containers', async () => {
   assert.equal(r.body.controlAttached, true)
   assert.deepEqual(r.body.services.map((s: any) => [s.service, s.exists, s.state, s.memLimitMb]), [['db', true, 'running', 32], ['core', true, 'running', 32]])
   assert.deepEqual(r.body.services.map((s: any) => s.proxyAttached), [false, true])
+  // control connects to this address, never to a name Docker's DNS may answer from another network
+  for (const s of r.body.services) assert.equal(s.projectIp, docker('inspect', '-f', `{{(index .NetworkSettings.Networks "sb-${REF}").IPAddress}}`, `sb-${REF}-${s.service}`))
+  assert.match(r.body.services[1].projectIp, /^10\.207\.250\.\d+$/)
   assert.equal(docker('network', 'inspect', '-f', '{{(index .IPAM.Config 0).Subnet}} {{index .Labels "selfbase.project"}}', `sb-${REF}`), `10.207.250.0/27 ${REF}`)
   for (const v of ['pgdata', 'storage']) assert.equal(docker('volume', 'inspect', '-f', '{{index .Labels "selfbase.managed"}}', `sb-${REF}-${v}`), 'true')
   for (const s of ['db', 'core']) {
@@ -200,5 +204,22 @@ test('a delete and a job create for the same ref do not interleave: no job conta
     assert.equal(del.status, 200)
     assert.ok([200, 404].includes(job.status), JSON.stringify(job.body))
     assert.equal(tryDocker('inspect', `sb-${REF}-job-backup`), null, `round ${i}: job ${job.status}`)
+  }
+})
+
+test("GET /proxy: the proxy's address by its exact container name, never a DNS alias of it", async () => {
+  // an impostor on the proxy network carrying the proxy's name as an alias: a DNS lookup would answer both
+  tryDocker('rm', '-f', PROXY_CONTAINER, IMPOSTOR)
+  docker('run', '-d', '--init', '--name', PROXY_CONTAINER, '--network', PROXY_NET, IMAGE)
+  docker('run', '-d', '--init', '--name', IMPOSTOR, '--network', PROXY_NET, '--network-alias', PROXY_CONTAINER, IMAGE)
+  try {
+    const r = await api('GET', '/proxy')
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    const ip = (n: string) => docker('inspect', '-f', `{{(index .NetworkSettings.Networks "${PROXY_NET}").IPAddress}}`, n)
+    assert.deepEqual(r.body, { container: PROXY_CONTAINER, addresses: [ip(PROXY_CONTAINER)] })
+    docker('stop', '-t', '1', PROXY_CONTAINER)
+    assert.equal((await api('GET', '/proxy')).status, 503)
+  } finally {
+    tryDocker('rm', '-f', PROXY_CONTAINER, IMPOSTOR)
   }
 })

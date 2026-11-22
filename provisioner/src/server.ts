@@ -24,7 +24,9 @@ function boot(): { ctx: ops.Ctx; token: Buffer } {
     buildProject({ ref: 'checkcheckcheckcheck', templateVersion: node.templateVersion, size, hosts: ['check.invalid'], env,
       subnet: `${node.subnetPool.split('/')[0]}/27` }, tpl, sizes, node)
   }
-  const token = process.env.PROVISIONER_TOKEN ?? ''
+  // a compose secret file (not in Config.Env, which a socket proxy's inspect shows); plain env for development
+  const file = process.env.PROVISIONER_TOKEN_FILE
+  const token = (file ? readFileSync(file, 'utf8').trim() : process.env.PROVISIONER_TOKEN) ?? ''
   if (token.length < 32) throw new Error('settings: PROVISIONER_TOKEN must be at least 32 characters')
   return { ctx: { tpl, sizes, node }, token: createHash('sha256').update(token).digest() }
 }
@@ -61,6 +63,7 @@ const P = '([^/]+)'
 const routes: Route[] = [
   ['GET', /^\/health$/, async () => ({ ok: true, templateVersion: ctx.node.templateVersion })],
   ['GET', /^\/projects$/, () => ops.listProjects(ctx)],
+  ['GET', /^\/proxy$/, () => ops.proxyAddresses(ctx)],
   ['GET', new RegExp(`^/projects/${P}$`), ([ref]) => ops.projectState(ctx, ref)],
   ['POST', new RegExp(`^/projects/${P}/ensure$`), ([ref], _, b) => ops.serial(ref, () => ops.ensure(ctx, ref, b))],
   ['POST', new RegExp(`^/projects/${P}/(start|stop)$`), ([ref, a], _, b) => ops.serial(ref, () => ops.startStop(ctx, ref, a as 'start' | 'stop', b))],

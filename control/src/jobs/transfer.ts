@@ -106,7 +106,8 @@ defineJob('project.backup', 'heavy', backupSteps((ctx) => need(ctx).ref))
 
 // the payload carries the manifest sealed in the request, in pieces (payload strings are capped at 2048 characters)
 defineJob('project.export', 'heavy', backupSteps((ctx) => `export-${need(ctx).ref}`,
-  (ctx) => ({ MANIFEST_B64: (ctx.job.payload.manifest as string[]).join('') })))
+  // CONTROL_GID: the export's directories and project.json go to control's group, which an import reads them as
+  (ctx) => ({ MANIFEST_B64: (ctx.job.payload.manifest as string[]).join(''), CONTROL_GID: String(process.getgid?.() ?? 1000) })))
 
 defineJob('control.backup', 'heavy', [
   step('backup', (ctx) => startJob(ctx, 'control', 'backup', {},

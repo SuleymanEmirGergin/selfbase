@@ -22,6 +22,6 @@ export const { verify } = jwt
 export const { sessionActive } = sessions
 export const { findByEmail, hashPassword } = users
 export const { resetRateLimits } = ratelimit
-export const { clientIp } = ip
+export const { clientIp, trustProxies } = ip
 export const closeCoreDb = coreDb.closeDb
 export const { background, smtpOptions } = mail

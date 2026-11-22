@@ -24,6 +24,7 @@ services:
       REGISTRY: selfbase-test.invalid/sb
       TEMPLATE_VERSION: test
       PROXY_NETWORK: selfbase-test-proxy
+      PROXY_CONTAINER: selfbase-test-edge
       CONTROL_CONTAINER: selfbase-test-control
       BACKUP_HOST_DIR: /opt/selfbase/sb-test-backups
       TEMPLATE_PATH: /fixtures/ops-template.json

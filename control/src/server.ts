@@ -3,6 +3,7 @@ import { serve } from '@hono/node-server'
 import { config } from './config.ts'
 import { closeDb, migrate, pool } from './db.ts'
 import { app } from './app.ts'
+import { trustProxies } from './core.ts'
 import { startWorkers } from './jobs/index.ts'
 import { httpProvisioner, setProvisioner } from './provisioner.ts'
 import { startReconcile } from './reconcile.ts'
@@ -16,6 +17,8 @@ await migrate().catch((e: Error) => {
 // jobs left running by the previous process resume at their recorded step
 const provisioner = httpProvisioner(config.provisionerUrl, config.provisionerToken)
 setProvisioner(provisioner)
+// X-Forwarded-For counts only from the proxy container (by exact name, via the provisioner) and listed addresses
+trustProxies(async () => (await provisioner.proxy()).addresses, config.trustedProxyIps)
 startWorkers({ db: pool, provisioner })
 startReconcile({ db: pool, provisioner })
 startSchedule(pool)

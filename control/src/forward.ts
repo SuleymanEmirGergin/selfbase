@@ -4,14 +4,18 @@ import type { Context } from 'hono'
 import { authorize } from './authz.ts'
 import type { Action } from './authz.ts'
 import { pool } from './db.ts'
+import { coreIp, forgetCoreIp } from './core-addr.ts'
 import { ApiError } from './errors.ts'
+import { provisioner } from './provisioner.ts'
 import { DESIRED_RUNNING } from './jobs/index.ts'
 import { projectConfig } from './project-env.ts'
 import { getSecrets } from './secrets.ts'
 import type { Env } from './session.ts'
 
-/** Mutable so tests can point it at a stub. */
-export const forwardTarget = { url: (ref: string) => `http://sb-${ref}-core:8081` }
+/** core's admin listener, by its address on sb-<ref> (core-addr.ts). Mutable so tests can point it at a stub. */
+export const forwardTarget: { url: (ref: string) => string | Promise<string> } = {
+  url: async (ref) => `http://${await coreIp(provisioner(), ref)}:8081`,
+}
 
 type Target = { id: string; ref: string; org_id: string; status: string }
 
@@ -26,9 +30,10 @@ const DEFAULT_UPLOAD = 50 * 1024 * 1024
 
 const unreachable = () => new ApiError(502, 'project_unreachable', 'project is not reachable')
 
-/** Sends one request to the project's core admin listener with its token, acting for `actor`. */
-export async function adminFetch(p: Target, actor: string, url: URL, init: { method: string; headers?: Headers; body?: BodyInit | null }) {
+/** Sends one request (`path`: /admin/..., with its query) to the project's core admin listener with its token, acting for `actor`. */
+export async function adminFetch(p: Target, actor: string, path: string, init: { method: string; headers?: Headers; body?: BodyInit | null }) {
   if (!DESIRED_RUNNING.includes(p.status)) throw new ApiError(409, 'project_not_running', `the project is ${p.status}`)
+  const url = new URL(path, await forwardTarget.url(p.ref))
   const headers = init.headers ?? new Headers()
   headers.set('authorization', `Bearer ${(await getSecrets(pool, p)).ADMIN_TOKEN}`)
   headers.set('x-selfbase-actor', actor)
@@ -37,6 +42,9 @@ export async function adminFetch(p: Target, actor: string, url: URL, init: { met
   const timer = setTimeout(() => ctl.abort(), HEADERS_MS)
   try {
     return await fetch(url, { method: init.method, headers, body: init.body, redirect: 'manual', signal: ctl.signal, duplex: 'half' } as RequestInit)
+  } catch (e) {
+    forgetCoreIp(p.ref) // a recreated core has a new address
+    throw e
   } finally {
     clearTimeout(timer)
   }
@@ -64,7 +72,8 @@ export async function forwardAdmin(c: Context<Env>, p: Target): Promise<Response
   const prefix = `/platform/projects/${p.ref}/admin`
   const incoming = new URL(c.req.url)
   if (!incoming.pathname.startsWith(`${prefix}/`)) throw new ApiError(404, 'not_found', 'not found')
-  const url = new URL(`${forwardTarget.url(p.ref)}/admin${incoming.pathname.slice(prefix.length)}${incoming.search}`)
+  // resolved against a placeholder: the checks need the path only, and core's address is looked up once authorized
+  const url = new URL(`http://core/admin${incoming.pathname.slice(prefix.length)}${incoming.search}`)
   // `..` (also as %2e%2e) is resolved by URL: whatever is left must still be under /admin
   if (!url.pathname.startsWith('/admin/')) throw new ApiError(404, 'not_found', 'not found')
   const method = c.req.method
@@ -96,7 +105,7 @@ export async function forwardAdmin(c: Context<Env>, p: Target): Promise<Response
 
   let res: Response
   try {
-    res = await adminFetch(p, c.get('user').email, url, { method, headers, body })
+    res = await adminFetch(p, c.get('user').email, url.pathname + url.search, { method, headers, body })
   } catch (e) {
     if (over) throw new ApiError(413, 'payload_too_large', 'request body too large')
     if (e instanceof ApiError) throw e
@@ -116,7 +125,7 @@ export async function forwardAdmin(c: Context<Env>, p: Target): Promise<Response
 export async function adminSql(p: Target, actor: string, query: string): Promise<{ columns?: string[]; rows?: unknown[][]; error?: { message: string } }> {
   let res: Response
   try {
-    res = await adminFetch(p, actor, new URL(`${forwardTarget.url(p.ref)}/admin/sql`), {
+    res = await adminFetch(p, actor, '/admin/sql', {
       method: 'POST', headers: new Headers({ 'content-type': 'application/json' }), body: JSON.stringify({ query }),
     })
   } catch (e) {

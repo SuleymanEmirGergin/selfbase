@@ -4,7 +4,8 @@
 #   /backups        the host backup directory (BACKUP_HOST_DIR), read-write
 #   /data/storage   the project's storage volume, read-only (absent for the control database)
 #   PGHOST, PGPASSWORD (PGUSER, PGDATABASE default to postgres), BACKUP_SUBDIR (one or two path segments),
-#   BACKUP_RETENTION_DAYS (default 7), MANIFEST_B64 (an export: base64 of project.json, sealed by control)
+#   BACKUP_RETENTION_DAYS (default 7), MANIFEST_B64 (an export: base64 of project.json, sealed by control),
+#   CONTROL_GID (an export: control's group, default 1000)
 # Writes /backups/$BACKUP_SUBDIR/<YYYYMMDD-HHMMSS UTC>/{db.dump (pg_dump -Fc), globals.sql (roles, without
 # passwords; for a disaster restore onto a fresh cluster only), storage.tar.gz, project.json (exports only),
 # MANIFEST (file, size, sha256)}. BACKUP_SUBDIR=control backs up the control database: no storage archive.
@@ -50,6 +51,12 @@ fi
 if [ -n "${MANIFEST_B64:-}" ]; then
   base64 -d <<< "$MANIFEST_B64" > "$tmp/project.json"
   files="$files project.json"
+  # control (not root, read-only mount) reads project.json for an import: its group (CONTROL_GID) may enter the
+  # directories and read the manifest, nobody else; the dump and storage stay owner-only
+  [[ ${CONTROL_GID:=1000} =~ ^[0-9]+$ ]] || { echo "backup: CONTROL_GID must be a numeric group id" >&2; exit 2; }
+  chgrp "$CONTROL_GID" "$backups" "$tmp" "$tmp/project.json"
+  chmod 0750 "$backups" "$tmp"
+  chmod 0640 "$tmp/project.json"
 fi
 for f in $files; do
   echo "$f $(stat -c %s "$tmp/$f") $(sha256sum "$tmp/$f" | cut -d' ' -f1)"

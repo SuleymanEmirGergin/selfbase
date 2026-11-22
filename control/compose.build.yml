@@ -1,0 +1,37 @@
+# Local and CI only (CC-1: no registry): builds every image the stack and its projects use, tagged
+# ${REGISTRY}/selfbase-<name>:${TEMPLATE_VERSION} as the provisioner expects them. From the repository root:
+#   docker compose -f control/compose.yml -f control/compose.build.yml --env-file <env> --profile images build
+#   docker compose -f control/compose.yml -f control/compose.build.yml --env-file <env> up -d --wait
+# The `images` services only carry builds for the project template (the provisioner creates those containers);
+# they never run. control-db builds the db image the projects use too.
+services:
+  control:
+    build: { context: .., dockerfile: control/Dockerfile }
+    pull_policy: build
+  control-db:
+    build: { context: .., dockerfile: db/Dockerfile }
+    pull_policy: build
+  provisioner:
+    build: { context: .., dockerfile: provisioner/Dockerfile }
+    pull_policy: build
+
+  image-core:
+    profiles: [images]
+    image: ${REGISTRY}/selfbase-core:${TEMPLATE_VERSION}
+    build: { context: .., dockerfile: core/Dockerfile }
+  image-rest:
+    profiles: [images]
+    image: ${REGISTRY}/selfbase-rest:${TEMPLATE_VERSION}
+    build: { context: .., dockerfile: rest/Dockerfile }
+  image-fn:
+    profiles: [images]
+    image: ${REGISTRY}/selfbase-fn:${TEMPLATE_VERSION}
+    build: { context: .., dockerfile: fn/Dockerfile }
+  image-pooler:
+    profiles: [images]
+    image: ${REGISTRY}/selfbase-pooler:${TEMPLATE_VERSION}
+    build: { context: .., dockerfile: pooler/Dockerfile }
+  image-job:
+    profiles: [images]
+    image: ${REGISTRY}/selfbase-job:${TEMPLATE_VERSION}
+    build: { context: .., dockerfile: job/Dockerfile }

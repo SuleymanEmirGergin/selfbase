@@ -8,7 +8,9 @@ import { containerLogs, docker, ensureImage } from './docker.ts'
 
 export type Ctx = { tpl: Template; sizes: Sizes; node: NodeSettings }
 export type ServiceState = { service: string; exists: boolean; state: string | null; health: string | null
-  specHash: string | null; templateVersion: string | null; memLimitMb: number | null; proxyAttached: boolean }
+  specHash: string | null; templateVersion: string | null; memLimitMb: number | null; proxyAttached: boolean
+  /** the address on sb-<ref>: control connects to it, never to a name Docker's DNS may answer from another network */
+  projectIp: string | null }
 
 const MiB = 1024 * 1024
 const SERVICE_RE = /^[a-z][a-z0-9_-]*$/
@@ -35,9 +37,11 @@ const connectIfMissing = async (c: any, name: string, network: string) => {
 
 // Clean stop first (SIGTERM, then the container's own StopTimeout from stop_grace_period), so Postgres is
 // never SIGKILLed by a recreate or a delete. True when a container was removed.
+// v=true: the anonymous volumes an image declares (the job image is postgres-based: VOLUME /var/lib/postgresql/data)
+// go with the container; named volumes never do
 const stopAndRemove = async (name: string) => {
   await docker('POST', `/containers/${name}/stop`, undefined, [304, 404])
-  return (await docker('DELETE', `/containers/${name}?force=true`, undefined, [404])).status !== 404
+  return (await docker('DELETE', `/containers/${name}?force=true&v=true`, undefined, [404])).status !== 404
 }
 
 // One mutating operation per key at a time (control's reconcile and a user action can overlap).
@@ -49,12 +53,13 @@ export function serial<T>(key: string, fn: () => Promise<T>): Promise<T> {
   return next
 }
 
-function serviceState(service: string, c: any, node: NodeSettings): ServiceState {
-  if (!c) return { service, exists: false, state: null, health: null, specHash: null, templateVersion: null, memLimitMb: null, proxyAttached: false }
+function serviceState(service: string, c: any, node: NodeSettings, network: string): ServiceState {
+  if (!c) return { service, exists: false, state: null, health: null, specHash: null, templateVersion: null, memLimitMb: null, proxyAttached: false, projectIp: null }
   const l = c.Config?.Labels ?? {}
   return { service, exists: true, state: c.State.Status, health: c.State.Health?.Status ?? null, specHash: l['selfbase.spec'] ?? null,
     templateVersion: l['selfbase.template'] ?? null, memLimitMb: c.HostConfig.Memory / MiB,
-    proxyAttached: Object.hasOwn(c.NetworkSettings?.Networks ?? {}, node.proxyNetwork) }
+    proxyAttached: Object.hasOwn(c.NetworkSettings?.Networks ?? {}, node.proxyNetwork),
+    projectIp: c.NetworkSettings?.Networks?.[network]?.IPAddress || null }
 }
 
 export async function projectState(ctx: Ctx, ref: string) {
@@ -64,7 +69,7 @@ export async function projectState(ctx: Ctx, ref: string) {
     .filter((s): s is string => typeof s === 'string' && SERVICE_RE.test(s) && !s.startsWith('job-'))
   const services = [...new Set([...startOrder(ctx.tpl.services), ...labelled])]
   return { ref, network: !!net, controlAttached: attached(net, ctx.node.controlContainer),
-    services: await Promise.all(services.map(async (s) => serviceState(s, await inspect(containerName(ref, s)), ctx.node))) }
+    services: await Promise.all(services.map(async (s) => serviceState(s, await inspect(containerName(ref, s)), ctx.node, networkName(ref)))) }
 }
 
 export async function listProjects(ctx: Ctx) {
@@ -159,6 +164,16 @@ export async function remove(ctx: Ctx, ref: string, volumes: boolean) {
   return { removed }
 }
 
+// The proxy's address on PROXY_NETWORK (Traefik reaches control there), by its exact container name: never a DNS
+// answer, which any container on that network can join with an alias. Not running: 503, control keeps what it had.
+export async function proxyAddresses(ctx: Ctx) {
+  const name = ctx.node.proxyContainer
+  const c = await inspect(name)
+  const ip = c?.Name === `/${name}` && c.State?.Running ? c.NetworkSettings?.Networks?.[ctx.node.proxyNetwork]?.IPAddress : ''
+  if (!ip) refuse(503, 'proxy_unavailable', `${name} is not running on ${ctx.node.proxyNetwork}`)
+  return { container: name, addresses: [ip as string] }
+}
+
 export async function attachProxy(ctx: Ctx, ref: string) {
   assertRef(ref)
   const name = containerName(ref, 'core')
@@ -177,7 +192,7 @@ export async function runJob(ctx: Ctx, ref: string, body: unknown) {
   const running = await listContainers({ status: ['running'] }, false)
   if (running.some((c) => (c.Names as string[]).some((n) => JOB_NAME_RE.test(n)))) refuse(409, 'job_running', 'another job is running')
   // an earlier finished job of this type whose result was never read
-  await docker('DELETE', `/containers/${spec.name}?force=true`, undefined, [404])
+  await docker('DELETE', `/containers/${spec.name}?force=true&v=true`, undefined, [404])
   await ensureImage(spec.body.Image as string)
   const created = await docker('POST', `/containers/create?name=${spec.name}`, spec.body)
   await docker('POST', `/containers/${spec.name}/start`)
@@ -191,7 +206,7 @@ export async function jobStatus(ref: string, type: string) {
   const c = (await inspect(name)) ?? refuse(404, 'job_not_found', `no ${type} job`)
   const tail = await containerLogs(name, 50, 'job_not_found')
   if (c.State.Running) return { status: 'running', exitCode: null, tail }
-  await docker('DELETE', `/containers/${name}?force=true`, undefined, [404])
+  await docker('DELETE', `/containers/${name}?force=true&v=true`, undefined, [404])
   // still 'created' means its start failed: it never ran
   const exitCode: number | null = c.State.Status === 'created' ? null : c.State.ExitCode
   return { status: exitCode === 0 ? 'succeeded' : 'failed', exitCode, tail }

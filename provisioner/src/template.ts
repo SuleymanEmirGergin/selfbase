@@ -180,7 +180,7 @@ async function check(file: string) {
     const env = dryRunEnv(tpl)
     const node = { registry: 'registry.invalid/selfbase', templateVersion: 'check', proxyNetwork: 'proxy', entrypointHttp: 'http',
       entrypointHttps: 'https', certResolver: 'le', logSyslogAddr: '', cgroupParent: '', backupHostDir: '',
-      subnetPool: '10.207.0.0/16', controlContainer: 'selfbase-control', controlNetwork: 'selfbase' }
+      subnetPool: '10.207.0.0/16', controlContainer: 'selfbase-control', controlNetwork: 'selfbase', proxyContainer: 'coolify-proxy' }
     const all = ['micro', 'small', 'medium'] as const
     for (const size of all) {
       buildProject({ ref: 'checkcheckcheckcheck', templateVersion: 'check', size, subnet: '10.207.0.0/27',
