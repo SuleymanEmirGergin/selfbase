@@ -30,9 +30,8 @@ function sources(dir) {
 
 const reads = (texts, re) => new Set(texts.flatMap((t) => [...t.matchAll(re)].map((m) => m[1])))
 
-// Set by the compose file itself or the image, not meant for the operator.
-// AUTHENTICATOR_PASSWORD defaults to POSTGRES_PASSWORD, the password rest's PGRST_DB_URI uses in plain compose.
-const CORE_INTERNAL = ['DB_HOST', 'DB_PORT', 'PORT', 'PANEL_DIR', 'PLATFORM_DIR', 'AUTHENTICATOR_PASSWORD']
+// Set by the image, not meant for the operator.
+const CORE_INTERNAL = ['DB_PORT', 'PORT', 'PLATFORM_DIR']
 const FN_INTERNAL = ['PORT']
 
 function check(service, vars, internal) {
@@ -66,32 +65,39 @@ test('every env variable fn reads is passed by compose or internal', () => {
   check('fn', vars, FN_INTERNAL)
 })
 
-// Resolved by docker compose itself, so the anchor merge is checked the way compose applies it.
-// An empty env file keeps a real .env next to compose.yml out of it; the values come from the environment.
-const LIMITS = { db: [1073741824, 2], core: [536870912, 1], rest: [268435456, 1], fn: [536870912, 1], backup: [536870912, 0.5] }
-const REQUIRED = { POSTGRES_PASSWORD: 'x', JWT_SECRET: 'x', PUBLIC_URL: 'https://api.example.com', SITE_URL: 'https://app.example.com', ANON_KEY: 'x', SERVICE_ROLE_KEY: 'x' }
+test('no panel settings and no Coolify labels are left', () => {
+  assert.doesNotMatch(compose, /PANEL_/)
+  assert.doesNotMatch(compose, /coolify\./)
+})
+
+// The local stack (compose.yml + compose.build.yml), resolved by docker compose itself.
+// An empty env file keeps a real .env out of it; the values come from the environment.
+const REQUIRED = { REGISTRY: 'selfbase', TEMPLATE_VERSION: 'dev', POSTGRES_PASSWORD: 'x', AUTHENTICATOR_PASSWORD: 'x', JWT_SECRET: 'x',
+  PUBLIC_URL: 'https://api.example.com', SITE_URL: 'https://app.example.com', ANON_KEY: 'x', SERVICE_ROLE_KEY: 'x' }
 function config(env) {
   const dir = mkdtempSync(join(tmpdir(), 'sb-config-'))
   try {
     writeFileSync(join(dir, 'empty.env'), '')
-    return spawnSync('docker', ['compose', '-f', join(root, 'template', 'compose.yml'), '--env-file', join(dir, 'empty.env'), 'config', '--format', 'json'],
+    return spawnSync('docker', ['compose', '-f', join(root, 'template', 'compose.yml'), '-f', join(root, 'template', 'compose.build.yml'),
+      '--env-file', join(dir, 'empty.env'), 'config', '--format', 'json'],
       { env: { ...process.env, ...env, COMPOSE_PROJECT_NAME: 'sb-config-check' }, encoding: 'utf8', timeout: 60000 })
   } finally { rmSync(dir, { recursive: true, force: true }) }
 }
 const noDocker = spawnSync('docker', ['compose', 'version']).status !== 0
 
-test('every service has limits, rotated logs and no-new-privileges', { skip: noDocker && 'docker not available' }, () => {
+test('local stack: five services, only core published, on loopback 8080', { skip: noDocker && 'docker not available' }, () => {
   const r = config(REQUIRED)
   assert.equal(r.status, 0, r.stderr)
-  const { services } = JSON.parse(r.stdout)
-  assert.deepEqual(Object.keys(services).sort(), Object.keys(LIMITS).sort())
-  for (const [name, s] of Object.entries(services)) {
-    assert.deepEqual([Number(s.mem_limit), Number(s.cpus)], LIMITS[name], `${name}: mem_limit/cpus`)
-    assert.equal(s.pids_limit, 512, `${name}: pids_limit`)
-    assert.deepEqual(s.logging, { driver: 'json-file', options: { 'max-file': '3', 'max-size': '10m' } }, `${name}: logging`)
-    assert.deepEqual(s.security_opt, ['no-new-privileges:true'], `${name}: security_opt`)
+  const { name, services } = JSON.parse(r.stdout)
+  assert.equal(name, 'sb-config-check')
+  assert.deepEqual(Object.keys(services).sort(), ['core', 'db', 'fn', 'pooler', 'rest'])
+  for (const [n, s] of Object.entries(services)) {
+    assert.deepEqual((s.ports ?? []).map((p) => `${p.host_ip}:${p.target}`), n === 'core' ? ['127.0.0.1:8080'] : [], `${n}: ports`)
+    assert.equal(s.restart, 'unless-stopped', `${n}: restart`)
+    assert.ok(s.build, `${n}: build`)
   }
-  assert.equal(Number(services.db.shm_size), 268435456)
+  assert.deepEqual(services.core.depends_on, { db: { condition: 'service_healthy', required: true },
+    rest: { condition: 'service_started', required: true } })
 })
 
 test('compose refuses to run without PUBLIC_URL and names it', { skip: noDocker && 'docker not available' }, () => {

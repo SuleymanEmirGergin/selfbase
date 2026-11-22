@@ -1,0 +1,23 @@
+{
+  "micro": {
+    "db": { "mem_mb": 512, "cpus": 1, "pids": 512, "shm_mb": 128, "shared_buffers": "128MB", "max_connections": 60 },
+    "rest": { "mem_mb": 128, "cpus": 0.5, "pids": 512 },
+    "core": { "mem_mb": 256, "cpus": 0.5, "pids": 512 },
+    "fn": { "mem_mb": 256, "cpus": 0.5, "pids": 512 },
+    "pooler": { "mem_mb": 32, "cpus": 0.25, "pids": 64, "pool_size": 15 }
+  },
+  "small": {
+    "db": { "mem_mb": 1024, "cpus": 2, "pids": 512, "shm_mb": 256, "shared_buffers": "256MB", "max_connections": 100 },
+    "rest": { "mem_mb": 256, "cpus": 1, "pids": 512 },
+    "core": { "mem_mb": 512, "cpus": 1, "pids": 512 },
+    "fn": { "mem_mb": 512, "cpus": 1, "pids": 512 },
+    "pooler": { "mem_mb": 32, "cpus": 0.25, "pids": 64, "pool_size": 20 }
+  },
+  "medium": {
+    "db": { "mem_mb": 2048, "cpus": 2, "pids": 512, "shm_mb": 512, "shared_buffers": "512MB", "max_connections": 150 },
+    "rest": { "mem_mb": 256, "cpus": 1, "pids": 512 },
+    "core": { "mem_mb": 512, "cpus": 1, "pids": 512 },
+    "fn": { "mem_mb": 1024, "cpus": 1, "pids": 512 },
+    "pooler": { "mem_mb": 32, "cpus": 0.25, "pids": 64, "pool_size": 30 }
+  }
+}
