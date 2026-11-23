@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { EditorView, basicSetup } from 'codemirror'
 import { keymap } from '@codemirror/view'
 import { sql as sqlLang } from '@codemirror/lang-sql'
+import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
+import { tags as t } from '@lezer/highlight'
 import { errMsg } from '../api.ts'
 import type { SqlResult } from '../api.ts'
 import { Grid, cellText } from '../Grid.tsx'
@@ -16,7 +18,17 @@ const theme = EditorView.theme({
   '.cm-gutters': { backgroundColor: 'var(--panel)', color: 'var(--dim)', borderRight: '1px solid var(--line)' },
   '.cm-activeLine, .cm-activeLineGutter': { backgroundColor: 'var(--surface-2)' },
   '.cm-cursor': { borderLeftColor: 'var(--text)' },
+  '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': { backgroundColor: 'var(--accent-soft) !important' },
 })
+// Token colours from the Studio palette, so both themes keep AA contrast (the CodeMirror default is light-only).
+const highlight = syntaxHighlighting(HighlightStyle.define([
+  { tag: t.keyword, color: 'var(--violet)', fontWeight: '500' },
+  { tag: [t.string, t.special(t.string)], color: 'var(--accent-text)' },
+  { tag: [t.number, t.bool, t.null], color: 'var(--warn)' },
+  { tag: [t.comment, t.lineComment, t.blockComment], color: 'var(--dim)', fontStyle: 'italic' },
+  { tag: [t.typeName, t.standard(t.name)], color: 'var(--info)' },
+  { tag: t.operator, color: 'var(--muted)' },
+]))
 
 /** 1-based line and column of a 1-based character position. */
 const lineCol = (text: string, pos: number) => {
@@ -76,6 +88,7 @@ export default function Sql() {
         basicSetup,
         sqlLang(),
         theme,
+        highlight,
         EditorView.contentAttributes.of({ 'aria-label': 'SQL sorgusu' }),
         EditorView.updateListener.of((u) => { if (u.docChanged) { mem.query = u.state.doc.toString(); setQuery(mem.query) } }),
       ],
@@ -96,13 +109,14 @@ export default function Sql() {
   const fail = result && 'error' in result ? result.error : null
 
   return (
+    <div className="sql-layout">
     <section className="page-main">
       <div className="toolbar">
         <h1 className="title">SQL</h1>
         <span className="muted small hide-sm">Sorgular veritabanı süper kullanıcısıyla çalışır.</span>
         <div className="spacer" />
         <span className="muted small hide-sm"><kbd>Ctrl</kbd>+<kbd>Enter</kbd></span>
-        <button className="btn primary" onClick={run} disabled={running}><Icon name="chevron" />{running ? 'Çalışıyor…' : 'Çalıştır'}</button>
+        <button className="btn primary" onClick={run} disabled={running}>{running ? 'Çalışıyor…' : 'Çalıştır'}<span className="ic"><Icon name="play" size={12} weight="bold" /></span></button>
       </div>
       <div className="sql-editor" ref={host} />
       <div className="result-bar" aria-live="polite">
@@ -153,5 +167,24 @@ export default function Sql() {
         </Drawer>
       )}
     </section>
+    <Assistant />
+    </div>
+  )
+}
+
+// The assistant ships later; until then the panel says so and takes no input. Hidden below 1100 px.
+function Assistant() {
+  return (
+    <aside className="asst" aria-label="Asistan">
+      <div className="ah">
+        <span className="orb" aria-hidden="true"><Icon name="sparkle" size={14} weight="bold" /></span>
+        <b>Asistan</b><span className="spacer" /><span className="chip pv-chip">ÖNİZLEME</span>
+      </div>
+      <Empty icon="sparkle">
+        <b>Asistan henüz açık değil</b>
+        <p>Şemanızı bilen, sorgu yazıp açıklayan bir yardımcı bu panele gelecek. Şimdilik sorgular yalnızca sizin yazdığınız gibi çalışır.</p>
+      </Empty>
+      <div className="ask" aria-hidden="true"><span>Bir soru sorun…</span><span className="send"><Icon name="arrow-up-right" size={14} /></span></div>
+    </aside>
   )
 }

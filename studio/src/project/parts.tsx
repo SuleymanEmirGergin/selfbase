@@ -8,9 +8,9 @@ import { useProject } from './context.ts'
 
 // Pieces shared by the home and settings screens.
 
-export function Section({ title, actions, children }: { title: string; actions?: ReactNode; children: ReactNode }) {
+export function Section({ title, actions, className = '', children }: { title: string; actions?: ReactNode; className?: string; children: ReactNode }) {
   return (
-    <section className="card" aria-label={title}>
+    <section className={`card ${className}`} aria-label={title}>
       <header className="card-head"><h2>{title}</h2><div className="spacer" />{actions}</header>
       <div className="card-body">{children}</div>
     </section>
