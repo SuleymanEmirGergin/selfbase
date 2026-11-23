@@ -55,6 +55,7 @@ export const tr: Messages = {
   'shell.theme': 'Temayı değiştir',
   'shell.themeTitle': 'Temayı değiştir ({keys})',
   'shell.language': 'Dil',
+  'shell.languageFailed': 'Bu dil yüklenemedi. Yeniden dene.',
   'shell.memory': 'Bellek',
   'nav.groupOrg': 'Organizasyon',
   'nav.groupDb': 'Veritabanı',

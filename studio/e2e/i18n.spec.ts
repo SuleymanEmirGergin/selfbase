@@ -5,6 +5,8 @@ import { REF, fx, mockApi, routes } from './helpers.ts'
 // and survives a reload.
 
 const signedOut = { 'GET /me': { status: 401, body: fx('unauthorized') }, 'POST /refresh': { status: 401, body: fx('unauthorized') } }
+// the Turkish catalogue: its source module on the dev server, its own chunk in the build
+const TR_CHUNK = /\/src\/i18n\/tr\.ts$|\/assets\/tr-[\w-]+\.js$/
 const lang = (page: import('@playwright/test').Page) => page.evaluate(() => document.documentElement.lang)
 
 test('a first visit is in English, with <html lang="en">', async ({ page }) => {
@@ -17,7 +19,7 @@ test('a first visit is in English, with <html lang="en">', async ({ page }) => {
 
 test('an English visit does not download the Turkish catalogue; switching loads it', async ({ page }) => {
   const trLoads: string[] = []
-  page.on('request', (r) => { if (/\/i18n\/tr(\.ts)?[.?-]|\/tr-[\w-]+\.js/.test(r.url())) trLoads.push(r.url()) })
+  page.on('request', (r) => { if (TR_CHUNK.test(new URL(r.url()).pathname)) trLoads.push(r.url()) })
   await mockApi(page, routes())
   await page.goto('/org/acme')
   await expect(page.getByRole('heading', { name: 'Projects', level: 1 })).toBeVisible()
@@ -36,6 +38,45 @@ test('the signed-out screens have their own language switch', async ({ page }) =
   await expect(page.getByLabel('Dil')).toHaveValue('tr')
   await page.getByLabel('Dil').selectOption('en')
   await expect(page.getByRole('button', { name: 'Send link' })).toBeVisible()
+})
+
+const blockTurkish = (page: import('@playwright/test').Page) => page.route((u) => TR_CHUNK.test(u.pathname), (r) => r.abort())
+
+test('a stored Turkish choice whose catalogue fails to load starts the session wholly in English', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('studio-locale', 'tr'))
+  await blockTurkish(page)
+  await mockApi(page, routes())
+  await page.goto('/org/acme/capacity')
+  await expect(page.getByRole('heading', { name: 'Capacity', level: 1 })).toBeVisible()
+  expect(await lang(page)).toBe('en')
+  await expect(page.getByRole('cell', { name: '2,336 MiB' })).toBeVisible() // English numbers too, not "2.336"
+  await expect(page.getByLabel('Language')).toHaveValue('en')
+  expect(await page.evaluate(() => localStorage.getItem('studio-locale'))).toBe('tr') // the next visit tries again
+})
+
+test('a catalogue that stalls holds the first paint about 2 seconds, then the app starts in English', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('studio-locale', 'tr'))
+  await page.route((u) => TR_CHUNK.test(u.pathname), () => {}) // never answered
+  await mockApi(page, routes())
+  await page.goto('/org/acme')
+  await expect(page.getByRole('heading', { name: 'Projects', level: 1 })).toBeVisible({ timeout: 4000 })
+  expect(await lang(page)).toBe('en')
+})
+
+test('picking Türkçe when its catalogue cannot load says so and stays in English', async ({ page }) => {
+  await blockTurkish(page)
+  await mockApi(page, routes())
+  await page.goto('/org/acme')
+  await page.getByLabel('Language').selectOption('tr')
+  await expect(page.getByRole('alert')).toContainText('Could not load that language')
+  await expect(page.getByLabel('Language')).toHaveValue('en')
+  await expect(page.getByRole('heading', { name: 'Projects', level: 1 })).toBeVisible()
+  // the palette command takes the same path
+  await page.keyboard.press('Control+K')
+  await page.getByRole('combobox', { name: 'Search commands' }).fill('türkçe')
+  await page.getByRole('option', { name: /Language: Türkçe/ }).click()
+  await expect(page.getByRole('alert')).toHaveCount(2)
+  expect(await lang(page)).toBe('en')
 })
 
 test('switching to Türkçe in the sidebar changes the copy, lang and numbers, and survives a reload', async ({ page }) => {

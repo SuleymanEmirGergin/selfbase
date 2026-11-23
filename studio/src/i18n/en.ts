@@ -54,6 +54,7 @@ export const en = {
   'shell.theme': 'Switch theme',
   'shell.themeTitle': 'Switch theme ({keys})',
   'shell.language': 'Language',
+  'shell.languageFailed': 'Could not load that language. Try again.',
   'shell.memory': 'Memory',
   'nav.groupOrg': 'Organization',
   'nav.groupDb': 'Database',

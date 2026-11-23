@@ -1,11 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKey, ReactNode } from 'react'
 import { Link, navigate, usePath } from './router.tsx'
-import { Icon } from './ui.tsx'
+import { Icon, toast } from './ui.tsx'
 import { Brand } from './glyphs.tsx'
 import { toggleTheme } from './theme.ts'
 import { filterCommands } from './lib/palette.ts'
 import { LANGS, locale, rich, setLocale, t, upper } from './i18n/index.ts'
+import type { Lang } from './i18n/index.ts'
 
 // The app frame shared by the organization and project areas: sidebar, top bar and the Ctrl+K palette.
 
@@ -16,9 +17,12 @@ export type Command = { label: string; hint?: string; icon: string; group: strin
 const isMac = /Mac|iP(hone|ad)/.test(navigator.platform)
 const MOD = isMac ? '⌘' : 'Ctrl'
 
+/** Switches language; a catalogue that cannot be fetched leaves the current one and says so. */
+const pickLocale = (l: Lang) => setLocale(l).catch(() => toast(t('shell.languageFailed'), 'error'))
+
 /** The language picker: in the sidebar foot and on the signed-out screens. */
 export const LangSelect = () => (
-  <select aria-label={t('shell.language')} value={locale()} onChange={(e) => setLocale(e.target.value as typeof LANGS[number]['id'])}>
+  <select aria-label={t('shell.language')} value={locale()} onChange={(e) => pickLocale(e.target.value as Lang)}>
     {LANGS.map((l) => <option key={l.id} value={l.id} lang={l.id}>{l.name}</option>)}
   </select>
 )
@@ -150,7 +154,7 @@ export function Shell({ switcher, nav, crumbs, commands, loadCommands, email, on
     ...commands,
     ...extra,
     { label: t('cmd.theme'), hint: t('cmd.themeHint'), icon: 'theme', group: t('palette.groupActions'), keys: [MOD, '⇧', 'L'], run: () => toggleTheme(themeBtn.current) },
-    ...LANGS.filter((l) => l.id !== locale()).map((l) => ({ label: t('cmd.language', { name: l.name }), hint: t('cmd.languageHint'), icon: 'globe', group: t('palette.groupActions'), run: () => setLocale(l.id) })),
+    ...LANGS.filter((l) => l.id !== locale()).map((l) => ({ label: t('cmd.language', { name: l.name }), hint: t('cmd.languageHint'), icon: 'globe', group: t('palette.groupActions'), run: () => pickLocale(l.id) })),
     { label: t('cmd.signOut'), hint: email, icon: 'logout', group: t('palette.groupActions'), run: onSignOut },
   ]
 

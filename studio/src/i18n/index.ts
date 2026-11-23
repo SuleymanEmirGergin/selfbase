@@ -15,8 +15,20 @@ export const LANGS: { id: Lang; name: string }[] = [{ id: 'en', name: 'English' 
 // English ships in the main chunk; Turkish is fetched only when it is chosen (tr.ts is still type-checked as Messages).
 const CATALOGUE: Partial<Record<Lang, Messages>> = { en }
 const LOADERS: Record<Lang, () => Promise<Messages>> = { en: async () => en, tr: () => import('./tr.ts').then((m) => m.tr) }
-/** Makes sure `l`'s catalogue is here; main.tsx awaits it for the stored locale, so a Turkish first paint has no flash. */
+/** Makes sure `l`'s catalogue is here. */
 export const loadLocale = async (l: Lang) => { CATALOGUE[l] ??= await LOADERS[l]() }
+/**
+ * Start-up: the stored language, or English for this session when its catalogue fails or has not arrived within `ms`
+ * (copy, <html lang>, numbers and case together). English is not saved, so the next visit tries the choice again.
+ */
+export async function startLocale(ms = 2000) {
+  try {
+    await Promise.race([loadLocale(current), new Promise((_, no) => setTimeout(() => no(new Error('timeout')), ms))])
+  } catch {
+    current = 'en'
+  }
+  document.documentElement.lang = current
+}
 
 const store = (() => { try { return window.localStorage } catch { return { getItem: () => null, setItem: () => {} } } })()
 let current: Lang = readLocale(store)
