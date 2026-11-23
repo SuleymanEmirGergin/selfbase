@@ -1,49 +1,91 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
+import type { IconWeight } from '@phosphor-icons/react'
+import {
+  ArrowClockwiseIcon, ArrowDownIcon, ArrowRightIcon, ArrowUUpLeftIcon, ArrowUpIcon, ArrowUpRightIcon, BracketsCurlyIcon,
+  CaretDownIcon, CaretLeftIcon, CaretRightIcon, CaretUpDownIcon, CheckCircleIcon, CheckIcon, CircleDashedIcon, CircleHalfIcon,
+  CopyIcon, DatabaseIcon, DownloadSimpleIcon, EnvelopeSimpleIcon, FileTextIcon, FlowArrowIcon, FolderSimpleIcon, FunnelSimpleIcon,
+  GaugeIcon, GearSixIcon, HouseIcon, InfoIcon, KeyIcon, LinkSimpleIcon, ListIcon, LockKeyIcon, MagnifyingGlassIcon, MoonIcon, PlayIcon,
+  PlusIcon, PulseIcon, ScrollIcon, ShieldCheckIcon, SignOutIcon, SparkleIcon, SpinnerGapIcon, SquaresFourIcon, SunIcon, TableIcon,
+  TerminalWindowIcon, TrashIcon, TrayIcon, UploadSimpleIcon, UsersIcon, WarningCircleIcon, XCircleIcon, XIcon,
+} from '@phosphor-icons/react'
+import { GLYPHS } from './glyphs.tsx'
+import { startUndo } from './lib/undo.ts'
 
-// Small shared pieces: icons, state views, the row drawer, the confirm dialog and toasts.
+// Small shared pieces: icons, status pills, state views, the side sheet, the confirm dialog and toasts.
 
-const paths: Record<string, string> = {
-  table: 'M3 4h18v16H3zM3 9h18M3 14h18M9 4v16',
-  shield: 'M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z',
-  terminal: 'M4 5h16v14H4zM7 9l3 3-3 3M12 15h5',
-  users: 'M9 11a4 4 0 100-8 4 4 0 000 8zM2 21c0-3.9 3.1-7 7-7s7 3.1 7 7M16 3.1a4 4 0 010 7.8M22 21c0-3.4-2.2-6.2-5-6.9',
-  folder: 'M3 6a1 1 0 011-1h5l2 2h9a1 1 0 011 1v10a1 1 0 01-1 1H4a1 1 0 01-1-1z',
-  file: 'M6 3h8l5 5v13H6zM14 3v5h5',
-  logout: 'M15 4h4v16h-4M10 8l-4 4 4 4M6 12h11',
-  close: 'M6 6l12 12M18 6L6 18',
-  plus: 'M12 5v14M5 12h14',
-  refresh: 'M20 11a8 8 0 10-2.3 5.7M20 5v6h-6',
-  key: 'M14 10a4 4 0 11-8 0 4 4 0 018 0zM13 12l7 7M17 16l2-2',
-  search: 'M11 18a7 7 0 100-14 7 7 0 000 14zM16 16l5 5',
-  menu: 'M4 7h16M4 12h16M4 17h16',
-  up: 'M12 19V5M6 11l6-6 6 6',
-  down: 'M12 5v14M6 13l6 6 6-6',
-  upload: 'M12 16V4M7 9l5-5 5 5M4 20h16',
-  download: 'M12 4v12M7 11l5 5 5-5M4 20h16',
-  trash: 'M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13',
-  chevron: 'M9 6l6 6-6 6',
+type IconC = (p: { size?: number; weight?: IconWeight; className?: string }) => ReactNode
+const ICONS: Record<string, IconC> = {
+  table: TableIcon, shield: ShieldCheckIcon, terminal: TerminalWindowIcon, users: UsersIcon, folder: FolderSimpleIcon,
+  file: FileTextIcon, logout: SignOutIcon, close: XIcon, plus: PlusIcon, refresh: ArrowClockwiseIcon, key: KeyIcon,
+  search: MagnifyingGlassIcon, menu: ListIcon, up: ArrowUpIcon, down: ArrowDownIcon, upload: UploadSimpleIcon,
+  download: DownloadSimpleIcon, trash: TrashIcon, chevron: CaretRightIcon, play: PlayIcon, home: HouseIcon,
+  projects: SquaresFourIcon, scroll: ScrollIcon, gauge: GaugeIcon, pulse: PulseIcon, gear: GearSixIcon, sun: SunIcon,
+  moon: MoonIcon, 'caret-up-down': CaretUpDownIcon, 'caret-left': CaretLeftIcon, 'caret-right': CaretRightIcon,
+  'caret-down': CaretDownIcon, 'arrow-right': ArrowRightIcon, 'arrow-up-right': ArrowUpRightIcon, copy: CopyIcon,
+  check: CheckIcon, 'check-circle': CheckCircleIcon, 'x-circle': XCircleIcon, undo: ArrowUUpLeftIcon, info: InfoIcon,
+  warning: WarningCircleIcon, mail: EnvelopeSimpleIcon, lock: LockKeyIcon, link: LinkSimpleIcon, braces: BracketsCurlyIcon,
+  flow: FlowArrowIcon, database: DatabaseIcon, sparkle: SparkleIcon, spinner: SpinnerGapIcon, dashed: CircleDashedIcon,
+  theme: CircleHalfIcon, funnel: FunnelSimpleIcon, empty: TrayIcon, ...GLYPHS,
 }
 
-export function Icon({ name, size = 16 }: { name: keyof typeof paths | string; size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7}
-      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="icon">
-      <path d={paths[name]} />
-    </svg>
-  )
+/** Phosphor Regular by default; Duotone for active nav and empty states, Bold only at 12 px. */
+export function Icon({ name, size = 16, weight }: { name: string; size?: number; weight?: IconWeight }) {
+  const C = ICONS[name] ?? CircleDashedIcon
+  return <C size={size} weight={weight} className="icon" />
 }
 
-export const Loading = ({ label = 'Yükleniyor…' }: { label?: string }) => (
-  <div className="state" role="status"><span className="spinner" aria-hidden="true" />{label}</div>
+export type Tone = 'ok' | 'warn' | 'err' | 'info' | 'mute' | 'violet'
+/** Status pill: colour and dot shape both carry the state (circle ok, diamond warn, square error). */
+export const Status = ({ tone, live, title, children }: { tone: Tone; live?: boolean; title?: string; children?: ReactNode }) => (
+  <span className={`status s-${tone}${live ? ' live' : ''}`} title={title}><span className="dot" aria-hidden="true" />{children}</span>
 )
-export const Empty = ({ children }: { children: ReactNode }) => <div className="state">{children}</div>
+
+/** Segmented meter: green, then amber past 60 %, red past 85 %. */
+export const Dots = ({ fill, n = 32 }: { fill: number; n?: number }) => (
+  <div className="dots" style={{ gridTemplateColumns: `repeat(${n}, 1fr)` }} aria-hidden="true">
+    {Array.from({ length: n }, (_, i) => {
+      const r = (i + 1) / n
+      return <i key={i} className={i < Math.round(fill * n) ? (r <= 0.6 ? 'f g' : r <= 0.85 ? 'f a' : 'f r') : undefined} style={{ ['--d' as string]: i }} />
+    })}
+  </div>
+)
+
+/** A skeleton while data loads; screen readers hear the label. */
+export const Loading = ({ label = 'Yükleniyor…' }: { label?: string }) => (
+  <div className="state loading" role="status">
+    <span className="sr-only">{label}</span>
+    <span className="sk-block" aria-hidden="true"><span className="sk" /><span className="sk" /><span className="sk short" /></span>
+  </div>
+)
+export const Empty = ({ icon = 'empty', children }: { icon?: string; children: ReactNode }) => (
+  <div className="state empty">
+    <span className="eg" aria-hidden="true"><Icon name={icon} size={28} weight="duotone" /></span>
+    <div>{children}</div>
+  </div>
+)
 export const ErrorBox = ({ message, onRetry }: { message: string; onRetry?: () => void }) => (
   <div className="error-box" role="alert">
-    <div>{message}</div>
+    <Icon name="warning" />
+    <div className="grow">{message}</div>
     {onRetry && <button className="btn sm" onClick={onRetry}>Tekrar dene</button>}
   </div>
 )
+
+/** Copies `text`; the icon turns into a check for a moment. */
+export function Copy({ text, label = 'Kopyala' }: { text: string; label?: string }) {
+  const [ok, setOk] = useState(false)
+  const copy = () => navigator.clipboard.writeText(text).then(() => {
+    setOk(true)
+    setTimeout(() => setOk(false), 1500)
+    toast('Kopyalandı')
+  }, () => toast('Kopyalanamadı', 'error'))
+  return (
+    <button type="button" className={`copy ${ok ? 'ok' : ''}`} onClick={copy} aria-label={label} title={label}>
+      <CopyIcon size={13} className="icon a" /><CheckIcon size={13} weight="bold" className="icon b" />
+    </button>
+  )
+}
 
 const FOCUSABLE = 'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'
 const FIELD = 'input:not(:disabled):not([data-pk]), textarea:not(:disabled), select:not(:disabled)'
@@ -127,22 +169,55 @@ export function ConfirmHost() {
   )
 }
 
-type Toast = { id: number; text: string; kind: 'ok' | 'error' }
+type Toast = { id: number; text: string; kind: 'ok' | 'error' } | { id: number; text: string; kind: 'undo'; body: string; commit: () => void; undo: () => void }
 let pushToast: (t: Toast) => void = () => {}
 let toastId = 0
-export const toast = (text: string, kind: Toast['kind'] = 'ok') => pushToast({ id: ++toastId, text, kind })
+export const toast = (text: string, kind: 'ok' | 'error' = 'ok') => pushToast({ id: ++toastId, text, kind })
+/**
+ * A reversible action instead of a confirm dialog: `commit` runs after 5 seconds unless "Geri al" is pressed first,
+ * in which case `undo` restores what the caller hid. A page closed before then never commits.
+ */
+export const toastUndo = (text: string, body: string, commit: () => void, undo: () => void) =>
+  pushToast({ id: ++toastId, text, kind: 'undo', body, commit, undo })
+
+const UNDO_MS = 5000
+
+function UndoToast({ t, close }: { t: Extract<Toast, { kind: 'undo' }>; close: () => void }) {
+  const [left, setLeft] = useState(UNDO_MS / 1000)
+  const timer = useRef<{ undo: () => boolean } | null>(null)
+  useEffect(() => {
+    timer.current = startUndo(UNDO_MS, () => { t.commit(); close() }, setLeft)
+    return () => { timer.current?.undo() } // unmounted without an answer: nothing is committed
+  }, [])
+  return (
+    <div className="toast" role="status">
+      <span className="ti s-mute"><Icon name="trash" /></span>
+      <span className="tx"><b>{t.text}</b><span>{t.body}</span></span>
+      <span className="cd" aria-hidden="true">{left} sn</span>
+      <button className="btn sm" onClick={() => { if (timer.current?.undo()) t.undo(); close() }}><Icon name="undo" />Geri al</button>
+      <span className="drain" style={{ animationDuration: `${UNDO_MS}ms` }} aria-hidden="true" />
+    </div>
+  )
+}
 
 export function ToastHost() {
   const [items, setItems] = useState<Toast[]>([])
+  const drop = (id: number) => setItems((xs) => xs.filter((x) => x.id !== id))
   useEffect(() => {
     pushToast = (t) => {
       setItems((xs) => [...xs, t])
-      setTimeout(() => setItems((xs) => xs.filter((x) => x.id !== t.id)), t.kind === 'error' ? 8000 : 3000)
+      if (t.kind !== 'undo') setTimeout(() => drop(t.id), t.kind === 'error' ? 8000 : 3000)
     }
   }, [])
   return (
     <div className="toasts" aria-live="polite">
-      {items.map((t) => <div key={t.id} className={`toast ${t.kind}`} role={t.kind === 'error' ? 'alert' : 'status'}>{t.text}</div>)}
+      {items.map((t) => t.kind === 'undo' ? <UndoToast key={t.id} t={t} close={() => drop(t.id)} /> : (
+        <div key={t.id} className={`toast ${t.kind}`} role={t.kind === 'error' ? 'alert' : 'status'}>
+          <span className={`ti ${t.kind === 'error' ? 's-err' : 's-ok'}`}><Icon name={t.kind === 'error' ? 'x-circle' : 'check-circle'} /></span>
+          <span className="tx"><b>{t.text}</b></span>
+          <button className="icon-btn sm" onClick={() => drop(t.id)} aria-label="Bildirimi kapat"><Icon name="close" size={14} /></button>
+        </div>
+      ))}
     </div>
   )
 }

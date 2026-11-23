@@ -10,11 +10,11 @@ import { sqlMemo, useAdmin, useProject } from './context.ts'
 
 
 const theme = EditorView.theme({
-  '&': { height: '32vh', minHeight: '120px', backgroundColor: 'var(--surface)', color: 'var(--text)', fontSize: '13px' },
+  '&': { height: '32vh', minHeight: '120px', backgroundColor: 'var(--panel)', color: 'var(--text)', fontSize: '13px' },
   '&.cm-focused': { outline: 'none', boxShadow: 'inset 0 0 0 2px var(--accent)' },
   '.cm-scroller': { fontFamily: 'var(--mono)', lineHeight: '1.6' },
-  '.cm-gutters': { backgroundColor: 'var(--surface)', color: 'var(--dim)', borderRight: '1px solid var(--border)' },
-  '.cm-activeLine, .cm-activeLineGutter': { backgroundColor: 'var(--raised)' },
+  '.cm-gutters': { backgroundColor: 'var(--panel)', color: 'var(--dim)', borderRight: '1px solid var(--line)' },
+  '.cm-activeLine, .cm-activeLineGutter': { backgroundColor: 'var(--surface-2)' },
   '.cm-cursor': { borderLeftColor: 'var(--text)' },
 })
 

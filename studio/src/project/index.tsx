@@ -1,11 +1,12 @@
-import { Component, Suspense, lazy, useEffect, useMemo, useState } from 'react'
+import { Component, Suspense, lazy, useMemo } from 'react'
 import type { ReactNode } from 'react'
 import type { ComponentType } from 'react'
 import { platform, projectAdmin } from '../api.ts'
 import type { Me } from '../api.ts'
-import { Link, usePath } from '../router.tsx'
+import { Link, navigate, usePath } from '../router.tsx'
+import { Shell } from '../shell.tsx'
 import { ErrorBox, Icon, Loading } from '../ui.tsx'
-import { StatusBadge, useLoad } from '../org/common.tsx'
+import { useLoad } from '../org/common.tsx'
 import { Ctx, can, projectRole } from './context.ts'
 import type { Action, ProjectCtx } from './context.ts'
 import { Paused } from './parts.tsx'
@@ -16,7 +17,7 @@ import Tables from './Tables.tsx'
 import Users from './Users.tsx'
 import Files from './Files.tsx'
 import Policies from './Policies.tsx'
-import './project.css'
+import Sites from './Sites.tsx'
 
 // CodeMirror is most of the bundle; it loads with the SQL screen only.
 const Sql = lazy(() => import('./Sql.tsx'))
@@ -36,26 +37,25 @@ class ChunkBoundary extends Component<{ children: ReactNode }, { failed: boolean
   }
 }
 
-type Screen = { path: string; label: string; icon: string; group?: string; Screen: ComponentType; needs?: Action; data?: true }
+type Screen = { path: string; label: string; icon: string; group?: string; Screen: ComponentType; needs?: Action; data?: true; preview?: true }
 // `data` screens talk to the project's own services, so they are unavailable unless it is ACTIVE_* (control forwards
 // admin calls for an unhealthy project too: SQL is most needed then).
 const SCREENS: Screen[] = [
-  { path: 'home', label: 'Ana sayfa', icon: 'folder', Screen: Home },
-  { path: 'editor', label: 'Tablolar', icon: 'table', Screen: Tables, data: true },
-  { path: 'sql', label: 'SQL', icon: 'terminal', Screen: Sql, needs: 'project.sql', data: true },
-  { path: 'auth/users', label: 'Kullanıcılar', group: 'Kimlik doğrulama', icon: 'users', Screen: Users, data: true },
-  { path: 'storage', label: 'Dosyalar', group: 'Depolama', icon: 'file', Screen: Files, data: true },
+  { path: 'home', label: 'Ana sayfa', icon: 'home', Screen: Home },
+  { path: 'editor', label: 'Tablolar', group: 'Veritabanı', icon: 'table', Screen: Tables, data: true },
+  { path: 'sql', label: 'SQL', group: 'Veritabanı', icon: 'terminal', Screen: Sql, needs: 'project.sql', data: true },
   { path: 'policies', label: 'RLS', group: 'Veritabanı', icon: 'shield', Screen: Policies, data: true },
-  { path: 'logs', label: 'Günlükler', icon: 'file', Screen: Logs },
-  { path: 'settings', label: 'Ayarlar', icon: 'key', Screen: Settings },
+  { path: 'auth/users', label: 'Kullanıcılar', group: 'Uygulama', icon: 'g-auth', Screen: Users, data: true },
+  { path: 'storage', label: 'Dosyalar', group: 'Uygulama', icon: 'g-storage', Screen: Files, data: true },
+  { path: 'sites', label: 'Siteler', group: 'Uygulama', icon: 'g-sites', Screen: Sites, preview: true },
+  { path: 'logs', label: 'Günlükler', group: 'Uygulama', icon: 'pulse', Screen: Logs },
+  { path: 'settings', label: 'Ayarlar', group: 'Uygulama', icon: 'gear', Screen: Settings },
 ]
 
 export default function ProjectArea({ me, onSignOut }: { me: Me; onSignOut: () => void }) {
   const path = usePath()
   const [, , ref = '', ...rest] = path.split('/')
   const sub = rest.join('/') || 'home'
-  const [menuOpen, setMenuOpen] = useState(false)
-  useEffect(() => setMenuOpen(false), [path])
 
   const { data: project, error, reload } = useLoad(() => platform.project(ref), [ref])
   const ctx = useMemo<ProjectCtx | null>(() => {
@@ -82,44 +82,26 @@ export default function ProjectArea({ me, onSignOut }: { me: Me; onSignOut: () =
   const allowed = !current.needs || ctx.can(current.needs)
   const Screen = current.Screen
 
+  const base = `/project/${ref}`
+  const orgBase = ctx.org ? `/org/${ctx.org.slug}` : '/'
   return (
     <Ctx.Provider value={ctx}>
-      <div className={`shell ${menuOpen ? 'menu-open' : ''}`}>
-        <nav className="sidebar" aria-label="Ana menü">
-          <div className="brand">
-            <span className="brand-mark" aria-hidden="true" />
-            <span className="brand-name">selfbase</span>
-            <button className="icon-btn menu-toggle" aria-label="Menü" aria-expanded={menuOpen} onClick={() => setMenuOpen((v) => !v)}>
-              <Icon name="menu" />
-            </button>
-          </div>
-          <div className="project-head">
-            {ctx.org && <Link to={`/org/${ctx.org.slug}`} className="muted small">← {ctx.org.name}</Link>}
-            <div className="cell-main project-title" title={ctx.project.name}>{ctx.project.name}</div>
-            <StatusBadge status={ctx.project.status} />
-          </div>
-          <ul className="nav">
-            {visible.map((s, i) => (
-              <li key={s.path}>
-                {s.group && s.group !== visible[i - 1]?.group && <div className="nav-group">{s.group}</div>}
-                {!s.group && visible[i - 1]?.group && <div className="nav-sep" />}
-                <Link to={`/project/${ref}/${s.path}`} className={s === current ? 'active' : undefined} aria-current={s === current ? 'page' : undefined}>
-                  <Icon name={s.icon} />{s.label}
-                </Link>
-              </li>
-            ))}
-          </ul>
-          <div className="nav-foot">
-            <div className="who mono small" title={me.email}>{me.email}</div>
-            <button className="nav-btn" onClick={onSignOut}><Icon name="logout" />Çıkış</button>
-          </div>
-        </nav>
-        <main className="content">
-          {!allowed ? <div className="state">Bu ekran için yetkiniz yok.</div>
-            : paused && current.data ? <Paused />
-            : <ChunkBoundary key={`${ref}/${current.path}`}><Suspense fallback={<Loading />}><Screen /></Suspense></ChunkBoundary>}
-        </main>
-      </div>
+      <Shell
+        email={me.email} onSignOut={onSignOut}
+        switcher={
+          <Link to={orgBase} className="switcher" title="Projelere dön">
+            <span className="avatar" aria-hidden="true">{ctx.project.name.slice(0, 1).toUpperCase()}</span>
+            <span className="t"><b>{ctx.project.name}</b><span>{ref}{ctx.org ? ` · ${ctx.org.name}` : ''}</span></span>
+            <Icon name="caret-up-down" />
+          </Link>
+        }
+        nav={visible.map((s) => ({ to: `${base}/${s.path}`, label: s.label, icon: s.icon, group: s.group, active: s === current, preview: s.preview }))}
+        crumbs={[...(ctx.org ? [{ label: ctx.org.name, to: orgBase }] : []), { label: ctx.project.name, to: `${base}/home` }, { label: current.label }]}
+        commands={[{ label: 'Projelere dön', hint: ctx.org?.name, icon: 'projects', group: 'Gezinme', run: () => navigate(orgBase) }]}>
+        {!allowed ? <div className="state">Bu ekran için yetkiniz yok.</div>
+          : paused && current.data ? <Paused />
+          : <ChunkBoundary key={`${ref}/${current.path}`}><Suspense fallback={<Loading />}><Screen /></Suspense></ChunkBoundary>}
+      </Shell>
     </Ctx.Provider>
   )
 }

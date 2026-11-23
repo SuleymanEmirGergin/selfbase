@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { errMsg, platform } from '../api.ts'
 import type { Job, OrgRef, Size } from '../api.ts'
-import { toast } from '../ui.tsx'
+import { Copy, Icon, Status } from '../ui.tsx'
+import type { Tone } from '../ui.tsx'
 
 /** Organization screens get the current organization; `canManage` gates create, import and member actions. */
 export type OrgProps = { org: OrgRef; canManage: boolean; email: string }
@@ -27,21 +28,22 @@ export const SIZES: Record<Size, Record<string, number>> = {
 }
 export const sizeMb = (s: Size) => Object.values(SIZES[s]).reduce((a, b) => a + b, 0)
 
-const STATUS: Record<string, [string, string]> = {
+const STATUS: Record<string, [string, Tone]> = {
   ACTIVE_HEALTHY: ['Çalışıyor', 'ok'],
   COMING_UP: ['Başlatılıyor', 'warn'],
-  INACTIVE: ['Duraklatıldı', ''],
+  INACTIVE: ['Duraklatıldı', 'mute'],
   RESTORING: ['Geri yükleniyor', 'warn'],
   UPGRADING: ['Güncelleniyor', 'warn'],
-  ACTIVE_UNHEALTHY: ['Sorunlu', 'danger'],
-  REMOVED: ['Silindi', ''],
-  INIT_FAILED: ['KurulamadÄ±', 'danger'],
-  RESTORE_FAILED: ['Devam ettirilemedi', 'danger'],
-  REMOVE_FAILED: ['Silinemedi', 'danger'],
+  ACTIVE_UNHEALTHY: ['Sorunlu', 'err'],
+  REMOVED: ['Silindi', 'mute'],
+  INIT_FAILED: ['Kurulamadı', 'err'],
+  RESTORE_FAILED: ['Devam ettirilemedi', 'err'],
+  REMOVE_FAILED: ['Silinemedi', 'err'],
 }
+export const statusTone = (status: string): Tone => STATUS[status]?.[1] ?? 'mute'
 export function StatusBadge({ status }: { status: string }) {
-  const [label, kind] = STATUS[status] ?? [status, '']
-  return <span className={`badge ${kind}`} title={status}>{label}</span>
+  const [label, tone] = STATUS[status] ?? [status, 'mute']
+  return <Status tone={tone} live={tone === 'ok' || tone === 'warn'} title={status}>{label}</Status>
 }
 
 const STEP: Record<string, string> = {
@@ -90,8 +92,11 @@ export function JobSteps({ jobId, onDone }: { jobId: string; onDone?: (job: Job)
           const state = job.status === 'succeeded' || i < job.step ? 'done' : i === job.step ? (job.status === 'failed' ? 'failed' : 'running') : 'waiting'
           return (
             <li key={s} className={`step ${state}`} aria-current={state === 'running' ? 'step' : undefined}>
-              <span className="step-mark" aria-hidden="true" />
-              <span>{STEP[s] ?? s}</span>
+              <span className="sic" aria-hidden="true">
+                <Icon name={{ done: 'check', running: 'spinner', failed: 'close', waiting: 'dashed' }[state]} size={state === 'done' ? 12 : 15}
+                  weight={state === 'done' ? 'bold' : undefined} />
+              </span>
+              <span className="t"><b>{s}</b><small>{STEP[s] ?? s}</small></span>
               <span className="sr-only">{{ done: 'tamam', running: 'sürüyor', failed: 'başarısız', waiting: 'bekliyor' }[state]}</span>
             </li>
           )
@@ -103,21 +108,24 @@ export function JobSteps({ jobId, onDone }: { jobId: string; onDone?: (job: Job)
   )
 }
 
-export function CopyButton({ text }: { text: string }) {
-  const copy = () => navigator.clipboard.writeText(text).then(() => toast('Kopyalandı'), () => toast('Kopyalanamadı', 'error'))
-  return <button type="button" className="btn sm" onClick={copy}>Kopyala</button>
-}
+export const CopyButton = ({ text }: { text: string }) => <Copy text={text} />
 
-/** Page frame used by every organization screen: a toolbar with the h1 and a scrolling body. */
-export function Page({ title, actions, children }: { title: string; actions?: ReactNode; children: ReactNode }) {
+/** Page frame used by every organization and project screen: the page header and a scrolling body. */
+export function Page({ title, aside, meta, actions, children }: {
+  title: ReactNode; aside?: ReactNode; meta?: ReactNode; actions?: ReactNode; children: ReactNode
+}) {
   return (
     <section className="page-main">
-      <div className="toolbar">
-        <h1 className="title">{title}</h1>
-        <div className="spacer" />
-        {actions}
+      <div className="scroll-area">
+        <header className="pghead">
+          <div className="pgtitle">
+            <h1>{title}{aside && <span className="serif"> · {aside}</span>}</h1>
+            {meta && <div className="metaline">{meta}</div>}
+          </div>
+          {actions && <div className="act">{actions}</div>}
+        </header>
+        {children}
       </div>
-      <div className="scroll-area">{children}</div>
     </section>
   )
 }
