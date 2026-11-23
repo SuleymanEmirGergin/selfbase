@@ -83,4 +83,31 @@ test('the undo timer commits once after the delay, never after an undo', () => {
   advance(10000)
   expect(commits).toBe(1)
   expect(b.undo()).toBe(false)
+
+  // paused (focus or hover on the toast): time stands still; resumed: the count goes on from where it was
+  const seen: number[] = []
+  const c = startUndo(5000, () => commits++, (left) => seen.push(left), clock)
+  advance(2000) // 5, 4, 3 shown
+  c.pause()
+  c.pause() // idempotent
+  advance(60000)
+  expect(commits).toBe(1)
+  expect(seen).toEqual([5, 4, 3])
+  c.resume()
+  c.resume() // idempotent: one timer, not two
+  advance(2000)
+  expect(seen).toEqual([5, 4, 3, 2, 1])
+  expect(commits).toBe(1)
+  advance(1000)
+  expect(commits).toBe(2)
+  c.resume() // after the commit: nothing
+  advance(5000)
+  expect(commits).toBe(2)
+
+  const d = startUndo(5000, () => commits++, () => {}, clock)
+  d.pause()
+  expect(d.undo()).toBe(true) // undo while paused still cancels
+  d.resume()
+  advance(10000)
+  expect(commits).toBe(2)
 })

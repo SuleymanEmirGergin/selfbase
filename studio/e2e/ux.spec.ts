@@ -137,12 +137,44 @@ test('deleting a row waits five seconds; Geri al keeps it and nothing is sent', 
   await row.click()
   await page.getByRole('dialog', { name: 'Satırı düzenle' }).getByRole('button', { name: 'Sil' }).click()
   await expect(row).toHaveCount(0)
+  // focus lands on Geri al and holds the count: nothing is sent while the toast keeps it
+  await expect(toast.getByRole('button', { name: 'Geri al' })).toBeFocused()
+  await expect(toast).toContainText('durdu')
+  await page.waitForTimeout(5600)
+  expect(api.count(`DELETE /projects/${REF}/admin/rows/public/notes`)).toBe(0)
+  await page.getByRole('heading', { level: 1 }).click() // moving on resumes the count
+  await expect(toast).toContainText(/\d sn/)
   await page.waitForTimeout(2000)
   expect(api.count(`DELETE /projects/${REF}/admin/rows/public/notes`)).toBe(0) // still inside the window
   await expect.poll(() => api.count(`DELETE /projects/${REF}/admin/rows/public/notes`), { timeout: 6000 }).toBe(1)
   expect(api.calls.find((c) => c.key.startsWith('DELETE'))!.body).toEqual({ pk: { id: 2 } })
   await expect(page.getByRole('status').filter({ hasText: 'Satır silindi' })).toHaveCount(0)
   await expect(row).toHaveCount(0)
+})
+
+test('a keyboard delete puts focus on Geri al; Enter there keeps the row and nothing is sent', async ({ page }) => {
+  const api = await mockApi(page, routes())
+  await page.goto(`/project/${REF}/editor`)
+  const row = page.getByRole('row').filter({ hasText: 'ilk sürüm yayında' })
+  await row.focus()
+  await page.keyboard.press('Enter')
+  const sheet = page.getByRole('dialog', { name: 'Satırı düzenle' })
+  await expect(sheet).toBeVisible()
+  await sheet.getByRole('button', { name: 'Sil' }).focus()
+  await page.keyboard.press('Enter')
+
+  const toast = page.getByRole('status').filter({ hasText: 'Satır silindi' })
+  const undo = toast.getByRole('button', { name: 'Geri al' })
+  await expect(row).toHaveCount(0)
+  await expect(undo).toBeFocused()
+  // a screen reader hears what Geri al would bring back
+  await expect(undo).toHaveAccessibleDescription(/Satır silindi.*public\.notes · id=2/)
+  await page.keyboard.press('Enter')
+  await expect(row).toHaveCount(1)
+  await expect(toast).toHaveCount(0)
+  await expect(row).toBeFocused() // back where the delete started
+  await page.waitForTimeout(5600)
+  expect(api.count(`DELETE /projects/${REF}/admin/rows/public/notes`)).toBe(0)
 })
 
 test('keyboard focus runs skip link, sidebar, top bar, then the page; the skip link jumps to the content', async ({ page }) => {

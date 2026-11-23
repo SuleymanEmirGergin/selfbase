@@ -561,6 +561,7 @@ button.th-btn:hover { background: var(--surface-2); }
 .toast .tx span { color: var(--muted); font-size: 12px; }
 .toast .cd { font: 500 11px var(--mono); color: var(--dim); }
 .toast .drain { position: absolute; left: 18px; right: 18px; bottom: 0; height: 2px; border-radius: 2px; background: var(--accent); transform-origin: left; animation: drain 5s linear forwards; }
+.toast.paused .drain { animation-play-state: paused; }
 @keyframes drain { to { transform: scaleX(0); } }
 
 /* ================= Command palette ================= */

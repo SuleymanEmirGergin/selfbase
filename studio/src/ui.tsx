@@ -184,17 +184,40 @@ const UNDO_MS = 5000
 
 function UndoToast({ t, close }: { t: Extract<Toast, { kind: 'undo' }>; close: () => void }) {
   const [left, setLeft] = useState(UNDO_MS / 1000)
-  const timer = useRef<{ undo: () => boolean } | null>(null)
+  const [held, setHeld] = useState({ focus: false, hover: false })
+  const timer = useRef<ReturnType<typeof startUndo> | null>(null)
+  const box = useRef<HTMLDivElement>(null)
+  const button = useRef<HTMLButtonElement>(null)
+  const before = useRef<HTMLElement | null>(null)
+  // Focus leaves the toast for where it was before, or the page content when that is gone (the deleted row).
+  const finish = () => {
+    if (box.current?.contains(document.activeElement)) {
+      const back = before.current?.isConnected ? before.current : document.getElementById('content')
+      back?.focus()
+    }
+    close()
+  }
   useEffect(() => {
-    timer.current = startUndo(UNDO_MS, () => { t.commit(); close() }, setLeft)
+    before.current = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null
+    // the only way back is this button: keyboard and screen-reader users land on it at once
+    button.current?.focus()
+    timer.current = startUndo(UNDO_MS, () => { t.commit(); finish() }, setLeft)
     return () => { timer.current?.undo() } // unmounted without an answer: nothing is committed
   }, [])
+  const paused = held.focus || held.hover
+  useEffect(() => { if (paused) timer.current?.pause(); else timer.current?.resume() }, [paused])
+  const id = `undo-${t.id}`
   return (
-    <div className="toast" role="status">
+    <div className={`toast${paused ? ' paused' : ''}`} role="status" ref={box}
+      onFocus={() => setHeld((h) => ({ ...h, focus: true }))}
+      onBlur={(e) => !e.currentTarget.contains(e.relatedTarget) && setHeld((h) => ({ ...h, focus: false }))}
+      onMouseEnter={() => setHeld((h) => ({ ...h, hover: true }))} onMouseLeave={() => setHeld((h) => ({ ...h, hover: false }))}>
       <span className="ti s-mute"><Icon name="trash" /></span>
-      <span className="tx"><b>{t.text}</b><span>{t.body}</span></span>
-      <span className="cd" aria-hidden="true">{left} sn</span>
-      <button className="btn sm" onClick={() => { if (timer.current?.undo()) t.undo(); close() }}><Icon name="undo" />Geri al</button>
+      <span className="tx" id={id}><b>{t.text}</b><span>{t.body}</span></span>
+      <span className="cd" aria-hidden="true">{paused ? 'durdu' : `${left} sn`}</span>
+      <button className="btn sm" ref={button} aria-describedby={id} onClick={() => { if (timer.current?.undo()) t.undo(); finish() }}>
+        <Icon name="undo" />Geri al
+      </button>
       <span className="drain" style={{ animationDuration: `${UNDO_MS}ms` }} aria-hidden="true" />
     </div>
   )
