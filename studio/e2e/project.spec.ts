@@ -303,7 +303,7 @@ test('sign-out clears the SQL memory, so the next user does not see the last que
 
   await page.getByRole('button', { name: 'Çıkış' }).click()
   await page.getByLabel('E-posta').fill('other@example.test')
-  await page.getByLabel('Parola').fill('correct horse battery')
+  await page.getByLabel('Şifre').fill('correct horse battery')
   await page.getByRole('button', { name: 'Giriş yap' }).click()
   // in-app navigation only: a reload would clear module memory by itself
   await page.getByRole('link', { name: /corteqs/ }).click()
@@ -333,7 +333,7 @@ test('a 401 sign-out also clears the SQL memory', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Giriş yap' })).toBeVisible()
   expect(api.count('POST /refresh')).toBeGreaterThanOrEqual(1)
   await page.getByLabel('E-posta').fill('other@example.test')
-  await page.getByLabel('Parola').fill('correct horse battery')
+  await page.getByLabel('Şifre').fill('correct horse battery')
   await page.getByRole('button', { name: 'Giriş yap' }).click()
   // `next` brings the user back in-app (no reload, so module memory would survive if it were not cleared)
   await expect(page.getByText('ada@example.test')).toBeVisible()

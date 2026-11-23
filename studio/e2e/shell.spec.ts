@@ -46,7 +46,7 @@ test('sign-in shows the projects of the organization', async ({ page }) => {
   await page.goto('/')
   await expect(page).toHaveURL(/\/sign-in/)
   await page.getByLabel('E-posta').fill('owner@example.test')
-  await page.getByLabel('Parola').fill('correct horse battery')
+  await page.getByLabel('Şifre').fill('correct horse battery')
   await page.getByRole('button', { name: 'Giriş yap' }).click()
 
   await expect(page).toHaveURL(/\/org\/acme$/)
@@ -70,11 +70,11 @@ test('a wrong password shows the error and stays on the sign-in screen', async (
   })
   await page.goto('/sign-in')
   await page.getByLabel('E-posta').fill('owner@example.test')
-  await page.getByLabel('Parola').fill('wrong password!')
+  await page.getByLabel('Şifre').fill('wrong password!')
   await page.getByRole('button', { name: 'Giriş yap' }).click()
-  await expect(page.getByRole('alert')).toContainText('E-posta ya da parola hatalı')
+  await expect(page.getByRole('alert')).toContainText('E-posta ya da şifre hatalı')
   await expect(page).toHaveURL(/\/sign-in/)
-  await expect(page.getByLabel('Parola')).toBeVisible()
+  await expect(page.getByLabel('Şifre')).toBeVisible()
 })
 
 test('create project posts organization_slug, name and size and follows the job to the project', async ({ page }) => {
@@ -193,15 +193,15 @@ test('an invitation for an address with an account sends the user to sign in, th
     },
   })
   await page.goto('/invite/tok123')
-  await page.getByLabel('Yeni parola', { exact: true }).fill('correct horse battery')
-  await page.getByLabel('Yeni parola (tekrar)').fill('correct horse battery')
+  await page.getByLabel('Yeni şifre', { exact: true }).fill('correct horse battery')
+  await page.getByLabel('Yeni şifre (tekrar)').fill('correct horse battery')
   await page.getByRole('button', { name: 'Daveti kabul et' }).click()
   await expect(page.getByText('Bu adresin zaten bir hesabı var. Önce giriş yapın.')).toBeVisible()
 
   await page.getByRole('link', { name: 'Giriş yap' }).click()
   await expect(page).toHaveURL(/\/sign-in\?next=%2Finvite%2Ftok123$/)
   await page.getByLabel('E-posta').fill('owner@example.test')
-  await page.getByLabel('Parola').fill('correct horse battery')
+  await page.getByLabel('Şifre').fill('correct horse battery')
   await page.getByRole('button', { name: 'Giriş yap' }).click()
 
   await expect(page).toHaveURL(/\/invite\/tok123$/)
@@ -232,7 +232,7 @@ for (const [status, body] of [
     await expect(page.getByText(body.message)).toHaveCount(0)
     await page.getByRole('button', { name: 'Başka bir hesapla devam et' }).click()
     // signed out and back on the invitation: a new address sets its password here
-    await expect(page.getByLabel('Yeni parola', { exact: true })).toBeVisible()
+    await expect(page.getByLabel('Yeni şifre', { exact: true })).toBeVisible()
     await expect(page).toHaveURL(/\/invite\/tok123$/)
     expect(api.count('POST /logout')).toBe(1)
   })
@@ -270,7 +270,7 @@ test('an export imports with its passphrase and no env file; giving neither or b
   await page.getByLabel('Yedek dizini').fill('export-abcdefghijklmnopqrst/20261122-031500')
   await page.getByRole('button', { name: 'İçe aktar' }).click()
   await expect(page.getByText(/yalnızca birini/)).toBeVisible()
-  await page.getByLabel('Dışa aktarma parolası').fill('correct horse battery')
+  await page.getByLabel('Dışa aktarma şifresi').fill('correct horse battery')
   await page.getByLabel('Env dosyası').setInputFiles({ name: '.env', mimeType: 'text/plain', buffer: Buffer.from('JWT_SECRET=x\n') })
   await page.getByRole('button', { name: 'İçe aktar' }).click()
   await expect(page.getByText(/yalnızca birini/)).toBeVisible()
@@ -350,7 +350,7 @@ test('next is followed only when it stays on this origin', async ({ page }) => {
     session = false
     await page.goto(`/sign-in?next=${encodeURIComponent(next)}`)
     await page.getByLabel('E-posta').fill('owner@example.test')
-    await page.getByLabel('Parola').fill('correct horse battery')
+    await page.getByLabel('Şifre').fill('correct horse battery')
     await page.getByRole('button', { name: 'Giriş yap' }).click()
   }
   await mockApi(page, routes)
@@ -403,11 +403,11 @@ test('the reset screen strips the fragment and never shows its error text', asyn
     'PUT /auth/v1/user': (req) => { bearer = req.headers().authorization ?? ''; return { body: {} } },
   })
   await page.goto('/reset-password#access_token=recovery-token-for-tests&type=recovery')
-  await expect(page.getByRole('heading', { name: 'Yeni parola' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Yeni şifre' })).toBeVisible()
   expect(await page.evaluate(() => location.hash)).toBe('')
-  await page.getByLabel('Yeni parola', { exact: true }).fill('a long new password')
-  await page.getByLabel('Yeni parola (tekrar)').fill('a long new password')
-  await page.getByRole('button', { name: 'Parolayı kaydet' }).click()
-  await expect(page.getByRole('heading', { name: 'Parola değişti' })).toBeVisible()
+  await page.getByLabel('Yeni şifre', { exact: true }).fill('a long new password')
+  await page.getByLabel('Yeni şifre (tekrar)').fill('a long new password')
+  await page.getByRole('button', { name: 'Şifreyi kaydet' }).click()
+  await expect(page.getByRole('heading', { name: 'Şifre değişti' })).toBeVisible()
   expect(bearer).toBe('Bearer recovery-token-for-tests')
 })

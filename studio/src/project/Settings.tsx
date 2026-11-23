@@ -124,8 +124,8 @@ function Backups() {
 
   const exportNow = (e: FormEvent) => {
     e.preventDefault()
-    if (pass.length < MIN_PASSPHRASE) return setPassErr(`Parola en az ${MIN_PASSPHRASE} karakter olmalı.`)
-    if (pass !== again) return setPassErr('Parolalar aynı değil.')
+    if (pass.length < MIN_PASSPHRASE) return setPassErr(`Şifre en az ${MIN_PASSPHRASE} karakter olmalı.`)
+    if (pass !== again) return setPassErr('Şifreler aynı değil.')
     setPassErr('')
     exp.start(async () => { const r = await platform.exportProject(ref, pass); setPass(''); setAgain(''); return r })
   }
@@ -161,12 +161,12 @@ function Backups() {
       )}
       {manage && (
         <form className="form export-form" onSubmit={exportNow} aria-label="Dışa aktar">
-          <p className="muted small">Dışa aktarma, yedeğin yanına anahtarları bu parolayla şifrelenmiş bir <code>project.json</code> yazar. Parola saklanmaz.</p>
+          <p className="muted small">Dışa aktarma, yedeğin yanına anahtarları bu şifreyle korunan bir <code>project.json</code> yazar. Şifre saklanmaz.</p>
           <div className="form-row">
-            <label className="field grow"><span>Parola</span>
+            <label className="field grow"><span>Şifre</span>
               <input type="password" autoComplete="new-password" value={pass} onChange={(e) => setPass(e.target.value)} />
             </label>
-            <label className="field grow"><span>Parola (tekrar)</span>
+            <label className="field grow"><span>Şifre (tekrar)</span>
               <input type="password" autoComplete="new-password" value={again} onChange={(e) => setAgain(e.target.value)} />
             </label>
             <button className="btn" disabled={exp.busy}>Dışa aktar</button>
