@@ -1,8 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import type { FormEvent, InputHTMLAttributes, ReactNode } from 'react'
 import { ApiError, errMsg, platform } from './api.ts'
 import type { Me } from './api.ts'
 import { Link, navigate } from './router.tsx'
+import { Icon } from './ui.tsx'
+import { Brand } from './glyphs.tsx'
+import { SignInPanel } from './SignInPanel.tsx'
 
 // Sign-in, invitation and password reset: the screens reachable without a session.
 
@@ -14,21 +17,24 @@ const signInError = (err: unknown) => {
   return errMsg(err)
 }
 
-function Card({ title, lead, children, onSubmit }: { title: string; lead?: ReactNode; children: ReactNode; onSubmit?: (e: FormEvent) => void }) {
+/** The split page of the v3 mockup: the illustrated panel on the left, the form straight on the page. */
+export function AuthCard({ title, lead, children, onSubmit }: { title: string; lead?: ReactNode; children: ReactNode; onSubmit?: (e: FormEvent) => void }) {
   return (
     <main className="login">
-      <form className="login-card" onSubmit={onSubmit}>
-        <div className="brand login-brand">
-          <span className="brand-mark" aria-hidden="true" />
-          <span className="brand-name">selfbase</span>
-        </div>
-        <h1>{title}</h1>
-        {lead && <p className="muted">{lead}</p>}
-        {children}
-      </form>
+      <SignInPanel />
+      <div className="si-right">
+        <form className="si-form" onSubmit={onSubmit}>
+          <Brand />
+          <h1>{title}</h1>
+          {lead && <p className="sub">{lead}</p>}
+          {children}
+          <div className="si-foot"><span>Davetle mi geldiniz? E-postadaki bağlantıyı açın.</span><span className="mono">{location.host}</span></div>
+        </form>
+      </div>
     </main>
   )
 }
+const Card = AuthCard
 
 /** Runs a submit with busy/error state; `fail` turns an error into the text shown. */
 function useSubmit(run: () => Promise<void>, fail: (e: unknown) => string = errMsg) {
@@ -43,8 +49,29 @@ function useSubmit(run: () => Promise<void>, fail: (e: unknown) => string = errM
   return { busy, error, submit }
 }
 
-const Field = ({ label, ...input }: { label: string } & InputHTMLAttributes<HTMLInputElement>) => (
-  <label className="field"><span>{label}</span><input required {...input} /></label>
+/** A pill input with its icon; a password field can show its characters. `extra` sits on the label row (a link). */
+function Field({ label, extra, type, ...input }: { label: string; extra?: ReactNode } & InputHTMLAttributes<HTMLInputElement>) {
+  const id = useId()
+  const [plain, setPlain] = useState(false)
+  return (
+    <div className="field">
+      <div className="lbl"><label htmlFor={id}>{label}</label>{extra}</div>
+      <div className="input">
+        <Icon name={type === 'password' ? 'lock' : 'mail'} />
+        <input id={id} required type={type === 'password' && plain ? 'text' : type} {...input} />
+        {type === 'password' && (
+          <button type="button" className="icon-btn sm" aria-pressed={plain} onClick={() => setPlain((v) => !v)}
+            aria-label={plain ? 'Karakterleri gizle' : 'Karakterleri göster'} title={plain ? 'Karakterleri gizle' : 'Karakterleri göster'}>
+            <Icon name={plain ? 'eye-slash' : 'eye'} />
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+const Submit = ({ busy, children }: { busy?: boolean; children: ReactNode }) => (
+  <button className="btn primary lg block" disabled={busy}>{children}<span className="ic"><Icon name="arrow-right" size={14} weight="bold" /></span></button>
 )
 
 export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
@@ -53,13 +80,13 @@ export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
   const { busy, error, submit } = useSubmit(async () => { await platform.login(email, password); onSignedIn() }, signInError)
   const accepted = new URLSearchParams(location.search).has('accepted')
   return (
-    <Card title="Studio’ya giriş" lead="Hesabınızla giriş yapın." onSubmit={submit}>
+    <Card title="Tekrar hoş geldiniz" lead="Studio’ya devam etmek için giriş yapın." onSubmit={submit}>
       {accepted && <div className="note" role="status">Davet kabul edildi. Şimdi giriş yapabilirsiniz.</div>}
       <Field label="E-posta" type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus />
-      <Field label="Şifre" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} />
+      <Field label="Şifre" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)}
+        extra={<Link to="/reset-password">Şifremi unuttum</Link>} />
       {error && <div className="error-box" role="alert">{error}</div>}
-      <button className="btn primary block" disabled={busy}>{busy ? 'Giriş yapılıyor…' : 'Giriş yap'}</button>
-      <Link to="/reset-password" className="muted small">Şifremi unuttum</Link>
+      <Submit busy={busy}>{busy ? 'Giriş yapılıyor…' : 'Giriş yap'}</Submit>
     </Card>
   )
 }
@@ -76,7 +103,7 @@ function NewPasswordCard({ title, label, onSave }: { title: string; label: strin
       <Field label="Yeni şifre" type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} autoFocus />
       <Field label="Yeni şifre (tekrar)" type="password" autoComplete="new-password" value={again} onChange={(e) => setAgain(e.target.value)} />
       {error && <div className="error-box" role="alert">{error}</div>}
-      <button className="btn primary block" disabled={busy}>{label}</button>
+      <Submit busy={busy}>{label}</Submit>
     </Card>
   )
 }
@@ -116,7 +143,7 @@ export function AcceptInvite({ token }: { token: string }) {
           Bu davet başka bir e-posta adresine gönderilmiş; <strong>{me.email}</strong> hesabıyla kabul edilemez. Çıkış yapıp davetin
           gönderildiği adresle devam edin.
         </div>
-        <button type="button" className="btn primary block" onClick={signOutHere}>Başka bir hesapla devam et</button>
+        <button type="button" className="btn primary lg block" onClick={signOutHere}>Başka bir hesapla devam et</button>
       </Card>
     )
   }
@@ -124,7 +151,7 @@ export function AcceptInvite({ token }: { token: string }) {
     return (
       <Card title="Daveti kabul et" lead={<><strong>{me.email}</strong> olarak giriş yaptınız. Davet bu hesaba eklenecek.</>} onSubmit={signedInAccept.submit}>
         {signedInAccept.error && <div className="error-box" role="alert">{signedInAccept.error}</div>}
-        <button className="btn primary block" disabled={signedInAccept.busy}>Daveti kabul et</button>
+        <Submit busy={signedInAccept.busy}>Daveti kabul et</Submit>
       </Card>
     )
   }
@@ -132,7 +159,7 @@ export function AcceptInvite({ token }: { token: string }) {
     return (
       <Card title="Daveti kabul et">
         <div className="note" role="status">Bu adresin zaten bir hesabı var. Önce giriş yapın.</div>
-        <Link to={signInLink} className="btn primary block">Giriş yap</Link>
+        <Link to={signInLink} className="btn primary lg block">Giriş yap</Link>
       </Card>
     )
   }
@@ -177,8 +204,8 @@ export function ResetPassword() {
       )}
       <Field label="E-posta" type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus />
       {recover.error && <div className="error-box" role="alert">{recover.error}</div>}
-      <button className="btn primary block" disabled={recover.busy}>Bağlantı gönder</button>
-      <Link to="/sign-in" className="muted small">Girişe dön</Link>
+      <Submit busy={recover.busy}>Bağlantı gönder</Submit>
+      <Link to="/sign-in" className="small">Girişe dön</Link>
     </Card>
   )
 }

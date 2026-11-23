@@ -4,7 +4,7 @@ import type { IconWeight } from '@phosphor-icons/react'
 import {
   ArrowClockwiseIcon, ArrowDownIcon, ArrowRightIcon, ArrowUUpLeftIcon, ArrowUpIcon, ArrowUpRightIcon, BracketsCurlyIcon,
   CaretDownIcon, CaretLeftIcon, CaretRightIcon, CaretUpDownIcon, CheckCircleIcon, CheckIcon, CircleDashedIcon, CircleHalfIcon,
-  CopyIcon, DatabaseIcon, DownloadSimpleIcon, EnvelopeSimpleIcon, FileTextIcon, FlowArrowIcon, FolderSimpleIcon, FunnelSimpleIcon,
+  CopyIcon, DatabaseIcon, DownloadSimpleIcon, EnvelopeSimpleIcon, EyeIcon, EyeSlashIcon, FileTextIcon, FlowArrowIcon, FolderSimpleIcon, FunnelSimpleIcon,
   GaugeIcon, GearSixIcon, HouseIcon, InfoIcon, KeyIcon, LinkSimpleIcon, ListIcon, LockKeyIcon, MagnifyingGlassIcon, MoonIcon, PlayIcon,
   PlusIcon, PulseIcon, ScrollIcon, ShieldCheckIcon, SignOutIcon, SparkleIcon, SpinnerGapIcon, SquaresFourIcon, SunIcon, TableIcon,
   TerminalWindowIcon, TrashIcon, TrayIcon, UploadSimpleIcon, UsersIcon, WarningCircleIcon, XCircleIcon, XIcon,
@@ -24,7 +24,7 @@ const ICONS: Record<string, IconC> = {
   moon: MoonIcon, 'caret-up-down': CaretUpDownIcon, 'caret-left': CaretLeftIcon, 'caret-right': CaretRightIcon,
   'caret-down': CaretDownIcon, 'arrow-right': ArrowRightIcon, 'arrow-up-right': ArrowUpRightIcon, copy: CopyIcon,
   check: CheckIcon, 'check-circle': CheckCircleIcon, 'x-circle': XCircleIcon, undo: ArrowUUpLeftIcon, info: InfoIcon,
-  warning: WarningCircleIcon, mail: EnvelopeSimpleIcon, lock: LockKeyIcon, link: LinkSimpleIcon, braces: BracketsCurlyIcon,
+  warning: WarningCircleIcon, mail: EnvelopeSimpleIcon, lock: LockKeyIcon, eye: EyeIcon, 'eye-slash': EyeSlashIcon, link: LinkSimpleIcon, braces: BracketsCurlyIcon,
   flow: FlowArrowIcon, database: DatabaseIcon, sparkle: SparkleIcon, spinner: SpinnerGapIcon, dashed: CircleDashedIcon,
   theme: CircleHalfIcon, funnel: FunnelSimpleIcon, empty: TrayIcon, ...GLYPHS,
 }

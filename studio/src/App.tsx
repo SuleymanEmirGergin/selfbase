@@ -8,7 +8,7 @@ import { ConfirmHost, Loading, ToastHost } from './ui.tsx'
 import { Shell } from './shell.tsx'
 import { useLoad } from './org/common.tsx'
 import { nf } from './lib/format.ts'
-import { AcceptInvite, ResetPassword, SignIn } from './auth.tsx'
+import { AcceptInvite, AuthCard, ResetPassword, SignIn } from './auth.tsx'
 import { Audit, Capacity, Members, Tokens } from './org/admin.tsx'
 import { ImportProject, NewProject, Projects } from './org/projects.tsx'
 import type { OrgProps } from './org/common.tsx'
@@ -112,12 +112,10 @@ function Routes({ me, signOut, reload }: { me: Me | null | undefined; signOut: (
   const org = me.organizations.find((o) => o.slug === slug)
   if (!org) {
     return (
-      <main className="login"><div className="login-card">
-        <h1>Bulunamadı</h1>
-        <p className="muted">{me.organizations.length ? 'Bu adreste erişebileceğiniz bir sayfa yok.' : 'Henüz bir organizasyona üye değilsiniz. Bir davet bağlantısı isteyin.'}</p>
-        {me.organizations.length > 0 && <Link to={homeOf(me)} className="btn">Projelere dön</Link>}
-        <button className="btn ghost" onClick={signOut}>Çıkış</button>
-      </div></main>
+      <AuthCard title="Bulunamadı" lead={me.organizations.length ? 'Bu adreste erişebileceğiniz bir sayfa yok.' : 'Henüz bir organizasyona üye değilsiniz. Bir davet bağlantısı isteyin.'}>
+        {me.organizations.length > 0 && <Link to={homeOf(me)} className="btn primary lg block">Projelere dön</Link>}
+        <button type="button" className="btn ghost" onClick={signOut}>Çıkış</button>
+      </AuthCard>
     )
   }
   return <OrgShell me={me} org={org} tab={tab} onSignOut={signOut} />
