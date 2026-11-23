@@ -17,3 +17,6 @@ panel.env
 backups/
 .local-test-login
 acceptance/last-run.json
+
+# business notes stay local
+docs/business/

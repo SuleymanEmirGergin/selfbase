@@ -601,3 +601,22 @@ Written for the owner, who will move this to his own server and must understand 
 | 24 | CorteQS handoff document | 22 | 23 | cheap |
 
 Dependency waves: **W-A** 1, 2 → **W-B** 3, 6, 15 → **W-C** 4, 7, 9, 16 → **W-D** 5, 10, 11 → **W-E** 8, 12 → **W-F** 13 → **W-G** 14 → **W-H** 17 → **W-I** 18, 19 → whole-branch review → **W-J** 20 → 21 → 22 → **W-K** 23, 24.
+
+---
+
+### Task 25: Studio redesign (owner-approved v3 design, added 2026-11-23)
+
+Runs after the final-review fix wave merges and before Task 20, so the first deploy ships it.
+
+**Source of truth:** `.superpowers/sdd/2026-11-22-selfbase-v2-wave1/studio-mockup-v3.html` (screens: signin, projects, capacity, home incl. Mimari tab, table incl. undo toast, sql incl. Asistan, import side sheet, palette, details) and `studio-references-browsed.md`. Copy the mockup HTML into `docs/design/` in the first commit so the repo carries it.
+
+**Constraints:**
+- Fonts self-hosted (Geist, Geist Mono, Instrument Serif as woff2 under `studio/public/fonts`); no runtime CDN calls.
+- Icons: `@phosphor-icons/react` (MIT), Regular / Duotone (active nav, empty states) / Bold (12px only), plus 7 custom service glyphs as React components.
+- Tokens on `:root` with light/dark and the theme circular reveal (View Transitions API with fallback); every text token at WCAG AA or better, as in the mockup's contrast table.
+- `prefers-reduced-motion` disables all motion.
+- UI text in Turkish; tr-TR number and relative-time formatting.
+- Only screens backed by real control/core routes ship live. Sites (Wave 6), Asistan and the architecture canvas ship as clearly labelled previews or stay behind a flag; never show fake data as real.
+- Existing Playwright Studio specs (role gating, 401 refresh) keep passing; add specs for the theme switch, Ctrl+K palette, undo toast and keyboard focus order.
+
+**Steps:** tokens and fonts → shell (sidebar, top bar, palette) → org screens (projects, members, tokens, audit, capacity) → project screens (home, table editor, SQL, auth users, storage, logs, settings, import/export sheet) → states (skeleton, empty, error, toasts) → Playwright screenshots of every screen, dark and light, compared against the mockup → commit.
