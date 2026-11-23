@@ -58,6 +58,21 @@ export function serial<T>(key: string, fn: () => Promise<T>): Promise<T> {
 // the proxy's current addresses as core's TRUSTED_PROXY_IPS renders them; null while the proxy is down
 const proxyIps = (ctx: Ctx) => proxyAddresses(ctx).then((r) => r.addresses, () => null)
 
+/**
+ * The list ensure renders as core's TRUSTED_PROXY_IPS: the proxy's addresses; none while it is not running (another
+ * container may take its old address); when the proxy could not be read for any other reason, the list core has now
+ * (an empty one would change core's spec hash, and the next pass would recreate core a second time).
+ */
+export async function proxyForCore(read: () => Promise<string[]>, currentCore: () => Promise<any>): Promise<string[]> {
+  try {
+    return await read()
+  } catch (e) {
+    if ((e as ProvisionError).code === 'proxy_unavailable') return []
+    const kept = ((await currentCore())?.Config?.Env ?? []).find((x: string) => x.startsWith('TRUSTED_PROXY_IPS='))
+    return kept ? kept.slice('TRUSTED_PROXY_IPS='.length).split(',').filter(Boolean) : []
+  }
+}
+
 function serviceState(service: string, c: any, node: NodeSettings, network: string, proxy: string[] | null): ServiceState {
   if (!c) return { service, exists: false, state: null, health: null, specHash: null, templateVersion: null, memLimitMb: null, proxyAttached: false, projectIp: null, proxyStale: false }
   const l = c.Config?.Labels ?? {}
@@ -89,7 +104,8 @@ export async function ensure(ctx: Ctx, ref: string, body: unknown) {
   assertRef(ref)
   if (!isObj(body)) refuse(400, 'invalid_body', 'body must be a JSON object')
   const { recreate = [], ...input } = body as Record<string, unknown>
-  const spec = buildProject({ ...input, ref } as EnsureInput, ctx.tpl, ctx.sizes, ctx.node, (await proxyIps(ctx)) ?? [])
+  const proxy = await proxyForCore(async () => (await proxyAddresses(ctx)).addresses, () => inspect(containerName(ref, 'core')))
+  const spec = buildProject({ ...input, ref } as EnsureInput, ctx.tpl, ctx.sizes, ctx.node, proxy)
   if (!Array.isArray(recreate) || !recreate.every((s) => spec.containers.some((c) => c.service === s))) {
     refuse(400, 'invalid_recreate', 'recreate must list template services')
   }
@@ -172,7 +188,8 @@ export async function remove(ctx: Ctx, ref: string, volumes: boolean) {
 }
 
 // The proxy's address on PROXY_NETWORK (Traefik reaches control there), by its exact container name: never a DNS
-// answer, which any container on that network can join with an alias. Not running: 503, control keeps what it had.
+// answer, which any container on that network can join with an alias. Not running: 503 proxy_unavailable, on which
+// control trusts only its fixed literals and ensure renders core's list empty; other failures keep what each had.
 export async function proxyAddresses(ctx: Ctx) {
   const name = ctx.node.proxyContainer
   const c = await inspect(name)

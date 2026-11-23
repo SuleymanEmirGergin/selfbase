@@ -9,6 +9,7 @@ import { parse } from 'yaml'
 import { validateTemplate } from '../src/template.ts'
 import { buildJob, buildProject, dryRunEnv, type EnsureInput, type JobInput, type Sizes } from '../src/spec.ts'
 import { ProvisionError } from '../src/names.ts'
+import { proxyForCore } from '../src/ops.ts'
 import type { NodeSettings } from '../src/settings.ts'
 
 const fixturePath = fileURLToPath(new URL('./fixtures/template.yml', import.meta.url))
@@ -283,4 +284,15 @@ test("template/compose.yml: core's TRUSTED_PROXY_IPS is what the provisioner ren
   // empty: the proxy is down, trust no peer (only an unset variable, a standalone stack, renders `*`)
   assert.ok(coreEnv([]).includes('TRUSTED_PROXY_IPS='), coreEnv([]).join(' '))
   assert.ok(coreEnv(['10.0.1.2']).includes('TRUSTED_PROXY_IPS=10.0.1.2'))
+})
+
+test("ensure's proxy list: the proxy's addresses; none while it is not running; core's current list when it cannot be read", async () => {
+  const core = async () => ({ Config: { Env: ['A=1', 'TRUSTED_PROXY_IPS=10.0.1.2,10.0.1.3'] } })
+  const fail = (code: string) => async (): Promise<string[]> => { throw new ProvisionError(code === 'proxy_unavailable' ? 503 : 502, code) }
+  assert.deepEqual(await proxyForCore(async () => ['10.0.1.9'], core), ['10.0.1.9'])
+  assert.deepEqual(await proxyForCore(fail('proxy_unavailable'), core), [])
+  // any other failure (the socket proxy unreachable, a refused inspect) keeps core as it is: no recreate now, and none
+  // again on the next pass when the proxy reads fine
+  assert.deepEqual(await proxyForCore(fail('docker_unreachable'), core), ['10.0.1.2', '10.0.1.3'])
+  assert.deepEqual(await proxyForCore(fail('docker_refused'), async () => null), [])
 })
