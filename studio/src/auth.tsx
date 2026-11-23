@@ -12,7 +12,7 @@ import { SignInPanel } from './SignInPanel.tsx'
 const signInError = (err: unknown) => {
   const status = err instanceof ApiError ? err.status : 0
   if (status === 400 || status === 401) return 'E-posta ya da şifre hatalı.'
-  if (status === 429) return 'Çok fazla hatalı deneme. Biraz bekleyip tekrar deneyin.'
+  if (status === 429) return 'Çok fazla hatalı deneme. Biraz bekleyip tekrar dene.'
   if (status === 403) return 'İstek reddedildi: Studio’ya yalnızca kendi adresinden giriş yapılabilir.'
   return errMsg(err)
 }
@@ -28,7 +28,7 @@ export function AuthCard({ title, lead, children, onSubmit }: { title: string; l
           <h1>{title}</h1>
           {lead && <p className="sub">{lead}</p>}
           {children}
-          <div className="si-foot"><span>Davetle mi geldiniz? E-postadaki bağlantıyı açın.</span><span className="mono">{location.host}</span></div>
+          <div className="si-foot"><span>Davetle mi geldin? E-postadaki bağlantıyı aç.</span><span className="mono">{location.host}</span></div>
         </form>
       </div>
     </main>
@@ -80,8 +80,8 @@ export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
   const { busy, error, submit } = useSubmit(async () => { await platform.login(email, password); onSignedIn() }, signInError)
   const accepted = new URLSearchParams(location.search).has('accepted')
   return (
-    <Card title="Tekrar hoş geldiniz" lead="Studio’ya devam etmek için giriş yapın." onSubmit={submit}>
-      {accepted && <div className="note" role="status">Davet kabul edildi. Şimdi giriş yapabilirsiniz.</div>}
+    <Card title="Tekrar hoş geldin" lead="Studio’ya devam etmek için oturum aç." onSubmit={submit}>
+      {accepted && <div className="note" role="status">Davet kabul edildi. Artık giriş yapabilirsin.</div>}
       <Field label="E-posta" type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus />
       <Field label="Şifre" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)}
         extra={<Link to="/reset-password">Şifremi unuttum</Link>} />
@@ -99,7 +99,7 @@ function NewPasswordCard({ title, label, onSave }: { title: string; label: strin
     await onSave(password)
   })
   return (
-    <Card title={title} lead="Hesabınız için bir şifre belirleyin." onSubmit={submit}>
+    <Card title={title} lead="Hesabın için bir şifre belirle." onSubmit={submit}>
       <Field label="Yeni şifre" type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} autoFocus />
       <Field label="Yeni şifre (tekrar)" type="password" autoComplete="new-password" value={again} onChange={(e) => setAgain(e.target.value)} />
       {error && <div className="error-box" role="alert">{error}</div>}
@@ -141,7 +141,7 @@ export function AcceptInvite({ token }: { token: string }) {
       <Card title="Daveti kabul et">
         <div className="note" role="status">
           Bu davet başka bir e-posta adresine gönderilmiş; <strong>{me.email}</strong> hesabıyla kabul edilemez. Çıkış yapıp davetin
-          gönderildiği adresle devam edin.
+          gönderildiği adresle devam et.
         </div>
         <button type="button" className="btn primary lg block" onClick={signOutHere}>Başka bir hesapla devam et</button>
       </Card>
@@ -149,7 +149,7 @@ export function AcceptInvite({ token }: { token: string }) {
   }
   if (me) {
     return (
-      <Card title="Daveti kabul et" lead={<><strong>{me.email}</strong> olarak giriş yaptınız. Davet bu hesaba eklenecek.</>} onSubmit={signedInAccept.submit}>
+      <Card title="Daveti kabul et" lead={<><strong>{me.email}</strong> olarak giriş yaptın. Davet bu hesaba eklenecek.</>} onSubmit={signedInAccept.submit}>
         {signedInAccept.error && <div className="error-box" role="alert">{signedInAccept.error}</div>}
         <Submit busy={signedInAccept.busy}>Daveti kabul et</Submit>
       </Card>
@@ -158,7 +158,7 @@ export function AcceptInvite({ token }: { token: string }) {
   if (hasAccount) {
     return (
       <Card title="Daveti kabul et">
-        <div className="note" role="status">Bu adresin zaten bir hesabı var. Önce giriş yapın.</div>
+        <div className="note" role="status">Bu adresin zaten bir hesabı var. Önce giriş yap.</div>
         <Link to={signInLink} className="btn primary lg block">Giriş yap</Link>
       </Card>
     )
@@ -186,7 +186,7 @@ export function ResetPassword() {
   const [done, setDone] = useState('')
   const recover = useSubmit(async () => { await platform.recover(email.trim()); setDone('sent') })
 
-  if (done === 'saved') return <Card title="Şifre değişti" lead={<>Yeni şifrenizle <Link to="/sign-in">giriş yapın</Link>.</>}>{null}</Card>
+  if (done === 'saved') return <Card title="Şifre değişti" lead={<>Yeni şifrenle <Link to="/sign-in">giriş yap</Link>.</>}>{null}</Card>
   if (accessToken) {
     return (
       <NewPasswordCard title="Yeni şifre" label="Şifreyi kaydet" onSave={async (password) => {
@@ -197,10 +197,10 @@ export function ResetPassword() {
   }
   return (
     <Card title="Şifreyi sıfırla" onSubmit={recover.submit}
-      lead={done ? 'Bu adres kayıtlıysa sıfırlama bağlantısı gönderildi.' : 'Hesabınızın e-posta adresini yazın; sıfırlama bağlantısı gönderilir.'}>
+      lead={done ? 'Bu adres kayıtlıysa sıfırlama bağlantısı gönderildi.' : 'Hesabının e-posta adresini yaz; sıfırlama bağlantısı gönderilir.'}>
       {/* the fragment's own error text is attacker-controllable, so only a fixed message is shown */}
       {(hash.has('error') || hash.has('error_description')) && (
-        <div className="error-box" role="alert">Bağlantı geçersiz ya da süresi dolmuş. Yeni bir sıfırlama bağlantısı isteyin.</div>
+        <div className="error-box" role="alert">Bağlantı geçersiz ya da süresi dolmuş. Yeni bir sıfırlama bağlantısı iste.</div>
       )}
       <Field label="E-posta" type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus />
       {recover.error && <div className="error-box" role="alert">{recover.error}</div>}

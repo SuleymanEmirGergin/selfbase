@@ -17,7 +17,7 @@ const h1 = (name: string | RegExp) => (p: Page) => expect(p.getByRole('heading',
 const P = `/project/${REF}`
 
 const SHOTS: Shot[] = [
-  { name: 'sign-in', path: '/sign-in', r: signedOut, ready: h1('Tekrar hoş geldiniz') },
+  { name: 'sign-in', path: '/sign-in', r: signedOut, ready: h1('Tekrar hoş geldin') },
   { name: 'invite', path: '/invite/tok123', r: signedOut, ready: (p) => expect(p.getByRole('button', { name: 'Daveti kabul et' })).toBeVisible() },
   { name: 'reset-password', path: '/reset-password', r: signedOut, ready: (p) => expect(p.getByRole('button', { name: 'Bağlantı gönder' })).toBeVisible() },
   { name: 'org-projects', path: '/org/acme', ready: h1('Projeler') },
@@ -76,7 +76,7 @@ test.describe('sign-in extras', () => {
     await page.setViewportSize({ width: 390, height: 844 })
     await mockApi(page, signedOut)
     await page.goto('/sign-in')
-    await h1('Tekrar hoş geldiniz')(page)
+    await h1('Tekrar hoş geldin')(page)
     await page.evaluate(() => document.fonts.ready)
     await page.screenshot({ path: fileURLToPath(new URL('sign-in-phone-dark.png', OUT)) })
   })

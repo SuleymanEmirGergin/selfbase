@@ -112,7 +112,7 @@ function Routes({ me, signOut, reload }: { me: Me | null | undefined; signOut: (
   const org = me.organizations.find((o) => o.slug === slug)
   if (!org) {
     return (
-      <AuthCard title="Bulunamadı" lead={me.organizations.length ? 'Bu adreste erişebileceğiniz bir sayfa yok.' : 'Henüz bir organizasyona üye değilsiniz. Bir davet bağlantısı isteyin.'}>
+      <AuthCard title="Bulunamadı" lead={me.organizations.length ? 'Bu adreste erişebileceğin bir sayfa yok.' : 'Henüz bir organizasyona üye değilsin. Bir davet bağlantısı iste.'}>
         {me.organizations.length > 0 && <Link to={homeOf(me)} className="btn primary lg block">Projelere dön</Link>}
         <button type="button" className="btn ghost" onClick={signOut}>Çıkış</button>
       </AuthCard>

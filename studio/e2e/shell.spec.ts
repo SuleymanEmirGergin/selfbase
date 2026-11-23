@@ -196,7 +196,7 @@ test('an invitation for an address with an account sends the user to sign in, th
   await page.getByLabel('Yeni şifre', { exact: true }).fill('correct horse battery')
   await page.getByLabel('Yeni şifre (tekrar)').fill('correct horse battery')
   await page.getByRole('button', { name: 'Daveti kabul et' }).click()
-  await expect(page.getByText('Bu adresin zaten bir hesabı var. Önce giriş yapın.')).toBeVisible()
+  await expect(page.getByText('Bu adresin zaten bir hesabı var. Önce giriş yap.')).toBeVisible()
 
   await page.getByRole('link', { name: 'Giriş yap' }).click()
   await expect(page).toHaveURL(/\/sign-in\?next=%2Finvite%2Ftok123$/)
@@ -205,7 +205,7 @@ test('an invitation for an address with an account sends the user to sign in, th
   await page.getByRole('button', { name: 'Giriş yap' }).click()
 
   await expect(page).toHaveURL(/\/invite\/tok123$/)
-  await expect(page.getByText('olarak giriş yaptınız')).toBeVisible()
+  await expect(page.getByText('olarak giriş yaptın.')).toBeVisible()
   await page.getByRole('button', { name: 'Daveti kabul et' }).click()
   await expect(page).toHaveURL(/\/org\/acme$/)
   const accepts = api.calls.filter((c) => c.key === 'POST /invitations/accept').map((c) => c.body)
@@ -226,7 +226,7 @@ for (const [status, body] of [
       'POST /invitations/accept': { status, body },
     })
     await page.goto('/invite/tok123')
-    await expect(page.getByText('olarak giriş yaptınız')).toBeVisible()
+    await expect(page.getByText('olarak giriş yaptın.')).toBeVisible()
     await page.getByRole('button', { name: 'Daveti kabul et' }).click()
     await expect(page.getByRole('status')).toContainText('başka bir e-posta adresine')
     await expect(page.getByText(body.message)).toHaveCount(0)
@@ -390,7 +390,7 @@ test('an explicit sign-out drops next', async ({ page }) => {
 test('the reset screen strips the fragment and never shows its error text', async ({ page }) => {
   await mockApi(page, { 'GET /me': { status: 401, body: fx('unauthorized') }, 'POST /refresh': { status: 401, body: fx('unauthorized') } })
   await page.goto('/reset-password#error=access_denied&error_description=Call+555+to+restore+your+account')
-  await expect(page.getByRole('alert')).toHaveText('Bağlantı geçersiz ya da süresi dolmuş. Yeni bir sıfırlama bağlantısı isteyin.')
+  await expect(page.getByRole('alert')).toHaveText('Bağlantı geçersiz ya da süresi dolmuş. Yeni bir sıfırlama bağlantısı iste.')
   await expect(page.getByText('555')).toHaveCount(0)
   expect(await page.evaluate(() => location.hash)).toBe('')
 
