@@ -83,7 +83,7 @@ export function Copy({ text, label = t('common.copy') }: { text: string; label?:
   }, () => toast(t('common.copyFailed'), 'error'))
   return (
     <button type="button" className={`copy ${ok ? 'ok' : ''}`} onClick={copy} aria-label={label} title={label}>
-      <CopyIcon size={13} className="icon a" /><CheckIcon size={13} weight="bold" className="icon b" />
+      <CopyIcon size={13} className="icon a" /><CheckIcon size={12} weight="bold" className="icon b" />
     </button>
   )
 }
