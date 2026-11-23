@@ -290,7 +290,8 @@ test('5: projects keep serving with the control stack stopped; a core restarts w
   }
   docker('restart', `sb-${P.a.ref}-core`)
   await waitFor('core healthy with logs stopped', () => inspect(`sb-${P.a.ref}-core`).State.Health?.Status === 'healthy', { timeout: 90_000 })
-  assert.equal((await https(P.a.host, '/health')).status, 200)
+  // Traefik publishes the route a moment after the container turns healthy
+  await waitFor('route back', async () => (await https(P.a.host, '/health')).status === 200, { timeout: 30_000, every: 250 })
 
   docker('start', ...CONTROL_STACK)
   await waitFor('control healthy', () => inspect('selfbase-control').State.Health?.Status === 'healthy', { timeout: 90_000 })
@@ -330,13 +331,11 @@ test('7: a paused project answers 540, a restored one 200', async () => {
 test('8: the new-host cap refuses a third project; deleting B frees its host and everything it had', async () => {
   const cap = await ok('GET', '/capacity')
   assert.equal(cap.new_hosts_this_week, 3)
-  const refused = await create('over-cap')
-  const j = await job(refused.jobId)
-  assert.equal(j.status, 'failed')
-  assert.match(j.error, /used its 3 new hostnames for this week/)
-  const del = await ok('DELETE', `/projects/${refused.ref}`, { confirm_name: 'over-cap' })
-  assert.equal((await job(del.job_id)).status, 'succeeded')
-
+  // refused in the request itself (control/src/hosts.ts precheckHost), no job
+  const refused = await api('POST', '/projects', { organization_slug: 'default', name: 'over-cap', size: 'micro' })
+  assert.equal(refused.status, 409, refused.text)
+  assert.equal(refused.json.error, 'new_host_cap')
+  assert.match(refused.json.message, /used its 3 new hostnames for this week/)
   const b = P.b
   const gone = await job((await ok('DELETE', `/projects/${b.ref}`, { confirm_name: 'b' })).job_id)
   assert.equal(gone.status, 'succeeded', gone.error)
