@@ -244,19 +244,19 @@ test('4: Studio against the real stack: table editor, SQL, logs', async () => {
   try {
     const page = await browser.newPage({ ignoreHTTPSErrors: true, baseURL: ORIGIN, viewport: { width: 1440, height: 900 } })
     await page.goto('/')
-    await page.getByLabel('E-posta').fill(OWNER.email)
-    await page.getByLabel('Parola').fill(OWNER.password)
-    await page.getByRole('button', { name: 'Giriş yap' }).click()
-    await expect(page.getByLabel('Organizasyon')).toBeVisible({ timeout: 15_000 })
+    await page.getByLabel('Email').fill(OWNER.email)
+    await page.getByLabel('Password', { exact: true }).fill(OWNER.password)
+    await page.getByRole('button', { name: 'Sign in' }).click()
+    await expect(page.getByLabel('Organization')).toBeVisible({ timeout: 15_000 })
     await page.goto(`/project/${P.a.ref}/editor`)
-    await page.getByRole('complementary', { name: 'Tablolar' }).getByRole('button', { name: 'e2e_notes' }).click()
-    await page.getByRole('button', { name: 'Satır ekle' }).click()
-    await page.getByRole('dialog', { name: 'Satır ekle' }).getByLabel('note').fill('from studio')
-    await page.getByRole('button', { name: 'Kaydet' }).click()
+    await page.getByRole('complementary', { name: 'Tables' }).getByRole('button', { name: 'e2e_notes' }).click()
+    await page.getByRole('button', { name: 'Add row' }).click()
+    await page.getByRole('dialog', { name: 'Add row' }).getByLabel('note').fill('from studio')
+    await page.getByRole('button', { name: 'Save' }).click()
     await expect(page.getByRole('cell', { name: 'from studio' })).toBeVisible()
 
-    await page.getByRole('navigation', { name: 'Ana menü' }).getByRole('link', { name: 'SQL', exact: true }).click()
-    await page.getByRole('textbox', { name: 'SQL sorgusu' }).click()
+    await page.getByRole('navigation', { name: 'Main menu' }).getByRole('link', { name: 'SQL', exact: true }).click()
+    await page.getByRole('textbox', { name: 'SQL query' }).click()
     await page.keyboard.press('Control+A')
     await page.keyboard.type('select 1 as one')
     await page.keyboard.press('Control+Enter')
@@ -264,9 +264,9 @@ test('4: Studio against the real stack: table editor, SQL, logs', async () => {
     await expect(page.getByRole('cell', { name: '1', exact: true })).toBeVisible()
 
     await page.goto(`/project/${P.a.ref}/logs`)
-    await expect(page.getByRole('list', { name: 'core günlüğü' }).getByRole('listitem').first()).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByRole('list', { name: 'core log' }).getByRole('listitem').first()).toBeVisible({ timeout: 15_000 })
     // from VictoriaLogs over syslog, not the container fallback
-    await expect(page.getByText(/Günlük deposuna ulaşılamadı/)).toHaveCount(0)
+    await expect(page.getByText(/The log store could not be reached/)).toHaveCount(0)
   } finally {
     await browser.close()
   }
