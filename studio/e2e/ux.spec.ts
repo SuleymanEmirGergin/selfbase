@@ -7,17 +7,22 @@ import { REF, fx, mockApi, routes } from './helpers.ts'
 const theme = (page: Page) => page.evaluate(() => document.documentElement.dataset.theme)
 const signedOut = { 'GET /me': { status: 401, body: fx('unauthorized') }, 'POST /refresh': { status: 401, body: fx('unauthorized') } }
 
-test('the sign-in art panel is hidden from assistive tech, has nothing to focus, and loads its loop muted with the still as poster', async ({ page }) => {
+const focusables = 'a, button, input, select, textarea, [tabindex], video[controls]'
+
+test('the sign-in art is hidden from assistive tech, its only control is the video toggle, and the loop loads muted with the still as poster', async ({ page }) => {
   await mockApi(page, signedOut)
   await page.goto('/sign-in')
-  const panel = page.locator('.si-left')
-  await expect(panel).toHaveAttribute('aria-hidden', 'true')
-  expect(await panel.locator('a, button, input, select, textarea, [tabindex], video[controls]').count()).toBe(0)
+  const art = page.locator('.si-left .a-panel')
+  await expect(art).toHaveAttribute('aria-hidden', 'true')
+  expect(await art.locator(focusables).count()).toBe(0)
+  await expect(page.locator('.si-left').locator(focusables)).toHaveCount(1)
+  await expect(page.locator('.si-left [aria-hidden] button, .si-left[aria-hidden]')).toHaveCount(0) // the toggle is not inside the hidden art
   await expect(page.getByRole('heading', { name: 'Tekrar hoş geldin' })).toBeVisible()
+  const panel = page.locator('.si-left')
   const video = panel.locator('video')
   await expect(video).toHaveCount(1)
-  expect(await video.evaluate((v: HTMLVideoElement) => [v.muted, v.loop, v.playsInline, v.preload, v.getAttribute('poster')]))
-    .toEqual([true, true, true, 'metadata', '/signin/art.webp'])
+  expect(await video.evaluate((v: HTMLVideoElement) => [v.muted, v.hasAttribute('muted'), v.loop, v.playsInline, v.preload, v.getAttribute('poster')]))
+    .toEqual([true, true, true, true, 'metadata', '/signin/art.webp'])
   await expect(panel.getByText('#483')).toHaveCount(0) // no deploy number, only a sample label
 })
 
@@ -32,6 +37,63 @@ test('under reduced motion the sign-in panel shows only the still: no video, no 
   await expect(page.locator('.si-left .a-art')).not.toHaveClass(/has-vid/)
   await expect(page.locator('.si-left .gl-c.done')).toHaveCount(4) // the sample pipeline sits finished
   await ctx.close()
+})
+
+test('the video toggle is reachable by keyboard, pauses to the still and stays paused for the session', async ({ page }) => {
+  await mockApi(page, signedOut)
+  await page.goto('/sign-in')
+  await expect(page.getByLabel('E-posta')).toBeFocused()
+  await page.keyboard.press('Shift+Tab') // the panel comes before the form
+  const stop = page.getByRole('button', { name: 'Videoyu durdur' })
+  await expect(stop).toBeFocused()
+  // AA focus ring: the global ring is drawn as a box-shadow
+  expect(await stop.evaluate((b) => getComputedStyle(b).boxShadow)).toContain('rgb(201, 246, 94)')
+  await page.keyboard.press('Enter')
+  const play = page.getByRole('button', { name: 'Videoyu oynat' })
+  await expect(play).toBeFocused()
+  await expect(page.locator('.si-left video')).toHaveCount(0)
+  await expect(page.locator('.si-left .a-art')).not.toHaveClass(/has-vid/)
+  await expect(page.locator('.si-left .sheen')).toHaveCount(0)
+  await expect(page.locator('.si-left .gl-c.done')).toHaveCount(4)
+
+  await page.reload()
+  await expect(play).toBeVisible()
+  await expect(page.locator('.si-left video')).toHaveCount(0)
+  await play.focus()
+  await page.keyboard.press('Space')
+  await expect(stop).toBeVisible()
+  await expect(page.locator('.si-left video')).toHaveCount(1)
+})
+
+test('a phone strip or Data Saver gets the still only: no video element, no toggle, no video request', async ({ browser }) => {
+  for (const opts of [{ viewport: { width: 390, height: 844 } }, { saveData: true }]) {
+    const ctx = await browser.newContext('viewport' in opts ? opts : {})
+    const page = await ctx.newPage()
+    if ('saveData' in opts) await page.addInitScript(() => Object.defineProperty(navigator, 'connection', { value: { saveData: true } }))
+    const media: string[] = []
+    page.on('request', (r) => { if (/\.(mp4|webm)(\?|$)/.test(r.url())) media.push(r.url()) })
+    await mockApi(page, signedOut)
+    await page.goto('/sign-in')
+    await expect(page.getByRole('heading', { name: 'Tekrar hoş geldin' })).toBeVisible()
+    await page.waitForTimeout(500)
+    await expect(page.locator('.si-left video')).toHaveCount(0)
+    await expect(page.locator('.si-left button')).toHaveCount(0)
+    expect(media).toEqual([])
+    await ctx.close()
+  }
+})
+
+test('turning reduced motion on while the page is open stops the video and the pipeline', async ({ page }) => {
+  await mockApi(page, signedOut)
+  await page.goto('/sign-in')
+  await expect(page.locator('.si-left video')).toHaveCount(1)
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await expect(page.locator('.si-left video')).toHaveCount(0)
+  await expect(page.locator('.si-left button')).toHaveCount(0)
+  await expect(page.locator('.si-left .gl-c.done')).toHaveCount(4)
+  const k = await page.locator('.si-left .gl-c.done').count()
+  await page.waitForTimeout(1600) // more than one step: nothing moves any more
+  await expect(page.locator('.si-left .gl-c.done')).toHaveCount(k)
 })
 
 test('on sign-in, keyboard focus starts and stays in the form', async ({ page }) => {

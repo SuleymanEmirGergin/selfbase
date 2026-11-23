@@ -5,7 +5,7 @@ import {
   ArrowClockwiseIcon, ArrowDownIcon, ArrowRightIcon, ArrowUUpLeftIcon, ArrowUpIcon, ArrowUpRightIcon, BracketsCurlyIcon,
   CaretDownIcon, CaretLeftIcon, CaretRightIcon, CaretUpDownIcon, CheckCircleIcon, CheckIcon, CircleDashedIcon, CircleHalfIcon,
   CopyIcon, DatabaseIcon, DownloadSimpleIcon, EnvelopeSimpleIcon, EyeIcon, EyeSlashIcon, FileTextIcon, FlowArrowIcon, FolderSimpleIcon, FunnelSimpleIcon,
-  GaugeIcon, GearSixIcon, HouseIcon, InfoIcon, KeyIcon, LinkSimpleIcon, ListIcon, LockKeyIcon, MagnifyingGlassIcon, MoonIcon, PlayIcon,
+  GaugeIcon, GearSixIcon, HouseIcon, InfoIcon, KeyIcon, LinkSimpleIcon, ListIcon, LockKeyIcon, MagnifyingGlassIcon, MoonIcon, PauseIcon, PlayIcon,
   PlusIcon, PulseIcon, ScrollIcon, ShieldCheckIcon, SignOutIcon, SparkleIcon, SpinnerGapIcon, SquaresFourIcon, SunIcon, TableIcon,
   TerminalWindowIcon, TrashIcon, TrayIcon, UploadSimpleIcon, UsersIcon, WarningCircleIcon, XCircleIcon, XIcon,
 } from '@phosphor-icons/react'
@@ -19,7 +19,7 @@ const ICONS: Record<string, IconC> = {
   table: TableIcon, shield: ShieldCheckIcon, terminal: TerminalWindowIcon, users: UsersIcon, folder: FolderSimpleIcon,
   file: FileTextIcon, logout: SignOutIcon, close: XIcon, plus: PlusIcon, refresh: ArrowClockwiseIcon, key: KeyIcon,
   search: MagnifyingGlassIcon, menu: ListIcon, up: ArrowUpIcon, down: ArrowDownIcon, upload: UploadSimpleIcon,
-  download: DownloadSimpleIcon, trash: TrashIcon, chevron: CaretRightIcon, play: PlayIcon, home: HouseIcon,
+  download: DownloadSimpleIcon, trash: TrashIcon, chevron: CaretRightIcon, play: PlayIcon, pause: PauseIcon, home: HouseIcon,
   projects: SquaresFourIcon, scroll: ScrollIcon, gauge: GaugeIcon, pulse: PulseIcon, gear: GearSixIcon, sun: SunIcon,
   moon: MoonIcon, 'caret-up-down': CaretUpDownIcon, 'caret-left': CaretLeftIcon, 'caret-right': CaretRightIcon,
   'caret-down': CaretDownIcon, 'arrow-right': ArrowRightIcon, 'arrow-up-right': ArrowUpRightIcon, copy: CopyIcon,
