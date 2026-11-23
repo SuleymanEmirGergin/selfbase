@@ -38,7 +38,8 @@ mkdir -p "$backups"
 # leftovers of killed runs (a running backup's temp dir is never a day old)
 find "$backups" -mindepth 1 -maxdepth 1 -name '.tmp-*' -mmin +1440 -exec rm -rf {} +
 mkdir "$tmp"
-pg_dump -Fc -f "$tmp/db.dump"
+# mail_log holds sign-in and recovery links in clear when SMTP is off: its rows never enter a backup
+pg_dump -Fc --exclude-table-data=selfbase.mail_log -f "$tmp/db.dump"
 pg_dumpall --globals-only --no-role-passwords -f "$tmp/globals.sql"
 if [ "$sub" != control ]; then
   # GNU tar exits 1 when a file changed while it was read (core kept writing); the archive is still

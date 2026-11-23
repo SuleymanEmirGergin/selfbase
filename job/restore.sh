@@ -58,7 +58,7 @@ cleanup() {
   [ -z "$t" ] || rm -rf "$t"
   [ "$rc" != 0 ] || return 0
   if [ "$db_done" = 1 ]; then
-    echo "restore: FAILED in the storage step: the DATABASE WAS RESTORED from $rel, storage may be partly replaced; run the restore again" >&2
+    echo "restore: FAILED in the storage step: the DATABASE WAS RESTORED from $rel, storage may be partly replaced; delete this project, then import again" >&2
     exit 3
   fi
   if [ "$held" = 1 ]; then

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { config } from '../src/config.ts'
 import { pool } from '../src/db.ts'
 import { newRef } from '../src/ids.ts'
-import { addDomain, allocateHost, assertRoutable, HostError, hostsOf, newHostsThisWeek, releaseHost, removeDomain } from '../src/hosts.ts'
+import { addDomain, allocateHost, assertRoutable, HostError, hostsOf, newHostsThisWeek, precheckHost, releaseHost, removeDomain } from '../src/hosts.ts'
 
 const BASE = config.baseDomain
 let orgId: string
@@ -45,6 +45,18 @@ describe('host slots and the weekly cap', () => {
     expect(e.message).toMatch(/3 new hostnames/)
     expect(e.message).toContain(e.details.retryAfter.slice(0, 10))
     expect(await hostsOf(pool, a.projectId)).toEqual([`${a.ref}.${BASE}`])
+  })
+
+  test('the pre-check refuses a create at the cap unless a free slot of its pool is there', async () => {
+    await setControlHost(new Date().toISOString())
+    await precheckHost(pool, 'project')
+    const a = await project()
+    await allocateHost(pool, { ...a, pool: 'project' })
+    await allocateHost(pool, { ...(await project()), pool: 'project' })
+    expect((await refusal(precheckHost(pool, 'project'))).code).toBe('new_host_cap')
+    await releaseHost(pool, a.projectId)
+    await precheckHost(pool, 'project')
+    expect((await refusal(precheckHost(pool, 'test'))).code).toBe('new_host_cap')
   })
 
   test('release then allocate returns the freed hostname with isNew false, and it does not count again', async () => {

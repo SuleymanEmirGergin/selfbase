@@ -9,6 +9,7 @@ import { ApiError } from '../errors.ts'
 import { adminSql } from '../forward.ts'
 import { HEALTH_SERVICES, servicesHealth } from '../health.ts'
 import { createProject } from '../jobs/index.ts'
+import { projectConfig } from '../project-env.ts'
 import { provisioner } from '../provisioner.ts'
 import type { Env } from '../session.ts'
 import {
@@ -45,7 +46,11 @@ op(v1, 'post', '/projects', 'v1-create-a-project', async (c) => {
   return c.json(v1Project({ ...project, org_slug: org.slug } as Parameters<typeof v1Project>[0]), 201)
 })
 
-op(v1, 'get', '/projects/:ref', 'v1-get-project', async (c) => c.json(v1Project(await projectFor(c, 'project.read'))))
+op(v1, 'get', '/projects/:ref', 'v1-get-project', async (c) => {
+  const p = await projectFor(c, 'project.read')
+  // selfbase's addition, as on /platform: the auth mails need it
+  return c.json({ ...v1Project(p), smtp_configured: !!(await projectConfig(pool, p.id)).SMTP_HOST })
+})
 
 op(v1, 'delete', '/projects/:ref', 'v1-delete-a-project', async (c) => {
   const p = await projectFor(c, 'project.manage')

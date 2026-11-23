@@ -39,16 +39,16 @@ test('a GET writes nothing', async () => {
   expect(await rows()).toEqual([])
 })
 
-test('org writes carry org_id, the route pattern and the target; refusals are recorded too', async () => {
+test('org writes carry org_id, the route pattern and the target; refusals are recorded, unauthenticated calls are not', async () => {
   await pool.query(`truncate control.audit_log`)
   await as(cookie, 'POST', '/platform/organizations/acme/invitations', { email: 'dev@example.test', role: 'developer' })
   await as(cookie, 'POST', '/platform/organizations/acme/invitations', { email: 'dev@example.test', role: 'nope', extra: 1 })
   await as('', 'POST', '/platform/access-tokens', { name: 'x' })
-  const [ok, bad, anon] = await rows()
+  const [ok, bad, ...anon] = await rows()
   expect(ok).toMatchObject({ org_id: orgId, action: 'POST /platform/organizations/:slug/invitations', target: 'dev@example.test',
     details: { status: 201, body_keys: ['email', 'role'] } })
   expect(bad).toMatchObject({ org_id: orgId, details: { status: 400, body_keys: ['email', 'role', 'extra'] } })
-  expect(anon).toMatchObject({ actor: 'anonymous', details: { status: 401 } })
+  expect(anon).toEqual([])
   expect(JSON.stringify(await rows())).not.toContain('nope')
 })
 

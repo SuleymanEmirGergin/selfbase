@@ -5,13 +5,15 @@ import { bodyLimit } from 'hono/body-limit'
 import { createMiddleware } from 'hono/factory'
 import { pool } from './db.ts'
 import { clientIp } from './core.ts'
-import { apiRoute } from './session.ts'
+import { apiRoute, PUBLIC } from './session.ts'
 import type { Env } from './session.ts'
 
 export const BODY_LIMIT = 256 * 1024
 /** Route patterns that take larger bodies (uploads, imports) and enforce their own limit; the tasks adding them list them. */
 export const largeBodyRoutes = new Set<string>()
 const isJson = (c: Context) => !!c.req.header('content-type')?.toLowerCase().startsWith('application/json')
+/** A file upload through the admin forward: any type (a .json file too) streams under the project's upload limit. */
+export const isUpload = (c: Context) => /^\/platform\/projects\/[^/]+\/admin\/files\//.test(c.req.path)
 const limit = bodyLimit({
   maxSize: BODY_LIMIT,
   onError: (c) => c.json({ error: 'payload_too_large', message: 'request body larger than 256 KiB' }, 413),
@@ -22,19 +24,22 @@ const limit = bodyLimit({
  */
 export const bodyCap = createMiddleware((c, next) => {
   const route = apiRoute(c)
-  return route && largeBodyRoutes.has(route) && !isJson(c) ? next() : limit(c, next)
+  return route && largeBodyRoutes.has(route) && (!isJson(c) || isUpload(c)) ? next() : limit(c, next)
 })
 
 export const audit = createMiddleware<Env>(async (c, next) => {
   if (c.req.method === 'GET' || c.req.method === 'HEAD' || c.req.method === 'OPTIONS') return next()
   let bodyKeys: string[] = []
-  if (isJson(c)) {
+  if (isJson(c) && !isUpload(c)) {
     // parsed once here; Hono caches the body, so the handler can still read it
     const body = await c.req.json().catch(() => null)
     if (body && typeof body === 'object' && !Array.isArray(body)) bodyKeys = Object.keys(body)
   }
   await next()
-  await writeAudit(c, { status: c.res.status, body_keys: bodyKeys })
+  // a caller refused by authenticate (no session, no token) did nothing: no row, so the internet cannot fill the table
+  if (!c.get('user') && c.res.status === 401 && !PUBLIC.test(c.req.path)) return
+  const path = c.get('audit')?.path
+  await writeAudit(c, { status: c.res.status, body_keys: bodyKeys, ...(path ? { path } : {}) })
 })
 
 /** The row for this request, from c.get('audit'); reads that disclose a secret call it themselves (GETs are not audited). */

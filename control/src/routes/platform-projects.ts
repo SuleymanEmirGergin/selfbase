@@ -37,8 +37,9 @@ export const body = async (c: Context): Promise<Record<string, any>> => {
 }
 
 // the caller reaches a project through an org-wide membership or one on that project
-const VISIBLE = `p.status <> 'REMOVED' and exists (select 1 from control.memberships m
+const MEMBER = `exists (select 1 from control.memberships m
   where m.org_id = p.org_id and m.user_id = $1 and (m.project_id is null or m.project_id = p.id))`
+const VISIBLE = `p.status <> 'REMOVED' and ${MEMBER}`
 // issued once a create or import got past its certificate step; a project that never had to wait for one (it ran
 // before) counts as issued. Read from the rows, not probed, so a list is one query.
 const CERTIFICATE = `case when p.status not in ('COMING_UP', 'INIT_FAILED', 'RESTORING') or exists (
@@ -54,15 +55,15 @@ export async function visibleProjects(c: Context<Env>, orgId?: string): Promise<
 }
 
 /** The project of `:ref` the caller can see; an unknown ref and a foreign one are the same 404. */
-async function memberProject(c: Context<Env>, ref: string): Promise<ProjectRow> {
-  const p = REF_RE.test(ref) ? (await pool.query(`${SELECT} where p.ref = $2 and ${VISIBLE}`, [c.get('user').id, ref])).rows[0] : null
+async function memberProject(c: Context<Env>, ref: string, removed = false): Promise<ProjectRow> {
+  const p = REF_RE.test(ref) ? (await pool.query(`${SELECT} where p.ref = $2 and ${removed ? MEMBER : VISIBLE}`, [c.get('user').id, ref])).rows[0] : null
   if (!p) throw notFound('project')
   return p
 }
 
-/** memberProject, then the role check for the action (403). */
-export async function projectFor(c: Context<Env>, action: Action, ref = c.req.param('ref') ?? ''): Promise<ProjectRow> {
-  const p = await memberProject(c, ref)
+/** memberProject, then the role check for the action (403). `removed`: a REMOVED project too (its job history). */
+export async function projectFor(c: Context<Env>, action: Action, ref = c.req.param('ref') ?? '', removed = false): Promise<ProjectRow> {
+  const p = await memberProject(c, ref, removed)
   await authorize(c, action, { orgId: p.org_id, projectId: p.id })
   c.set('audit', { ...c.get('audit'), target: p.ref })
   return p
@@ -259,7 +260,8 @@ platformProjects.get('/jobs/:id', async (c) => {
     : null
   if (!job) throw notFound('job')
   // a job of a project the caller cannot see is the same 404
-  await projectFor(c, 'project.read', job.ref).catch((e) => { throw e instanceof ApiError && e.status === 404 ? notFound('job') : e })
+  // a delete's own job stays readable after the project is REMOVED
+  await projectFor(c, 'project.read', job.ref, true).catch((e) => { throw e instanceof ApiError && e.status === 404 ? notFound('job') : e })
   const events = (await pool.query(`select at, status, step, message from control.job_events where job_id = $1 order by id`, [id])).rows
   return c.json({
     id: job.id, type: job.type, status: job.status, step: Number(job.step), steps: stepsOf(job.type), error: job.error,

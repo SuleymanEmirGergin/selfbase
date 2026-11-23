@@ -85,8 +85,9 @@ test('no secret value reaches jobs, events, audit rows, responses or logs', { ti
     expect(exp.status).toBe(202)
     expect(await finished(exp.json.job_id)).toBe('succeeded')
     await request('GET', `/platform/jobs/${exp.json.job_id}`)
-    // what the backup job would have written: project.json from the sealed manifest
-    const manifest = (await pool.query('select payload from control.jobs where id = $1', [exp.json.job_id])).rows[0].payload.manifest.join('')
+    // what the backup job would have written: project.json from the sealed manifest (the payload forgot it)
+    expect((await pool.query('select payload from control.jobs where id = $1', [exp.json.job_id])).rows[0].payload.manifest).toBeUndefined()
+    const manifest = fake.callsOf('runJob').at(-1)!.args[3].MANIFEST_B64
     mkdirSync(joinPath(dir, `export-${ref}`, '20261122-031500'), { recursive: true })
     writeFileSync(joinPath(dir, `export-${ref}`, '20261122-031500', 'project.json'), Buffer.from(manifest, 'base64'))
 

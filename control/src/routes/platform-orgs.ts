@@ -77,7 +77,12 @@ platformOrgs.get('/organizations', async (c) => c.json(await orgsOf(c.get('user'
 const slugOf = (name: string) =>
   name.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'org'
 
+// Only an owner of some organization (the first account, create-owner, is one) may create another: an invited
+// read_only user could otherwise open an org of their own and spend the server's memory budget and host slots.
 platformOrgs.post('/organizations', async (c) => {
+  const owner = await pool.query(`select 1 from control.memberships where user_id = $1 and role = 'owner' and project_id is null limit 1`,
+    [c.get('user').id])
+  if (!owner.rowCount) throw new ApiError(403, 'forbidden', 'Only an organization owner can create an organization')
   const { name } = await body(c)
   if (typeof name !== 'string' || !name.trim() || name.length > 100) throw bad('name must be 1 to 100 characters')
   const base = slugOf(name)

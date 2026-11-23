@@ -91,7 +91,8 @@ const message = (e: unknown) => String((e as Error)?.message ?? e).slice(0, 1000
 /** Starts one worker per lane. stop() lets the current step finish, then leaves the job for the next start. */
 export function startWorkers(deps: WorkerDeps): { stop(): Promise<void> } {
   let stopping = false
-  const waits: Waits = { pollMs: 2000, healthyMs: 120_000, certificateMs: 600_000, warmMs: 60_000, ...deps.waits }
+  // certificateMs is short: the light lane waits behind it, and reconcile activates a COMING_UP project once the probe passes
+  const waits: Waits = { pollMs: 2000, healthyMs: 120_000, certificateMs: 120_000, warmMs: 60_000, ...deps.waits }
   // by core's address on the project network (core-addr.ts says why)
   const coreUrl = deps.coreUrl ?? (async (ref: string) => `http://${await coreIp(deps.provisioner, ref)}:8080`)
   const probe = deps.probe ?? probeCertificate

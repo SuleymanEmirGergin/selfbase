@@ -5,7 +5,7 @@ import { admit, AdmissionError, type Size } from '../admission.ts'
 import { config } from '../config.ts'
 import { forgetCoreIp } from '../core-addr.ts'
 import { ApiError } from '../errors.ts'
-import { allocateHost, assertRoutable, hostsOf, releaseHost } from '../hosts.ts'
+import { allocateHost, assertRoutable, hostsOf, precheckHost, releaseHost } from '../hosts.ts'
 import { newRef } from '../ids.ts'
 import { loadProjectEnv } from '../project-env.ts'
 import { generateProjectSecrets } from '../project-secrets.ts'
@@ -68,6 +68,7 @@ export async function createProject(pool: pg.Pool, input: CreateInput): Promise<
   }
   return withAdmission(pool, async (c) => {
     await admit(c, { size: input.size })
+    await precheckHost(c, input.pool)
     const version = (await c.query(`select value from control.settings where key = 'current_template_version'`)).rows[0]?.value
       ?? config.templateVersion
     let project!: Project

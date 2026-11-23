@@ -177,14 +177,19 @@ describe('/platform/me and members', () => {
 })
 
 describe('organizations', () => {
-  test('create derives a slug and makes the creator owner', async () => {
-    const dev = await login('dev@example.test', PASSWORD)
+  test('only an owner may create one; the slug is derived and the creator becomes its owner', async () => {
+    for (const who of ['dev@example.test', 'mixed@example.test']) {
+      const res = await as(await login(who, PASSWORD), 'POST', '/platform/organizations', { name: 'Mine' })
+      expect(res.status, who).toBe(403)
+    }
+    await member('founder@example.test', 'owner')
+    const dev = await login('founder@example.test', PASSWORD)
     const res = await as(dev, 'POST', '/platform/organizations', { name: 'Beta Lab!' })
     expect(res.status).toBe(201)
     expect(await res.json()).toEqual({ id: expect.any(String), slug: 'beta-lab', name: 'Beta Lab!' })
     const again = await (await as(dev, 'POST', '/platform/organizations', { name: 'Beta Lab' })).json()
     expect(again.slug).toMatch(/^beta-lab-[a-z0-9]{4}$/)
     const list = await (await as(dev, 'GET', '/platform/organizations')).json()
-    expect(list.map((o: any) => [o.slug, o.role]).sort()).toEqual([['acme', null], ['beta-lab', 'owner'], [again.slug, 'owner']])
+    expect(list.map((o: any) => [o.slug, o.role]).sort()).toEqual([['acme', 'owner'], ['beta-lab', 'owner'], [again.slug, 'owner']])
   })
 })

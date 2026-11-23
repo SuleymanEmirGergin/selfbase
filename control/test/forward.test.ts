@@ -124,6 +124,14 @@ describe('admin forwarding', () => {
     expect(res.status).toBe(413)
   })
 
+  test('a JSON file larger than 256 KiB uploads like any other file; the path is in the audit row', async () => {
+    const res = await app.request(`${A()}/files/media/data.json`, { method: 'POST', body: JSON.stringify({ x: 'x'.repeat(300 * 1024) }),
+      headers: { authorization: `Bearer ${dev.token}`, 'content-type': 'application/json' } })
+    expect(res.status).toBe(200)
+    const row = (await pool.query(`select details from control.audit_log where target = $1 order by id desc limit 1`, [p.ref])).rows[0]
+    expect(row.details).toMatchObject({ status: 200, path: '/admin/files/media/data.json' })
+  })
+
   test('a project that is not running is 409; an unreachable core is 502', async () => {
     await pool.query(`update control.projects set status = 'INACTIVE' where id = $1`, [p.id])
     try {

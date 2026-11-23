@@ -255,8 +255,9 @@ describe('backup_dir belongs to the caller', () => {
 })
 
 describe('backup and export', () => {
-  test('a backup job runs the provisioner job and records a backups row', async () => {
+  test('a backup job runs the provisioner job and records a backups row; rows of backups retention deleted go', async () => {
     const p = await project(acme.id, { name: 'b' })
+    await pool.query(`insert into control.backups (project_id, kind, status, location) values ($1, 'logical', 'succeeded', $2)`, [p.id, `${p.ref}/x`])
     fake.jobResult = (ref) => ({ status: 'succeeded', exitCode: 0, tail: `backup: deleted ${ref}/x\nbackup: size 1234 bytes\nbackup: wrote ${ref}/20261122-031500\n` })
     expect((await withToken(dev.token, 'POST', `/platform/projects/${p.ref}/backups`)).status).toBe(403)
     const res = await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/backups`)
@@ -288,6 +289,15 @@ describe('backup and export', () => {
     expect((await pool.query('select location from control.backups where project_id = $1', [p.id])).rows).toEqual([{ location: `${p.ref}/20261122-031500` }])
   })
 
+  test("another job's result (a nightly backup read by an export) is never recorded as this job's", async () => {
+    const p = await project(acme.id, { name: 'crossed' })
+    fake.jobResult = (ref) => ({ status: 'succeeded', exitCode: 0, tail: `backup: size 7 bytes\nbackup: wrote ${ref}/20261122-031500` })
+    const { job_id } = await (await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/export`, { passphrase: 'correct horse battery' })).json()
+    workers()
+    expect((await finished(job_id)).status).toBe('failed')
+    expect((await pool.query('select 1 from control.backups where project_id = $1', [p.id])).rowCount).toBe(0)
+  })
+
   test('export: the payload holds the sealed manifest and not the passphrase; the job writes it as project.json', async () => {
     const p = await project(acme.id, { name: 'e' })
     await pool.query(`insert into control.project_config (project_id, section, data) values ($1, 'auth', '{"SITE_URL":"https://e.example"}')`, [p.id])
@@ -311,6 +321,8 @@ describe('backup and export', () => {
     expect(opened.config).toEqual({ auth: { SITE_URL: 'https://e.example' } })
     const list = await (await withToken(owner.token, 'GET', `/platform/projects/${p.ref}/backups`)).json()
     expect(list[0]).toMatchObject({ location: `export-${p.ref}/20261122-031500`, size_bytes: 99 })
+    // the sealed manifest does not stay in control-db (and its backups) once the job has ended
+    expect((await pool.query('select payload from control.jobs where id = $1', [job_id])).rows[0].payload.manifest).toBeUndefined()
   })
 
   test('a failed backup job fails with its exit code and records no row', async () => {
@@ -321,6 +333,9 @@ describe('backup and export', () => {
     const job = await finished(job_id)
     expect(job.status).toBe('failed')
     expect(job.error).toMatch(/exit 1/)
+    // a failure's output can quote a row (pg_restore, COPY): it is not kept where read_only members read job events
+    const events = (await pool.query('select message from control.job_events where job_id = $1', [job_id])).rows
+    expect(JSON.stringify(events)).not.toContain('backup: FAILED')
     expect((await pool.query('select count(*)::int as n from control.backups where project_id = $1', [p.id])).rows[0].n).toBe(0)
     expect((await row(p.id)).status).toBe('ACTIVE_HEALTHY')
   })

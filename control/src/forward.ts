@@ -1,6 +1,7 @@
 // A project's admin API (spec 7.6): Studio calls /platform/projects/<ref>/admin/*, control authorizes the role and
 // forwards to core:8081 over the project network with the project's ADMIN_TOKEN. Bodies are streamed both ways.
 import type { Context } from 'hono'
+import { isUpload } from './audit.ts'
 import { authorize } from './authz.ts'
 import type { Action } from './authz.ts'
 import { pool } from './db.ts'
@@ -78,13 +79,15 @@ export async function forwardAdmin(c: Context<Env>, p: Target): Promise<Response
   if (!url.pathname.startsWith('/admin/')) throw new ApiError(404, 'not_found', 'not found')
   const method = c.req.method
   await authorize(c, actionFor(method, url.pathname), { orgId: p.org_id, projectId: p.id })
+  // which admin call it was, without the query
+  c.set('audit', { ...c.get('audit'), path: url.pathname })
 
   const headers = new Headers()
   for (const [k, v] of c.req.raw.headers) if (!DROP_REQUEST.has(k)) headers.set(k, v)
   let body: BodyInit | null = null
   let over = false
   if (method !== 'GET' && method !== 'HEAD' && c.req.raw.body) {
-    if (c.req.header('content-type')?.toLowerCase().startsWith('application/json')) {
+    if (c.req.header('content-type')?.toLowerCase().startsWith('application/json') && !isUpload(c)) {
       body = await c.req.arrayBuffer() // capped at 256 KiB by bodyCap and already parsed by audit (Hono caches it)
     } else {
       // uploads: streamed, under the project's own upload limit (core enforces it too)
@@ -133,6 +136,6 @@ export async function adminSql(p: Target, actor: string, query: string): Promise
     throw unreachable()
   }
   const data = await res.json().catch(() => null)
-  if (!res.ok) throw new ApiError(res.status >= 500 ? 502 : 400, 'query_failed', String(data?.error ?? `the project answered ${res.status}`))
+  if (!res.ok) throw new ApiError(res.status >= 500 ? 502 : 400, 'query_failed', String(data?.error?.message ?? data?.error ?? `the project answered ${res.status}`))
   return data
 }

@@ -92,6 +92,12 @@ export async function allocateHost(db: Db, p: { projectId: string; ref: string; 
   })
 }
 
+/** A create that would need a new hostname past the cap is refused in the request (spec 7.3); allocate checks again. */
+export async function precheckHost(db: Db, pool: 'project' | 'test'): Promise<void> {
+  if ((await db.query('select 1 from control.host_slots where pool = $1 and project_id is null limit 1', [pool])).rowCount) return
+  await checkCap(db)
+}
+
 async function checkCap(db: Db): Promise<void> {
   const cap = config.maxNewHostsPerWeek
   const issued = await issuedThisWeek(db)

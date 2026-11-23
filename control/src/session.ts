@@ -11,7 +11,7 @@ import { sessionActive, verify } from './core.ts'
 
 export type User = { id: string; email: string; via: 'cookie' | 'token' }
 /** What authorize() learned, for the audit row. */
-export type AuditScope = { orgId?: string; projectId?: string; target?: string }
+export type AuditScope = { orgId?: string; projectId?: string; target?: string; path?: string }
 export type Env = { Variables: { user: User; audit: AuditScope } }
 
 export const ACCESS_COOKIE = 'sb_studio'
@@ -21,7 +21,7 @@ const ORIGIN = new URL(config.publicUrl).origin
 const secure = new URL(config.publicUrl).protocol === 'https:'
 const TOKEN_RE = /^Bearer (sbp_[0-9a-f]{40})$/
 // reachable without a session: they start one, end one, or are core's own sign-in routes (which check the bearer)
-const PUBLIC = /^\/platform\/(login|refresh|logout|invitations\/accept|auth\/v1\/.*)$/
+export const PUBLIC = /^\/platform\/(login|refresh|logout|invitations\/accept|auth\/v1\/.*)$/
 
 /** The API route pattern that answers this request, if any (middleware and Studio's `*` fallback are not routes). */
 export const apiRoute = (c: Context): string | undefined =>

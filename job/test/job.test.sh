@@ -54,6 +54,7 @@ docker volume create "$P-v1-storage" > /dev/null
 docker run --rm -v "$P-storage:/s" "$IMAGE" bash -c 'mkdir -p /s/stub/b && echo v2-file > /s/stub/b/v2.txt'
 docker run --rm -v "$P-v1-storage:/s" "$IMAGE" bash -c 'mkdir -p /s/stub/avatars && echo v1-file > /s/stub/avatars/me.png'
 sql db "create table public.marker (v text); insert into public.marker values ('in-backup')" > /dev/null
+sql db "insert into selfbase.mail_log (to_email, subject, html) values ('a@example.test', 'link', 'secret-link')" > /dev/null
 
 # ---- backup of a v2 database ----
 JOB_ENV=(-e BACKUP_SUBDIR=t)
@@ -113,6 +114,7 @@ rc=0; out=$(job db "$P-storage" bash /scripts/restore.sh 2>&1) || rc=$?
 check 'a v2 backup restores' [ "$rc" = 0 ]
 check 'the restored database is the backup' [ "$(sql db 'select v from public.marker')" = in-backup ]
 check 'a v2 dump keeps its ledger' [ "$(ledger)" = "$current" ]
+check 'mail_log rows (links in clear) are not in the backup' [ "$(sql db 'select count(*) from selfbase.mail_log')" = 0 ]
 check 'storage is the backup' docker run --rm -v "$P-storage:/s" "$IMAGE" bash -c \
   '[ "$(cat /s/stub/b/v2.txt)" = v2-file ] && [ ! -e /s/stub/b/later.txt ] && ! ls -a /s | grep -q "^.restoring"'
 

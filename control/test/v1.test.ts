@@ -73,7 +73,7 @@ describe('/v1/projects', () => {
     expect(await res.json()).toEqual({
       id: p.ref, ref: p.ref, organization_id: 'acme', organization_slug: 'acme', name: 'corteqs', region: 'main',
       status: 'ACTIVE_HEALTHY', created_at: expect.any(String),
-      database: { host: 'db', version: '17', postgres_engine: '17', release_channel: 'ga' },
+      database: { host: 'db', version: '17', postgres_engine: '17', release_channel: 'ga' }, smtp_configured: false,
     })
   })
 
@@ -91,6 +91,12 @@ describe('/v1/projects', () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ id: 0, ref: q.ref, name: q.name })
     expect((await pool.query(`select type from control.jobs where project_id = $1`, [q.id])).rows).toEqual([{ type: 'project.delete' }])
+    // the delete's job stays readable once the project is REMOVED; a stranger still gets 404
+    const job = (await pool.query(`select id from control.jobs where project_id = $1`, [q.id])).rows[0].id
+    await pool.query(`update control.projects set status = 'REMOVED' where id = $1`, [q.id])
+    expect((await withToken(owner.token, 'GET', `/platform/jobs/${job}`)).status).toBe(200)
+    expect((await withToken(stranger.token, 'GET', `/platform/jobs/${job}`)).status).toBe(404)
+    expect((await withToken(owner.token, 'GET', `/v1/projects/${q.ref}`)).status).toBe(404)
   })
 
   test('pause enqueues project.pause; restore refused by admission is a 400 with the message', async () => {
