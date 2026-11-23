@@ -5,7 +5,7 @@ import { useAdmin, useCan } from './context.ts'
 import type { Column, Relation, Row } from '../api.ts'
 import { Grid, cellText } from '../Grid.tsx'
 import type { Sort } from '../Grid.tsx'
-import { Drawer, Empty, ErrorBox, Icon, Loading, confirmDanger, toast } from '../ui.tsx'
+import { Drawer, Empty, ErrorBox, Icon, Loading, toast, toastUndo } from '../ui.tsx'
 
 const PAGE = 50
 const OPS = [
@@ -111,9 +111,13 @@ function TableView({ rel }: { rel: Relation }) {
   const [applied, setApplied] = useState('')
   const [editing, setEditing] = useState<'new' | number | null>(null)
   const [tick, setTick] = useState(0)
+  // Rows deleted but still inside their undo window: hidden here, sent to the server only when the window ends.
+  const [hidden, setHidden] = useState<string[]>([])
   const pkCols = rel.columns.filter((c) => c.is_pk)
   const api = useAdmin()
   const canWrite = useCan()('project.write')
+  const pkOf = (r: Row) => Object.fromEntries(pkCols.map((c) => [c.name, r[c.name]]))
+  const keyOf = (r: Row) => JSON.stringify(pkOf(r))
 
   useEffect(() => {
     let live = true // only the latest page/sort/filter request may land
@@ -135,9 +139,21 @@ function TableView({ rel }: { rel: Relation }) {
   const clearFilter = () => { setFilter((f) => ({ ...f, value: '' })); setApplied(''); setOffset(0) }
 
   const columns = rel.columns.map((c) => ({ name: c.name, type: c.type, pk: c.is_pk }))
-  const rows = useMemo(() => data?.rows.map((r) => rel.columns.map((c) => r[c.name])) ?? [], [data, rel])
-  const total = data?.total ?? 0
-  const editRow = typeof editing === 'number' ? data?.rows[editing] : undefined
+  const visible = useMemo(() => data?.rows.filter((r) => !hidden.includes(keyOf(r))) ?? [], [data, hidden])
+  const rows = useMemo(() => visible.map((r) => rel.columns.map((c) => r[c.name])), [visible, rel])
+  const total = Math.max(0, (data?.total ?? 0) - (data ? data.rows.length - visible.length : 0))
+  const editRow = typeof editing === 'number' ? visible[editing] : undefined
+
+  const deleteRow = (row: Row) => {
+    const key = keyOf(row)
+    const label = Object.entries(pkOf(row)).map(([k, v]) => `${k}=${cellText(v)}`).join(', ')
+    const unhide = () => setHidden((h) => h.filter((k) => k !== key))
+    setEditing(null)
+    setHidden((h) => [...h, key])
+    toastUndo('Satır silindi', `${rel.schema}.${rel.name} · ${label}`, () => {
+      api.deleteRow(rel.schema, rel.name, pkOf(row)).then(() => { unhide(); setTick((t) => t + 1) }, (e) => { unhide(); toast(errMsg(e), 'error') })
+    }, unhide)
+  }
 
   return (
     <section className="page-main">
@@ -191,7 +207,7 @@ function TableView({ rel }: { rel: Relation }) {
 
       {editing !== null && (editing === 'new' || editRow) && (
         <RowDrawer rel={rel} row={editing === 'new' ? null : editRow!} onClose={() => setEditing(null)}
-          onSaved={() => { setEditing(null); setTick((t) => t + 1) }} />
+          onSaved={() => { setEditing(null); setTick((t) => t + 1) }} onDelete={deleteRow} />
       )}
     </section>
   )
@@ -201,7 +217,9 @@ type FieldState = { text: string; isNull: boolean }
 const initial = (row: Row | null, c: Column): FieldState =>
   row ? { text: row[c.name] === null ? '' : cellText(row[c.name]), isNull: row[c.name] === null } : { text: '', isNull: false }
 
-function RowDrawer({ rel, row, onClose, onSaved }: { rel: Relation; row: Row | null; onClose: () => void; onSaved: () => void }) {
+function RowDrawer({ rel, row, onClose, onSaved, onDelete }: {
+  rel: Relation; row: Row | null; onClose: () => void; onSaved: () => void; onDelete: (row: Row) => void
+}) {
   const start = useMemo(() => Object.fromEntries(rel.columns.map((c) => [c.name, initial(row, c)])), [rel, row])
   const [form, setForm] = useState<Record<string, FieldState>>(start)
   const [error, setError] = useState('')
@@ -245,25 +263,12 @@ function RowDrawer({ rel, row, onClose, onSaved }: { rel: Relation; row: Row | n
     }
   }
 
-  const remove = async () => {
-    if (!(await confirmDanger('Satır silinsin mi?', <><code>{rel.schema}.{rel.name}</code> tablosundaki <code>{pkLabel}</code> satırı kalıcı olarak silinecek.</>))) return
-    setBusy(true)
-    try {
-      await api.deleteRow(rel.schema, rel.name, pk!)
-      toast('Satır silindi')
-      onSaved()
-    } catch (err) {
-      setError(errMsg(err))
-      setBusy(false)
-    }
-  }
-
   return (
     <Drawer title={row ? 'Satırı düzenle' : 'Satır ekle'} subtitle={row ? `${rel.schema}.${rel.name} · ${pkLabel || 'birincil anahtar yok'}` : `${rel.schema}.${rel.name}`}
       onClose={onClose}
       footer={
         <>
-          {row && pk && canWrite && <button type="button" className="btn danger ghost" onClick={remove} disabled={busy}><Icon name="trash" />Sil</button>}
+          {row && pk && canWrite && <button type="button" className="btn danger" onClick={() => onDelete(row)} disabled={busy}><Icon name="trash" />Sil</button>}
           <div className="spacer" />
           <button type="button" className="btn" onClick={onClose}>Vazgeç</button>
           {!readOnly && <button className="btn primary" form="row-form" disabled={busy}>{busy ? 'Kaydediliyor…' : 'Kaydet'}</button>}
