@@ -43,7 +43,7 @@ export const tr: Messages = {
   'apiErr.account_exists': 'Bu adresin zaten bir hesabı var. Bu hesapla giriş yap ve daveti şifresiz kabul et.',
   'apiErr.invalid_path': 'Bu yol geçerli değil.',
   'apiErr.invalid_backup_dir': 'Bu yedek bu organizasyona ait değil.',
-  'apiErr.new_host_cap': 'Bu sunucu bu haftaki {cap} yeni adres hakkını kullandı ve bu projeye yeni bir adres gerekiyor. {date} tarihinde bir adres boşalacak. O zamana kadar kullanmadığın bir projeyi silip adresini boşaltabilirsin.',
+  'apiErr.new_host_cap': 'Bu sunucu bu haftaki {cap} yeni adres hakkını kullandı ve bu projeye yeni bir adres gerekiyor. {date} tarihinde bir adres hakkı açılır. O zamana kadar kullanmadığın bir projeyi silip adresini serbest bırakabilirsin.',
   'apiErr.insufficient_memory': 'Bu sunucuda {free} MiB boş bellek var ama bu proje {needed} MiB istiyor. Kullanmadığın bir projeyi duraklat ya da sil. Daha küçük bir boyut da seçebilirsin.',
 
   // shell, navigation and the command palette
@@ -261,7 +261,7 @@ export const tr: Messages = {
   'tokens.delete': 'Belirteci sil',
   'tokens.deleteMsg': '{name} belirteciyle yapılan istekler reddedilecek.',
   'tokens.deleted': 'Belirteç silindi',
-  'tokens.meta': 'Belirteçle yönetim API’sine ({v1}) ve CLI’ye senin rollerinle erişilir.',
+  'tokens.meta': 'Belirteçle yönetim API’sine ({v1}) ve CLI’ye kendi rollerinle erişirsin.',
   'tokens.new': 'Yeni belirteç',
   'tokens.namePlaceholder': 'ör. dizüstü',
   'tokens.create': 'Belirteç oluştur',

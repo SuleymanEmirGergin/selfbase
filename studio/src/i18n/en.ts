@@ -383,7 +383,7 @@ export const en = {
   'tables.inserted': 'Row added',
   'tables.viewOnly': 'This table has no primary key, so you can only view the row.',
   'tables.default': 'default: {v}',
-  'tables.blankDefault': 'Leave empty to use the default',
+  'tables.blankDefault': 'Leave empty to use the default.',
   'tables.required': ' · required',
   'grid.pk': 'Primary key',
   'sql.rows': '{n} row|{n} rows',
