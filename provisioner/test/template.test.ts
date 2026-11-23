@@ -57,9 +57,13 @@ test('interpolation into a CMD-SHELL healthcheck is refused', () => {
   assert.throws(() => validateTemplate(t), /healthcheck/)
 })
 
-test('render: the three ${} forms', () => {
+test('render: the four ${} forms', () => {
   assert.equal(render('${A:-b}', {}), 'b')
   assert.equal(render('${A:-b}', { A: '' }), 'b')
+  // without the colon only an unset variable takes the default: an empty value stays empty (compose does the same)
+  assert.equal(render('${A-b}', {}), 'b')
+  assert.equal(render('${A-b}', { A: '' }), '')
+  assert.equal(render('${A-b}', { A: 'x' }), 'x')
   assert.equal(render('x${A}y', { A: '1' }), 'x1y')
   assert.equal(render('$$HOME', {}), '$HOME')
   assert.throws(() => render('${A:?need A}', {}), (e: Error) => e instanceof TemplateError && e.message.includes('need A'))

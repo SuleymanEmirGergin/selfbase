@@ -58,8 +58,9 @@ services:
       PROJECT_SUBNET: ${PROJECT_SUBNET:-}
       PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL (public https origin of core)}
       TRUST_PROXY: ${TRUST_PROXY:-true}
-      # X-Forwarded-For counts only from these peers (the proxy container's address); empty: from no peer
-      TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-}
+      # X-Forwarded-For counts only from these peers (the provisioner renders the proxy container's address, empty
+      # while the proxy is down: from no peer). Unset, a standalone stack: `*`, from every peer (TRUST_PROXY decides)
+      TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS-*}
       SITE_URL: ${SITE_URL:?set SITE_URL (the app origin)}
       AUTH_DISABLE_SIGNUP: ${AUTH_DISABLE_SIGNUP:-false}
       AUTH_REDIRECT_ALLOWLIST: ${AUTH_REDIRECT_ALLOWLIST:-}

@@ -6,9 +6,10 @@ import { afterEach, expect, it, vi } from 'vitest'
 const ctx = (peer: string, xff?: string) =>
   ({ req: { header: (k: string) => (k === 'x-forwarded-for' ? xff : undefined) }, env: { incoming: { socket: { remoteAddress: peer } } } }) as any
 const saved = { trust: process.env.TRUST_PROXY, ips: process.env.TRUSTED_PROXY_IPS }
-const load = async (ips: string) => {
+const load = async (ips: string | undefined) => {
   process.env.TRUST_PROXY = 'true'
-  process.env.TRUSTED_PROXY_IPS = ips
+  if (ips === undefined) delete process.env.TRUSTED_PROXY_IPS
+  else process.env.TRUSTED_PROXY_IPS = ips
   vi.resetModules()
   return (await import('../src/ip.ts')).clientIp
 }
@@ -30,4 +31,20 @@ it("a non-proxy peer's X-Forwarded-For is ignored; the proxy's rightmost entry c
 it('an empty TRUSTED_PROXY_IPS (proxy down at ensure) trusts no peer', async () => {
   const clientIp = await load('')
   expect(clientIp(ctx('10.0.1.2', '6.6.6.6'))).toBe('10.0.1.2')
+})
+
+// TRUST_PROXY=true in every case below: which socket peers may set the client IP through X-Forwarded-For
+it('TRUSTED_PROXY_IPS unset or * (a standalone stack: nothing manages it) trusts every peer, as before', async () => {
+  for (const ips of [undefined, '*', ' * ']) {
+    const clientIp = await load(ips)
+    expect(clientIp(ctx('10.0.1.9', '203.0.113.7')), String(ips)).toBe('203.0.113.7')
+  }
+})
+
+it('TRUSTED_PROXY_IPS empty (managed, proxy down) trusts no peer; a list trusts only its members', async () => {
+  let clientIp = await load('')
+  for (const peer of ['10.0.1.2', '10.0.1.9']) expect(clientIp(ctx(peer, '203.0.113.7'))).toBe(peer)
+  clientIp = await load('10.0.1.2, 10.0.1.3')
+  expect(clientIp(ctx('10.0.1.3', '203.0.113.7'))).toBe('203.0.113.7')
+  expect(clientIp(ctx('10.0.1.9', '203.0.113.7'))).toBe('10.0.1.9')
 })

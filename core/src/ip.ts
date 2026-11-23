@@ -2,12 +2,14 @@ import type { Context } from 'hono'
 
 // Who may set X-Forwarded-For. Core: the addresses in TRUSTED_PROXY_IPS, which the provisioner sets on every project
 // to the proxy container's address (empty while the proxy is down: no peer). Other containers on the shared proxy
-// network reach core's 8080 directly, so trusting every peer would let them pick their own client IP. Unset (tests
-// only): every peer. Control: the addresses its source answers (the provisioner reads the proxy container by exact
-// name; a DNS answer is steerable by any container on the proxy network with an alias) plus fixed IP literals.
+// network reach core's 8080 directly, so trusting every peer would let them pick their own client IP. Unset or `*`
+// (a standalone stack: template/compose.yml renders `*` when nothing sets it): every peer. Control: the addresses its
+// source answers (the provisioner reads the proxy container by exact name; a DNS answer is steerable by any container
+// on the proxy network with an alias) plus fixed IP literals.
 const bare = (a: string) => a.replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/, '')
 const fromEnv = process.env.TRUSTED_PROXY_IPS
-let trusted: Set<string> | null = fromEnv === undefined ? null : new Set(fromEnv.split(',').map((a) => bare(a.trim())).filter(Boolean))
+let trusted: Set<string> | null = fromEnv === undefined || fromEnv.trim() === '*' ? null
+  : new Set(fromEnv.split(',').map((a) => bare(a.trim())).filter(Boolean))
 let source: (() => Promise<string[]>) | null = null
 let fixed: string[] = []
 let askedAt = 0

@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { parse } from 'yaml'
 import { validateTemplate } from '../src/template.ts'
-import { buildJob, buildProject, type EnsureInput, type JobInput, type Sizes } from '../src/spec.ts'
+import { buildJob, buildProject, dryRunEnv, type EnsureInput, type JobInput, type Sizes } from '../src/spec.ts'
 import { ProvisionError } from '../src/names.ts'
 import type { NodeSettings } from '../src/settings.ts'
 
@@ -273,4 +273,14 @@ test('template.ts --check validates and renders every size', () => {
   copyFileSync(fixturePath, join(dir, 'compose.yml'))
   writeFileSync(join(dir, 'sizes.json'), JSON.stringify({ ...SIZES, medium: { ...SIZES.medium, core: { mem_mb: 0, cpus: 1, pids: 512 } } }))
   assert.throws(() => execFileSync(process.execPath, [cli, '--check', join(dir, 'compose.yml')], { stdio: 'pipe' }), /size_invalid|medium\.core/)
+})
+
+test("template/compose.yml: core's TRUSTED_PROXY_IPS is what the provisioner renders, an empty list staying empty", () => {
+  const real = validateTemplate(parse(readFileSync(fileURLToPath(new URL('../../template/compose.yml', import.meta.url)), 'utf8')))
+  const sizes = JSON.parse(readFileSync(fileURLToPath(new URL('../../template/sizes.json', import.meta.url)), 'utf8'))
+  const coreEnv = (proxy: string[]) => buildProject(input({ env: dryRunEnv(real) }), real, sizes, NODE, proxy)
+    .containers.find((c) => c.service === 'core')!.body.Env as string[]
+  // empty: the proxy is down, trust no peer (only an unset variable, a standalone stack, renders `*`)
+  assert.ok(coreEnv([]).includes('TRUSTED_PROXY_IPS='), coreEnv([]).join(' '))
+  assert.ok(coreEnv(['10.0.1.2']).includes('TRUSTED_PROXY_IPS=10.0.1.2'))
 })

@@ -4,7 +4,8 @@
 //   per service: image, command (list), environment (map of scalars), volumes (`<declared name>:<abs path>[:ro]`),
 //                depends_on (list), healthcheck {test, interval, timeout, retries, start_period}, init, user,
 //                stop_grace_period
-// Interpolation (render): ${VAR}, ${VAR:-default}, ${VAR:?message} and $$ for a literal $. Anything else
+// Interpolation (render): ${VAR}, ${VAR:-default}, ${VAR-default} (unset only: empty stays empty, as in compose),
+// ${VAR:?message} and $$ for a literal $. Anything else
 // with a $ is refused, and so is an unset ${VAR}.
 // CLI (tests and CI only, needs the yaml devDependency): node src/template.ts --check <compose.yml>
 //   validates the file and builds a project for every size from the sizes.json next to it.
@@ -153,7 +154,7 @@ export function startOrder(services: Record<string, TemplateService>): string[] 
   return order
 }
 
-const VAR_RE = /\$(?:\$|\{([A-Za-z_][A-Za-z0-9_]*)(?:(:-|:\?)([^}$]*))?\})/g
+const VAR_RE = /\$(?:\$|\{([A-Za-z_][A-Za-z0-9_]*)(?:(:-|:\?|-)([^}$]*))?\})/g
 
 export function render(value: string, env: Record<string, string>): string {
   if (value.replace(VAR_RE, '').includes('$')) throw new TemplateError(`unsupported interpolation in "${value}"`)
@@ -161,6 +162,7 @@ export function render(value: string, env: Record<string, string>): string {
     if (whole === '$$') return '$'
     const v = Object.hasOwn(env, name) ? env[name] : undefined
     if (op === ':-') return v || arg
+    if (op === '-') return v ?? arg
     if (op === ':?') return v || missing(name, arg)
     return v ?? missing(name, 'is not set')
   })
