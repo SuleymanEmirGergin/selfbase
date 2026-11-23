@@ -400,3 +400,13 @@ test('the undo drain bar follows the count: held, it stops at the second shown; 
   await page.clock.runFor(1000)
   await expect(drain).toHaveAttribute('style', /scaleX\(0\.6\)/)
 })
+
+test('the undo toast sits above the table pager, so Previous and Next stay usable', async ({ page }) => {
+  await mockApi(page, routes())
+  await page.goto(`/project/${REF}/editor`)
+  await page.getByRole('row').filter({ hasText: 'ilk sürüm yayında' }).click()
+  await page.getByRole('dialog', { name: 'Satırı düzenle' }).getByRole('button', { name: 'Sil' }).click()
+  const toast = await page.locator('.toast').boundingBox()
+  const pager = await page.locator('.pager').boundingBox()
+  expect(toast!.y + toast!.height).toBeLessThanOrEqual(pager!.y)
+})
