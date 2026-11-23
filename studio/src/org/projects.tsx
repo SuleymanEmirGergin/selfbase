@@ -128,7 +128,7 @@ export function NewProject({ org, canManage }: OrgProps) {
       const r = await platform.createProject({ organization_slug: org.slug, name: name.trim(), size })
       setCreated({ ref: r.project.ref, job: r.job_id })
     } catch (err) {
-      setError(errMsg(err)) // admission and host-cap refusals are written for the user: shown unchanged
+      setError(errMsg(err)) // admission and host-cap refusals: catalogue copy with their numbers, else the server's words
     } finally {
       setBusy(false)
     }

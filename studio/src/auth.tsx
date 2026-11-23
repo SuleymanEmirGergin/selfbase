@@ -157,7 +157,7 @@ export function AcceptInvite({ token }: { token: string }) {
   if (me) {
     return (
       <Card title={title} lead={rich('invite.signedInAs', { email: <strong>{me.email}</strong> })} onSubmit={signedInAccept.submit}>
-        {signedInAccept.error && <div className="error-box" role="alert">{signedInAccept.error}</div>}
+        {signedInAccept.error && <div className="error-box" role="alert">{errText(signedInAccept.error)}</div>}
         <Submit busy={signedInAccept.busy}>{title}</Submit>
       </Card>
     )
@@ -209,7 +209,7 @@ export function ResetPassword() {
       {/* the fragment's own error text is attacker-controllable, so only a fixed message is shown */}
       {(hash.has('error') || hash.has('error_description')) && <div className="error-box" role="alert">{t('reset.badLink')}</div>}
       <Field label={t('common.email')} type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus />
-      {recover.error && <div className="error-box" role="alert">{recover.error}</div>}
+      {recover.error && <div className="error-box" role="alert">{errText(recover.error)}</div>}
       <Submit busy={recover.busy}>{t('reset.send')}</Submit>
       <Link to="/sign-in" className="small">{t('reset.back')}</Link>
     </Card>

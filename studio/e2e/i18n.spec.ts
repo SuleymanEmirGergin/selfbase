@@ -64,25 +64,61 @@ test('a switch on Members also changes the role options in the invite form', asy
   await expect(roles.locator('option')).toHaveText(['Sahip', 'Yönetici', 'Geliştirici', 'Salt okunur'])
 })
 
-test('server errors read in the chosen language: known codes from the catalogue, others generic with the code', async ({ page }) => {
+test('server errors: a known code with its exact message reads in the chosen language; any other keeps the server words and its code', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('studio-locale', 'tr'))
   const fail = (body: object) => ({ ...routes(), 'GET /projects': { status: 409, body } })
+  const alert = page.getByRole('alert')
   await mockApi(page, fail({ error: 'project_busy', message: 'another operation is running on this project; try again when it ends' }))
   await page.goto('/org/acme')
-  await expect(page.getByRole('alert')).toContainText('Bu projede başka bir işlem sürüyor')
-  await expect(page.getByRole('alert')).not.toContainText('another operation')
+  await expect(alert).toContainText('Bu projede başka bir işlem sürüyor')
+  await expect(alert).not.toContainText('another operation')
 
-  await page.unrouteAll()
-  await mockApi(page, fail({ error: 'quota_exceeded', message: 'over quota' }))
-  await page.reload()
-  await expect(page.getByRole('alert').locator('code')).toHaveText('quota_exceeded')
-  await expect(page.getByRole('alert')).not.toContainText('over quota')
+  // a refusal written for the user, with no catalogue copy: the server's words stay, the code sits beside them
+  const taken = 'api.example.com is already used by another project'
+  for (const body of [{ error: 'hostname_taken', message: taken }, { error: 'quota_exceeded', message: 'over quota' }]) {
+    await page.unrouteAll()
+    await mockApi(page, fail(body))
+    await page.reload()
+    await expect(alert).toContainText(body.message)
+    await expect(alert.locator('code')).toHaveText(body.error)
+  }
 
-  // a code whose message is the detail (which field, the SQL error) keeps the server's words
+  // a mapped code whose message says more than the copy would (here a different 403): the server's words again
   await page.unrouteAll()
-  await mockApi(page, fail({ error: 'validation_failed', message: 'name must be 1 to 100 characters' }))
+  await mockApi(page, fail({ error: 'forbidden', message: 'Only an organization owner can create an organization' }))
   await page.reload()
-  await expect(page.getByRole('alert')).toContainText('name must be 1 to 100 characters')
+  await expect(alert).toContainText('Only an organization owner can create an organization')
+
+  // the weak-password minimum is carried into the copy
+  await page.unrouteAll()
+  await mockApi(page, fail({ error: 'weak_password', message: 'Password should be at least 12 characters.' }))
+  await page.reload()
+  await expect(alert).toContainText('Şifre en az 12 karakter olmalı.')
+})
+
+test('a full server refuses a new project in Turkish copy that keeps both numbers', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('studio-locale', 'tr'))
+  await mockApi(page, { ...routes(), 'POST /projects': { status: 409, body: {
+    error: 'insufficient_memory', details: { neededMb: 1024, freeMb: 412 },
+    message: 'This server has 412 MiB of memory free and a medium project needs 1024 MiB. Pause or delete a project you do not use, or choose a smaller size.',
+  } } })
+  await page.goto('/new/acme')
+  await page.getByLabel('Proje adı').fill('demo')
+  await page.getByRole('button', { name: 'Proje oluştur' }).click()
+  const alert = page.getByRole('alert')
+  await expect(alert).toContainText('412 MiB')
+  await expect(alert).toContainText('1.024 MiB')
+  await expect(alert).not.toContainText('This server')
+})
+
+test('the reset screen shows the auth server rate limit in its own words', async ({ page }) => {
+  const msg = 'For security purposes, you can only request this after 52 seconds.'
+  await mockApi(page, { ...signedOut, 'POST /auth/v1/recover': { status: 429, body: { error: 'over_email_send_rate_limit', message: msg } } })
+  await page.goto('/reset-password')
+  await page.getByLabel('Email').fill('a@example.test')
+  await page.getByRole('button', { name: 'Send link' }).click()
+  await expect(page.getByRole('alert')).toContainText(msg)
+  await expect(page.getByRole('alert').locator('code')).toHaveText('over_email_send_rate_limit')
 })
 
 test('on the SQL screen a switch renames the editor for screen readers and reformats the duration', async ({ page }) => {

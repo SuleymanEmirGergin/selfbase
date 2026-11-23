@@ -5,7 +5,7 @@ import { useAdmin, useCan, useProject } from './context.ts'
 import type { Column, Relation, Row } from '../api.ts'
 import { Grid, cellText } from '../Grid.tsx'
 import type { Sort } from '../Grid.tsx'
-import { Drawer, Empty, ErrorBox, Icon, Loading, toast, toastUndo } from '../ui.tsx'
+import { Drawer, Empty, ErrorBox, Icon, Loading, errText, toast, toastUndo } from '../ui.tsx'
 import { has, t } from '../i18n/index.ts'
 
 const PAGE = 50
@@ -41,7 +41,7 @@ export function SchemaSelect({ value, onChange }: { value: string; onChange: (s:
           {schemas.map((s) => <option key={s}>{s}</option>)}
         </select>
       </label>
-      {error && <div className="field-error" role="alert">{t('tables.schemasFailed', { error })}</div>}
+      {error && <div className="field-error" role="alert">{errText(t('tables.schemasFailed', { error }))}</div>}
     </div>
   )
 }

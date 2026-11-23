@@ -1,15 +1,20 @@
 // The one client module for control's /platform API (plan Tasks 10, 13, 14). Same origin, authenticated by the
 // httpOnly session cookies; nothing from the session is kept in the browser beyond them. Contract fixes go here.
-import { has, t } from './i18n/index.ts'
+import { fmtDate, has, t } from './i18n/index.ts'
+import type { Key } from './i18n/index.ts'
+import type { Params } from './lib/locale.ts'
 
 export class ApiError extends Error {
   status: number
   /** control's `error` code (e.g. account_exists), when the body had one */
   code: string
-  constructor(status: number, message: string, code = '') {
+  /** a refusal's numbers, when control sends them (admission: neededMb, freeMb; host cap: cap, retryAfter) */
+  details: Record<string, unknown>
+  constructor(status: number, message: string, code = '', details: Record<string, unknown> = {}) {
     super(message)
     this.status = status
     this.code = code
+    this.details = details
   }
 }
 
@@ -59,7 +64,8 @@ export async function request<T = unknown>(method: string, path: string, opts: O
   if (!res.ok)
     throw new ApiError(res.status, (data && (data.message || data.error_description || data.msg || data.error)) || `HTTP ${res.status}`,
       // core's admin API puts a sentence in `error`; only a snake_case word is a code
-      typeof data?.error === 'string' && /^[a-z]+(_[a-z]+)*$/.test(data.error) ? data.error : '')
+      typeof data?.error === 'string' && /^[a-z]+(_[a-z]+)*$/.test(data.error) ? data.error : '',
+      data?.details && typeof data.details === 'object' ? data.details : {})
   return data as T
 }
 
@@ -243,11 +249,44 @@ export function projectAdmin(ref: string) {
 
 export type ProjectAdmin = ReturnType<typeof projectAdmin>
 
-// codes whose message is the detail itself (which field, the SQL error): shown as the server sent them
-const DETAIL = new Set(['validation_failed', 'query_failed', 'invalid_env_file', 'invalid_secrets'])
-/** The text to show for a failure: catalogue copy for control's known codes, a generic line naming any other code. */
+// A code gets catalogue copy only when that copy says everything the server's message does: the message must be the
+// one control sends for the code (its numbers are carried over), or the numbers must come in `details`. Any other
+// message is written for the user too, so it is shown as sent, with the code beside it.
+const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+const RULES: Record<string, RegExp | ((e: ApiError) => Params | null)> = {
+  forbidden: /^Forbidden$/,
+  admin_forbidden: /^admin_forbidden$/,
+  unauthorized: /^Unauthorized$/,
+  not_found: /^not found$/,
+  project_unreachable: /^project is not reachable$/,
+  project_busy: /^another operation is running on this project; try again when it ends$/,
+  no_template_version: /^current_template_version is not set; nothing to upgrade to$/,
+  last_owner: /^the organization must keep at least one owner$/,
+  ambiguous_membership: /^the user has several memberships: pass membership_id$/,
+  invalid_invitation: /^Invitation is invalid or has expired$/,
+  account_exists: /^This address already has an account: sign in as it and accept without a password$/,
+  invalid_path: /^the path is not valid$/,
+  invalid_backup_dir: /^backup_dir is not one of this organization's backups$/,
+  weak_password: /^Password should be at least (?<n>\d+) characters\.$/,
+  weak_passphrase: /^the passphrase must be at least (?<n>\d+) characters$/,
+  insufficient_memory: (e) => {
+    const free = num(e.details.freeMb), needed = num(e.details.neededMb)
+    return free === null || needed === null ? null : { free: Math.max(free, 0), needed }
+  },
+  new_host_cap: (e) => {
+    const cap = num(e.details.cap), at = e.details.retryAfter
+    return cap === null || typeof at !== 'string' || Number.isNaN(Date.parse(at)) ? null : { cap, date: fmtDate(at) }
+  },
+}
+/** The text to show for a failure: catalogue copy where it loses nothing, otherwise the server's words and code. */
 export const errMsg = (e: unknown) => {
-  if (!(e instanceof ApiError) || !e.code || DETAIL.has(e.code)) return e instanceof Error ? e.message : String(e)
-  const k = `apiErr.${e.code}`
-  return has(k) ? t(k) : t('apiErr.other', { code: e.code })
+  if (!(e instanceof ApiError) || !e.code) return e instanceof Error ? e.message : String(e)
+  const rule = RULES[e.code]
+  const key = `apiErr.${e.code}`
+  let params: Params | null = null
+  if (typeof rule === 'function') params = rule(e)
+  else if (rule) { const m = e.message.match(rule); params = m ? { ...m.groups } : null }
+  if (params && has(key)) return t(key as Key, params)
+  if (e.code === 'query_failed') return e.message // the database's own error is the whole point of the SQL screen
+  return e.message && e.message !== e.code ? `${e.message} (\`${e.code}\`)` : `\`${e.code}\``
 }
