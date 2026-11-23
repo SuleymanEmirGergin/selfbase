@@ -322,7 +322,7 @@ input[type="file"]::file-selector-button { height: 30px; padding: 0 13px; margin
 /* theme reveal */
 ::view-transition-old(root), ::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
 ::view-transition-new(root) { z-index: 9999; }
-.reveal { position: fixed; inset: 0; z-index: 95; pointer-events: none; }
+.reveal { position: fixed; inset: 0; z-index: 95; pointer-events: none; background: var(--panel); } /* data-theme on the overlay picks the next theme's tokens */
 
 /* ================= Page parts ================= */
 .page-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; }

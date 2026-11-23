@@ -321,3 +321,15 @@ test('keyboard focus runs skip link, sidebar, top bar, then the page; the skip l
   await page.keyboard.press('Enter')
   await expect(page.locator('main.content')).toBeFocused()
 })
+
+test('two quick theme switches land back on the first theme', async ({ page }) => {
+  await mockApi(page, routes())
+  await page.goto('/org/acme')
+  await expect(page.getByRole('heading', { name: 'Projeler' })).toBeVisible()
+  expect(await theme(page)).toBe('dark')
+  // two presses in one task: the second comes before the first reveal has swapped the theme
+  await page.evaluate(() => { for (let i = 0; i < 2; i++) dispatchEvent(new KeyboardEvent('keydown', { key: 'L', ctrlKey: true, shiftKey: true })) })
+  await page.waitForTimeout(1200) // both reveals done
+  expect(await theme(page)).toBe('dark')
+  expect(await page.evaluate(() => localStorage.getItem('studio-theme'))).toBe('dark')
+})
