@@ -424,7 +424,7 @@ test('signing out inside the undo window sends the delete first, while the sessi
 })
 
 // the server must have answered the DELETE before logout ends the session, not just have seen it first
-const slowDelete = async (page: Page, ms: number, order: string[]) => {
+const slowDelete = async (page: Page, ms: number, order: string[], beforeSignOut?: () => Promise<unknown>) => {
   const r = routes()
   const key = `DELETE /projects/${REF}/admin/rows/public/notes`
   const del = r[key] as (req: import('@playwright/test').Request) => { body?: unknown }
@@ -434,6 +434,7 @@ const slowDelete = async (page: Page, ms: number, order: string[]) => {
   await page.goto(`/project/${REF}/editor`)
   await page.getByRole('row').filter({ hasText: 'ilk sürüm yayında' }).click()
   await page.getByRole('dialog', { name: 'Satırı düzenle' }).getByRole('button', { name: 'Sil' }).click()
+  await beforeSignOut?.()
   await page.getByRole('button', { name: 'Çıkış' }).click()
 }
 
@@ -485,4 +486,25 @@ test('the keyboard focus ring survives Windows forced colors (an outline, not on
   await page.keyboard.press('Tab')
   const ring = await page.evaluate(() => { const s = getComputedStyle(document.activeElement!); return `${s.outlineStyle} ${s.outlineWidth}` })
   expect(ring).toBe('solid 2px')
+})
+
+test('a second sign-out click while the delete is out still waits, and logs out once', async ({ page }) => {
+  await page.clock.install()
+  const order: string[] = []
+  await slowDelete(page, 1500, order)
+  await page.getByRole('button', { name: 'Çıkış' }).click()
+  await expect.poll(() => order).toEqual(['delete', 'deleted', 'logout'])
+  await page.waitForTimeout(300)
+  expect(order).toEqual(['delete', 'deleted', 'logout'])
+})
+
+test('a delete its own timer sent just before sign-out is waited for too', async ({ page }) => {
+  await page.clock.install()
+  const order: string[] = []
+  await slowDelete(page, 1500, order, async () => {
+    await page.getByRole('heading', { level: 1 }).click() // focus leaves the toast: the count runs
+    await page.clock.runFor(5600)
+    await expect.poll(() => order).toEqual(['delete'])
+  })
+  await expect.poll(() => order).toEqual(['delete', 'deleted', 'logout'])
 })

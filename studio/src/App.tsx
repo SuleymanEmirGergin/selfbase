@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ComponentType } from 'react'
 import { onSignedOut, platform } from './api.ts'
 import type { Me, OrgRef } from './api.ts'
@@ -137,14 +137,19 @@ export default function App() {
   // browser must not see this one's SQL query and rows.
   useEffect(() => { if (me === null) clearProjectMemory() }, [me])
 
+  // one sign-out at a time: a second click while the first waits for a delete must not log out early
+  const leaving = useRef(false)
   const signOut = useCallback(async () => {
-    // a delete still in its undo window must be answered before logout ends the session it is sent with
+    if (leaving.current) return
+    leaving.current = true
+    // a delete still in its undo window, or already sent, must be answered before logout ends its session
     await Promise.race([flushUndo(), new Promise((r) => setTimeout(r, 3000))])
     await platform.logout().catch(() => {})
     // An explicit sign-out keeps no `next`: the next account must not land on this one's page. Replacing the URL
     // without emitting keeps the redirect effect from adding it back; the render below reads the new path.
     history.replaceState(null, '', '/sign-in')
     setMe(null)
+    leaving.current = false
   }, [])
 
   return (

@@ -187,9 +187,14 @@ export const toastUndo = (text: string, body: string, commit: () => unknown, und
 
 const UNDO_MS = 5000
 // pending undo windows; sign-out commits them first, while the session that may send them still exists
-const flushers = new Set<() => unknown>()
-/** Commits every pending window now; settles when their requests have been answered. */
-export const flushUndo = () => Promise.allSettled([...flushers].map((f) => f()))
+const flushers = new Set<() => void>()
+// committed requests not yet answered, however they were committed (timer, button-less flush): sign-out waits for them
+const inflight = new Set<Promise<unknown>>()
+const track = (p: unknown) => {
+  if (p instanceof Promise) { inflight.add(p); const done = () => { inflight.delete(p) }; p.then(done, done) }
+}
+/** Commits every pending window now; settles when every committed request has been answered. */
+export const flushUndo = () => { flushers.forEach((f) => f()); return Promise.allSettled([...inflight]) }
 
 function UndoToast({ item, close }: { item: Extract<Toast, { kind: 'undo' }>; close: () => void }) {
   const [left, setLeft] = useState(UNDO_MS / 1000)
@@ -210,9 +215,8 @@ function UndoToast({ item, close }: { item: Extract<Toast, { kind: 'undo' }>; cl
     before.current = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null
     // the only way back is this button: keyboard and screen-reader users land on it at once
     button.current?.focus()
-    let sent: unknown
-    timer.current = startUndo(UNDO_MS, () => { sent = item.commit(); finish() }, setLeft)
-    const flush = () => { timer.current?.flush(); return sent }
+    timer.current = startUndo(UNDO_MS, () => { track(item.commit()); finish() }, setLeft)
+    const flush = () => { timer.current?.flush() }
     flushers.add(flush)
     return () => { flushers.delete(flush); timer.current?.undo() } // unmounted without an answer: nothing is committed
   }, [])
