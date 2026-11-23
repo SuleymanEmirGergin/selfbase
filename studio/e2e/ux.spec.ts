@@ -2,6 +2,10 @@ import { expect, test } from '@playwright/test'
 import type { Page } from '@playwright/test'
 import { REF, fx, mockApi, routes } from './helpers.ts'
 
+// These specs match the Turkish copy, so they run in Turkish; i18n.spec.ts covers the English default.
+const inTurkish = () => localStorage.setItem('studio-locale', 'tr')
+test.beforeEach(({ page }) => page.addInitScript(inTurkish))
+
 // v3 shell behaviour: theme switch, Ctrl+K palette, the undo toast and keyboard focus order.
 
 const theme = (page: Page) => page.evaluate(() => document.documentElement.dataset.theme)
@@ -28,6 +32,7 @@ test('the sign-in art is hidden from assistive tech, its only control is the vid
 
 test('under reduced motion the sign-in panel shows only the still: no video, no light passes', async ({ browser }) => {
   const ctx = await browser.newContext({ reducedMotion: 'reduce' })
+  await ctx.addInitScript(inTurkish)
   const page = await ctx.newPage()
   await mockApi(page, signedOut)
   await page.goto('/sign-in')
@@ -68,6 +73,7 @@ test('the video toggle is reachable by keyboard, pauses to the still and stays p
 test('a phone strip or Data Saver gets the still only: no video element, no toggle, no video request', async ({ browser }) => {
   for (const opts of [{ viewport: { width: 390, height: 844 } }, { saveData: true }]) {
     const ctx = await browser.newContext('viewport' in opts ? opts : {})
+    await ctx.addInitScript(inTurkish)
     const page = await ctx.newPage()
     if ('saveData' in opts) await page.addInitScript(() => Object.defineProperty(navigator, 'connection', { value: { saveData: true } }))
     const media: string[] = []
@@ -103,9 +109,10 @@ test('on sign-in, keyboard focus starts and stays in the form', async ({ page })
   const order: string[] = []
   for (let i = 0; i < 4; i++) {
     await page.keyboard.press('Tab')
-    order.push(await page.evaluate(() => { const el = document.activeElement as HTMLElement; return (el.getAttribute('aria-label') || el.textContent || el.getAttribute('type') || '').trim() }))
+    order.push(await page.evaluate(() => { const el = document.activeElement as HTMLInputElement; return (el.getAttribute('aria-label') || el.labels?.[0]?.textContent || el.textContent || '').trim() }))
   }
-  expect(order).toEqual(['Şifremi unuttum', 'password', 'Karakterleri göster', 'Giriş yap'])
+  // the forgot link comes after the password field and its show toggle, not between e-mail and password
+  expect(order).toEqual(['Şifre', 'Karakterleri göster', 'Şifremi unuttum', 'Giriş yap'])
 })
 
 test('the theme follows the system first, then the switch, and the choice survives a reload', async ({ page }) => {
@@ -127,6 +134,7 @@ test('the theme follows the system first, then the switch, and the choice surviv
 
 test('a light system with nothing stored starts light; reduced motion switches without the reveal', async ({ browser }) => {
   const ctx = await browser.newContext({ colorScheme: 'light', reducedMotion: 'reduce' })
+  await ctx.addInitScript(inTurkish)
   const page = await ctx.newPage()
   await mockApi(page, routes())
   await page.goto('/org/acme')
@@ -182,18 +190,19 @@ test('Ctrl+K opens the palette; search ignores Turkish letters, arrows and Enter
 })
 
 test('deleting a row waits five seconds; Geri al keeps it and nothing is sent', async ({ page }) => {
+  await page.clock.install() // the 5 s undo window runs on a fake clock, not real waits
   const api = await mockApi(page, routes())
   await page.goto(`/project/${REF}/editor`)
   const row = page.getByRole('row').filter({ hasText: 'ilk sürüm yayında' })
 
   await row.click()
   await page.getByRole('dialog', { name: 'Satırı düzenle' }).getByRole('button', { name: 'Sil' }).click()
-  const toast = page.getByRole('status').filter({ hasText: 'Satır silindi' })
+  const toast = page.getByRole('status').filter({ hasText: 'Satır siliniyor' })
   await expect(toast).toContainText('public.notes · id=2')
   await expect(row).toHaveCount(0)
   await toast.getByRole('button', { name: 'Geri al' }).click()
   await expect(row).toHaveCount(1)
-  await page.waitForTimeout(5600)
+  await page.clock.runFor(5600)
   expect(api.count(`DELETE /projects/${REF}/admin/rows/public/notes`)).toBe(0)
 
   await row.click()
@@ -202,19 +211,21 @@ test('deleting a row waits five seconds; Geri al keeps it and nothing is sent', 
   // focus lands on Geri al and holds the count: nothing is sent while the toast keeps it
   await expect(toast.getByRole('button', { name: 'Geri al' })).toBeFocused()
   await expect(toast).toContainText('durdu')
-  await page.waitForTimeout(5600)
+  await page.clock.runFor(5600)
   expect(api.count(`DELETE /projects/${REF}/admin/rows/public/notes`)).toBe(0)
   await page.getByRole('heading', { level: 1 }).click() // moving on resumes the count
   await expect(toast).toContainText(/\d sn/)
-  await page.waitForTimeout(2000)
+  await page.clock.runFor(2000)
   expect(api.count(`DELETE /projects/${REF}/admin/rows/public/notes`)).toBe(0) // still inside the window
-  await expect.poll(() => api.count(`DELETE /projects/${REF}/admin/rows/public/notes`), { timeout: 6000 }).toBe(1)
+  await page.clock.runFor(3600)
+  await expect.poll(() => api.count(`DELETE /projects/${REF}/admin/rows/public/notes`)).toBe(1)
   expect(api.calls.find((c) => c.key.startsWith('DELETE'))!.body).toEqual({ pk: { id: 2 } })
-  await expect(page.getByRole('status').filter({ hasText: 'Satır silindi' })).toHaveCount(0)
+  await expect(page.getByRole('status').filter({ hasText: 'Satır siliniyor' })).toHaveCount(0)
   await expect(row).toHaveCount(0)
 })
 
 test('a keyboard delete puts focus on Geri al; Enter there keeps the row and nothing is sent', async ({ page }) => {
+  await page.clock.install() // the 5 s undo window runs on a fake clock, not real waits
   const api = await mockApi(page, routes())
   await page.goto(`/project/${REF}/editor`)
   const row = page.getByRole('row').filter({ hasText: 'ilk sürüm yayında' })
@@ -225,29 +236,31 @@ test('a keyboard delete puts focus on Geri al; Enter there keeps the row and not
   await sheet.getByRole('button', { name: 'Sil' }).focus()
   await page.keyboard.press('Enter')
 
-  const toast = page.getByRole('status').filter({ hasText: 'Satır silindi' })
+  const toast = page.getByRole('status').filter({ hasText: 'Satır siliniyor' })
   const undo = toast.getByRole('button', { name: 'Geri al' })
   await expect(row).toHaveCount(0)
   await expect(undo).toBeFocused()
   // a screen reader hears what Geri al would bring back
-  await expect(undo).toHaveAccessibleDescription(/Satır silindi.*public\.notes · id=2/)
+  await expect(undo).toHaveAccessibleDescription(/Satır siliniyor….*public\.notes · id=2/)
   await page.keyboard.press('Enter')
   await expect(row).toHaveCount(1)
   await expect(toast).toHaveCount(0)
   await expect(row).toBeFocused() // back where the delete started
-  await page.waitForTimeout(5600)
+  await page.clock.runFor(5600)
   expect(api.count(`DELETE /projects/${REF}/admin/rows/public/notes`)).toBe(0)
 })
 
 test('a tap on the undo toast does not hold the delete; a mouse hover does, and says so to a screen reader', async ({ browser }) => {
   const ctx = await browser.newContext({ hasTouch: true })
+  await ctx.addInitScript(inTurkish)
   const page = await ctx.newPage()
+  await page.clock.install() // the 5 s undo window runs on a fake clock, not real waits
   const api = await mockApi(page, routes())
   const DEL = `DELETE /projects/${REF}/admin/rows/public/notes`
   await page.goto(`/project/${REF}/editor`)
   await page.getByRole('row').filter({ hasText: 'ilk sürüm yayında' }).click()
   await page.getByRole('dialog', { name: 'Satırı düzenle' }).getByRole('button', { name: 'Sil' }).click()
-  const toast = page.getByRole('status').filter({ hasText: 'Satır silindi' })
+  const toast = page.getByRole('status').filter({ hasText: 'Satır siliniyor' })
   await expect(toast.getByText('Geri sayım durdu')).toHaveCount(1) // focus holds it: announced in the live region
   await page.getByRole('heading', { level: 1 }).tap() // focus leaves: the count runs
   await expect(toast.getByText('Geri sayım durdu')).toHaveCount(0)
@@ -259,10 +272,11 @@ test('a tap on the undo toast does not hold the delete; a mouse hover does, and 
   await expect(toast).not.toContainText('durdu')
   await toast.locator('.tx').hover() // a real mouse does hold it
   await expect(toast).toContainText('durdu')
-  await page.waitForTimeout(5600)
+  await page.clock.runFor(5600)
   expect(api.count(DEL)).toBe(0)
   await page.mouse.move(700, 40)
-  await expect.poll(() => api.count(DEL), { timeout: 6500 }).toBe(1)
+  await page.clock.runFor(5600)
+  await expect.poll(() => api.count(DEL)).toBe(1)
   await ctx.close()
 })
 
@@ -287,7 +301,7 @@ test('keyboard focus runs skip link, sidebar, top bar, then the page; the skip l
   await page.goto('/org/acme')
   await expect(page.getByRole('heading', { name: 'Projeler' })).toBeVisible()
   const names: string[] = []
-  for (let i = 0; i < 15; i++) {
+  for (let i = 0; i < 16; i++) {
     await page.keyboard.press('Tab')
     names.push(await page.evaluate(() => {
       const el = document.activeElement as HTMLElement
@@ -296,7 +310,7 @@ test('keyboard focus runs skip link, sidebar, top bar, then the page; the skip l
   }
   expect(names).toEqual([
     'İçeriğe geç', 'Organizasyon',
-    'Projeler', 'Üyeler', 'Erişim belirteçleri', 'Denetim kaydı', 'Kapasite',
+    'Projeler', 'Üyeler', 'Erişim belirteçleri', 'Denetim kaydı', 'Kapasite', 'Dil',
     'Çıkış', 'Acme', 'Ara veya komut çalıştır…CtrlK', 'Temayı değiştir',
     'Yenile', 'İçe aktar', 'Yeni proje', expect.stringContaining('Tümü'),
   ])

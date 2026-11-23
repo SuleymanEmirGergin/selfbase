@@ -5,6 +5,7 @@ import { Icon } from './ui.tsx'
 import { Brand } from './glyphs.tsx'
 import { toggleTheme } from './theme.ts'
 import { filterCommands } from './lib/palette.ts'
+import { LANGS, locale, rich, setLocale, t, upper } from './i18n/index.ts'
 
 // The app frame shared by the organization and project areas: sidebar, top bar and the Ctrl+K palette.
 
@@ -34,7 +35,7 @@ function Nav({ items }: { items: NavItem[] }) {
           {s.group && s.group !== items[i - 1]?.group && <div className="grp">{s.group}</div>}
           <Link to={s.to} className={s.active ? 'on' : undefined} aria-current={s.active ? 'page' : undefined}>
             <Icon name={s.icon} weight={s.active ? 'duotone' : 'regular'} />{s.label}
-            {s.preview && <span className="pv">ÖNİZLEME</span>}
+            {s.preview && <span className="pv">{t('common.preview')}</span>}
           </Link>
         </li>
       ))}
@@ -59,17 +60,17 @@ function Palette({ commands, onClose }: { commands: Command[]; onClose: () => vo
   }
   let group = ''
   return (
-    <div className="cmdk" role="dialog" aria-modal="true" aria-label="Komut paleti" onKeyDown={onKey}>
+    <div className="cmdk" role="dialog" aria-modal="true" aria-label={t('palette.label')} onKeyDown={onKey}>
       <div className="scrim" onClick={onClose} />
       <div className="pal"><div className="core">
         <div className="q">
           <Icon name="search" size={18} />
-          <input autoFocus value={q} onChange={(e) => { setQ(e.target.value); setActive(0) }} placeholder="Ekran, proje veya komut ara…"
-            aria-label="Komut ara" role="combobox" aria-expanded="true" aria-controls="cmdk-list" autoComplete="off"
+          <input autoFocus value={q} onChange={(e) => { setQ(e.target.value); setActive(0) }} placeholder={t('palette.placeholder')}
+            aria-label={t('palette.search')} role="combobox" aria-expanded="true" aria-controls="cmdk-list" autoComplete="off"
             aria-activedescendant={shown[active] ? `cmdk-${active}` : undefined} />
           <span className="kbd">esc</span>
         </div>
-        <div className="list" id="cmdk-list" role="listbox" aria-label="Sonuçlar" ref={list}>
+        <div className="list" id="cmdk-list" role="listbox" aria-label={t('palette.results')} ref={list}>
           {shown.map((c, i) => {
             const head = c.group !== group ? (group = c.group) : null
             return (
@@ -87,12 +88,12 @@ function Palette({ commands, onClose }: { commands: Command[]; onClose: () => vo
           })}
           {!shown.length && (
             <div className="state empty"><span className="eg"><Icon name="search" size={28} weight="duotone" /></span>
-              <div><b>Sonuç yok</b><p>Başka bir ad deneyin ya da <span className="kbd">esc</span> ile kapatın.</p></div></div>
+              <div><b>{t('palette.noResults')}</b><p>{rich('palette.noResultsHint', { esc: <span className="kbd">esc</span> })}</p></div></div>
           )}
         </div>
         <div className="ft">
-          <span><span className="kbd">↑</span><span className="kbd">↓</span> gezin</span><span><span className="kbd">↵</span> aç</span>
-          <span><span className="kbd">esc</span> kapat</span><span className="sp" /><span>ı/i, ş/s ayrımı yapılmaz</span>
+          <span><span className="kbd">↑</span><span className="kbd">↓</span> {t('palette.navigate')}</span><span><span className="kbd">↵</span> {t('palette.open')}</span>
+          <span><span className="kbd">esc</span> {t('palette.close')}</span><span className="sp" /><span>{t('palette.fold')}</span>
         </div>
       </div></div>
     </div>
@@ -132,33 +133,40 @@ export function Shell({ switcher, nav, crumbs, commands, loadCommands, email, on
   })
 
   const all: Command[] = [
-    ...nav.map((n) => ({ label: n.label, hint: n.group, icon: n.icon, group: 'Gezinme', run: () => navigate(n.to) })),
+    ...nav.map((n) => ({ label: n.label, hint: n.group, icon: n.icon, group: t('palette.groupNav'), run: () => navigate(n.to) })),
     ...commands,
     ...extra,
-    { label: 'Temayı değiştir', hint: 'koyu / açık', icon: 'theme', group: 'Eylemler', keys: [MOD, '⇧', 'L'], run: () => toggleTheme(themeBtn.current) },
-    { label: 'Çıkış yap', hint: email, icon: 'logout', group: 'Eylemler', run: onSignOut },
+    { label: t('cmd.theme'), hint: t('cmd.themeHint'), icon: 'theme', group: t('palette.groupActions'), keys: [MOD, '⇧', 'L'], run: () => toggleTheme(themeBtn.current) },
+    ...LANGS.filter((l) => l.id !== locale()).map((l) => ({ label: t('cmd.language', { name: l.name }), hint: t('cmd.languageHint'), icon: 'globe', group: t('palette.groupActions'), run: () => setLocale(l.id) })),
+    { label: t('cmd.signOut'), hint: email, icon: 'logout', group: t('palette.groupActions'), run: onSignOut },
   ]
 
   return (
     <div className={`app ${menuOpen ? 'menu-open' : ''}`}>
-      <a className="skip" href="#content">İçeriğe geç</a>
-      <nav className="side" aria-label="Ana menü">
+      <a className="skip" href="#content">{t('shell.skip')}</a>
+      <nav className="side" aria-label={t('shell.mainMenu')}>
         <div className="side-brand"><Brand /></div>
         {switcher}
         <div className="navwrap"><Nav items={nav} /></div>
         <div className="side-foot">
           {foot}
+          <label className="lang">
+            <Icon name="globe" /><span>{t('shell.language')}</span>
+            <select aria-label={t('shell.language')} value={locale()} onChange={(e) => setLocale(e.target.value as typeof LANGS[number]['id'])}>
+              {LANGS.map((l) => <option key={l.id} value={l.id} lang={l.id}>{l.name}</option>)}
+            </select>
+          </label>
           <div className="user">
-            <span className="avatar v" aria-hidden="true">{email.slice(0, 1).toUpperCase()}</span>
+            <span className="avatar v" aria-hidden="true">{upper(email.slice(0, 1))}</span>
             <span className="t mono" title={email}>{email}</span>
-            <button className="icon-btn" onClick={onSignOut} aria-label="Çıkış" title="Çıkış"><Icon name="logout" /></button>
+            <button className="icon-btn" onClick={onSignOut} aria-label={t('common.signOut')} title={t('common.signOut')}><Icon name="logout" /></button>
           </div>
         </div>
       </nav>
       <div className="main">
         <header className="top">
-          <button className="icon-btn menu-toggle" aria-label="Menü" aria-expanded={menuOpen} onClick={() => setMenuOpen((v) => !v)}><Icon name="menu" /></button>
-          <nav className="crumbs" aria-label="Konum">
+          <button className="icon-btn menu-toggle" aria-label={t('shell.menu')} aria-expanded={menuOpen} onClick={() => setMenuOpen((v) => !v)}><Icon name="menu" /></button>
+          <nav className="crumbs" aria-label={t('shell.crumbs')}>
             {crumbs.map((c, i) => (
               <span key={i} className="crumb">
                 {i > 0 && <span className="sep" aria-hidden="true">/</span>}
@@ -168,9 +176,9 @@ export function Shell({ switcher, nav, crumbs, commands, loadCommands, email, on
           </nav>
           <span className="sp" />
           <button className="topsearch" onClick={open} aria-keyshortcuts="Control+K">
-            <Icon name="search" /><span className="lab">Ara veya komut çalıştır…</span><span className="kbd">{MOD}</span><span className="kbd">K</span>
+            <Icon name="search" /><span className="lab">{t('shell.search')}</span><span className="kbd">{MOD}</span><span className="kbd">K</span>
           </button>
-          <button className="theme-sw" ref={themeBtn} onClick={(e) => toggleTheme(e.currentTarget)} aria-label="Temayı değiştir" title={`Temayı değiştir (${MOD}+⇧+L)`}>
+          <button className="theme-sw" ref={themeBtn} onClick={(e) => toggleTheme(e.currentTarget)} aria-label={t('shell.theme')} title={t('shell.themeTitle', { keys: `${MOD}+⇧+L` })}>
             <span className="sun"><Icon name="sun" size={14} /></span><span className="moon"><Icon name="moon" size={14} /></span>
           </button>
         </header>

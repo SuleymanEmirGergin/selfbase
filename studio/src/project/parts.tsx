@@ -5,6 +5,8 @@ import type { ApiKey } from '../api.ts'
 import { ErrorBox, Loading, confirmDanger, toast } from '../ui.tsx'
 import { CopyButton, JobSteps, StatusBadge, useLoad } from '../org/common.tsx'
 import { useProject } from './context.ts'
+import { has, rich, t } from '../i18n/index.ts'
+import type { Key } from '../i18n/index.ts'
 
 // Pieces shared by the home and settings screens.
 
@@ -46,22 +48,23 @@ export function Lifecycle() {
   // control restores from both (canRestore); a failed restore is retried, not paused
   const paused = project.status === 'INACTIVE' || project.status === 'RESTORE_FAILED'
   const pause = async () => {
-    if (!(await confirmDanger('Proje duraklatılsın mı?', <><code>{project.name}</code> durdurulur; API ve veritabanı devam ettirilene kadar yanıt vermez.</>, 'Duraklat'))) return
+    if (!(await confirmDanger(t('project.pauseConfirm'), rich('project.pauseMsg', { name: <code>{project.name}</code> }), t('project.pause')))) return
     job.start(() => platform.pause(ref))
   }
   return (
     <div className="job">
       <div>
         {paused
-          ? <button className="btn primary" disabled={job.busy} onClick={() => job.start(() => platform.restore(ref))}>Devam ettir</button>
-          : <button className="btn" disabled={job.busy} onClick={pause}>Duraklat</button>}
+          ? <button className="btn primary" disabled={job.busy} onClick={() => job.start(() => platform.restore(ref))}>{t('project.resume')}</button>
+          : <button className="btn" disabled={job.busy} onClick={pause}>{t('project.pause')}</button>}
       </div>
       {job.steps}
     </div>
   )
 }
 
-export const JOB_STATUS: Record<string, string> = { pending: 'bekliyor', running: 'sürüyor', succeeded: 'tamamlandı', failed: 'başarısız' }
+/** A job's status in words; an unknown one as it came. */
+export const jobStatus = (s: string) => { const k = `jobStatus.${s}`; return has(k) ? t(k) : s }
 
 /** Shown instead of a data screen whenever the project is not ACTIVE_HEALTHY (paused or in transition). */
 export function Paused() {
@@ -72,14 +75,14 @@ export function Paused() {
       <div className="scroll-area">
         <div className="card paused">
           <div className="card-head">
-            <h2>{inactive ? 'Proje duraklatıldı' : 'Proje şu an kullanılamıyor'}</h2>
+            <h2>{t(inactive ? 'paused.title' : 'paused.unavailable')}</h2>
             <StatusBadge status={project.status} />
           </div>
           <div className="card-body">
             <p className="muted">
-              Bu ekran projenin servisleriyle çalışır. {inactive ? 'Proje devam ettirilince yeniden açılır.' : 'Proje hazır olunca yeniden açılır.'}
+              {t('paused.text')} {t(inactive ? 'paused.whenResumed' : 'paused.whenReady')}
             </p>
-            {inactive ? <Lifecycle /> : <div><button className="btn" onClick={reload}>Durumu yenile</button></div>}
+            {inactive ? <Lifecycle /> : <div><button className="btn" onClick={reload}>{t('paused.refresh')}</button></div>}
           </div>
         </div>
       </div>
@@ -87,9 +90,9 @@ export function Paused() {
   )
 }
 
-const KEY_LABEL: Record<ApiKey['name'], string> = { anon: 'anon (herkese açık)', service_role: 'service_role (gizli)' }
+const KEY_LABEL: Record<ApiKey['name'], Key> = { anon: 'keys.anon', service_role: 'keys.service' }
 
-/** anon in full with a copy button; service_role masked until "göster" asks control to reveal it. */
+/** anon in full with a copy button; service_role masked until "show" asks control to reveal it. */
 export function ApiKeys() {
   const { ref, can } = useProject()
   const { data, error, reload } = useLoad(() => platform.apiKeys(ref), [ref])
@@ -108,12 +111,12 @@ export function ApiKeys() {
         const value = secret ? shown ?? k.api_key : k.api_key
         return (
           <div key={k.name}>
-            <dt>{KEY_LABEL[k.name] ?? k.name}</dt>
+            <dt>{KEY_LABEL[k.name] ? t(KEY_LABEL[k.name]) : k.name}</dt>
             <dd className="secret-row">
-              <code aria-label={`${k.name} anahtarı`}>{value}</code>
+              <code aria-label={t('keys.label', { name: k.name })}>{value}</code>
               {!secret && <CopyButton text={value} />}
-              {secret && shown && <><CopyButton text={shown} /><button className="btn sm" onClick={() => setShown(null)}>gizle</button></>}
-              {secret && !shown && can('project.keys') && <button className="btn sm" disabled={busy} onClick={reveal}>göster</button>}
+              {secret && shown && <><CopyButton text={shown} /><button className="btn sm" onClick={() => setShown(null)}>{t('keys.hide')}</button></>}
+              {secret && !shown && can('project.keys') && <button className="btn sm" disabled={busy} onClick={reveal}>{t('keys.show')}</button>}
             </dd>
           </div>
         )

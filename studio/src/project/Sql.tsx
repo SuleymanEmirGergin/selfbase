@@ -3,12 +3,13 @@ import { EditorView, basicSetup } from 'codemirror'
 import { keymap } from '@codemirror/view'
 import { sql as sqlLang } from '@codemirror/lang-sql'
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
-import { tags as t } from '@lezer/highlight'
+import { tags } from '@lezer/highlight'
 import { errMsg } from '../api.ts'
 import type { SqlResult } from '../api.ts'
 import { Grid, cellText } from '../Grid.tsx'
 import { Drawer, Empty, ErrorBox, Icon } from '../ui.tsx'
 import { sqlMemo, useAdmin, useProject } from './context.ts'
+import { rich, t } from '../i18n/index.ts'
 
 
 const theme = EditorView.theme({
@@ -22,12 +23,12 @@ const theme = EditorView.theme({
 })
 // Token colours from the Studio palette, so both themes keep AA contrast (the CodeMirror default is light-only).
 const highlight = syntaxHighlighting(HighlightStyle.define([
-  { tag: t.keyword, color: 'var(--violet)', fontWeight: '500' },
-  { tag: [t.string, t.special(t.string)], color: 'var(--accent-text)' },
-  { tag: [t.number, t.bool, t.null], color: 'var(--warn)' },
-  { tag: [t.comment, t.lineComment, t.blockComment], color: 'var(--dim)', fontStyle: 'italic' },
-  { tag: [t.typeName, t.standard(t.name)], color: 'var(--info)' },
-  { tag: t.operator, color: 'var(--muted)' },
+  { tag: tags.keyword, color: 'var(--violet)', fontWeight: '500' },
+  { tag: [tags.string, tags.special(tags.string)], color: 'var(--accent-text)' },
+  { tag: [tags.number, tags.bool, tags.null], color: 'var(--warn)' },
+  { tag: [tags.comment, tags.lineComment, tags.blockComment], color: 'var(--dim)', fontStyle: 'italic' },
+  { tag: [tags.typeName, tags.standard(tags.name)], color: 'var(--info)' },
+  { tag: tags.operator, color: 'var(--muted)' },
 ]))
 
 /** 1-based line and column of a 1-based character position. */
@@ -43,9 +44,9 @@ const isNumericColumn = (rows: unknown[][], i: number) =>
 
 /** Rows returned (SELECT, RETURNING), rows affected (INSERT/UPDATE/DELETE), or just done (DDL has no row count). */
 const resultSummary = (r: { columns: string[]; rows: unknown[][]; rowCount: number | null }) =>
-  r.columns.length ? `${(r.rowCount ?? r.rows.length).toLocaleString('tr-TR')} satır`
-    : r.rowCount !== null ? `${r.rowCount.toLocaleString('tr-TR')} satır etkilendi`
-    : 'Tamamlandı'
+  r.columns.length ? t('sql.rows', { n: r.rowCount ?? r.rows.length })
+    : r.rowCount !== null ? t('sql.affected', { n: r.rowCount })
+    : t('sql.done')
 
 export default function Sql() {
   const api = useAdmin()
@@ -89,7 +90,7 @@ export default function Sql() {
         sqlLang(),
         theme,
         highlight,
-        EditorView.contentAttributes.of({ 'aria-label': 'SQL sorgusu' }),
+        EditorView.contentAttributes.of({ 'aria-label': t('sql.editor') }),
         EditorView.updateListener.of((u) => { if (u.docChanged) { mem.query = u.state.doc.toString(); setQuery(mem.query) } }),
       ],
     })
@@ -113,22 +114,22 @@ export default function Sql() {
     <section className="page-main">
       <div className="toolbar">
         <h1 className="title">SQL</h1>
-        <span className="muted small hide-sm">Sorgular veritabanı süper kullanıcısıyla çalışır.</span>
+        <span className="muted small hide-sm">{t('sql.superuser')}</span>
         <div className="spacer" />
         <span className="muted small hide-sm"><kbd>Ctrl</kbd>+<kbd>Enter</kbd></span>
-        <button className="btn primary" onClick={run} disabled={running}>{running ? 'Çalışıyor…' : 'Çalıştır'}<span className="ic"><Icon name="play" size={12} weight="bold" /></span></button>
+        <button className="btn primary" onClick={run} disabled={running}>{t(running ? 'sql.running' : 'sql.run')}<span className="ic"><Icon name="play" size={12} weight="bold" /></span></button>
       </div>
       <div className="sql-editor" ref={host} />
       <div className="result-bar" aria-live="polite">
         {ok && (
           <>
-            <span className="badge ok">Başarılı</span>
+            <span className="badge ok">{t('sql.success')}</span>
             <span className="muted">{resultSummary(ok)}</span>
             <span className="muted">{ok.durationMs} ms</span>
-            {ok.truncated && <span className="badge warn">İlk {ok.rows.length.toLocaleString('tr-TR')} satır gösteriliyor, toplam {(ok.rowCount ?? 0).toLocaleString('tr-TR')}</span>}
+            {ok.truncated && <span className="badge warn">{t('sql.truncated', { shown: ok.rows.length, total: ok.rowCount ?? 0 })}</span>}
           </>
         )}
-        {fail && <span className="badge danger">Hata</span>}
+        {fail && <span className="badge danger">{t('sql.error')}</span>}
       </div>
       <div className="grid-area">
         {error ? <ErrorBox message={error} />
@@ -137,22 +138,22 @@ export default function Sql() {
               <div className="mono">{fail.message}</div>
               {fail.position !== null && (() => {
                 const { line, col } = lineCol(ranQuery, fail.position)
-                return <button className="link" onClick={() => goTo(fail.position!)}>Konum {fail.position} · satır {line}, sütun {col}</button>
+                return <button className="link" onClick={() => goTo(fail.position!)}>{t('sql.position', { pos: fail.position, line, col })}</button>
               })()}
-              {fail.hint && <div className="muted">İpucu: {fail.hint}</div>}
+              {fail.hint && <div className="muted">{t('sql.hint', { hint: fail.hint })}</div>}
             </div>
           )
-          : !ok ? <Empty>Sorguyu yazıp <kbd>Ctrl</kbd>+<kbd>Enter</kbd> ile çalıştırın.</Empty>
-          : !ok.columns.length ? <Empty>Sorgu çalıştı, dönen satır yok.</Empty>
+          : !ok ? <Empty>{rich('sql.start', { keys: <><kbd>Ctrl</kbd>+<kbd>Enter</kbd></> })}</Empty>
+          : !ok.columns.length ? <Empty>{t('sql.noRows')}</Empty>
           : (
             <>
               <Grid columns={ok.columns.map((name, i) => ({ name, numeric: isNumericColumn(ok.rows, i) }))} rows={ok.rows} onRowClick={setInspect} selected={inspect} />
-              {!ok.rows.length && <Empty>Sonuç boş.</Empty>}
+              {!ok.rows.length && <Empty>{t('sql.empty')}</Empty>}
             </>
           )}
       </div>
       {ok && inspect !== null && ok.rows[inspect] && (
-        <Drawer title={`Satır ${inspect + 1}`} onClose={() => setInspect(null)}>
+        <Drawer title={t('sql.rowTitle', { n: inspect + 1 })} onClose={() => setInspect(null)}>
           <dl className="kv">
             {ok.columns.map((c, i) => {
               const v = ok.rows[inspect][i]
@@ -172,19 +173,18 @@ export default function Sql() {
   )
 }
 
-// The assistant ships later; until then the panel says so and takes no input. Hidden below 1100 px.
+// The assistant ships later; until then the panel says so, with no input that could look usable. Hidden below 1100 px.
 function Assistant() {
   return (
-    <aside className="asst" aria-label="Asistan">
+    <aside className="asst" aria-label={t('sql.assistant')}>
       <div className="ah">
-        <span className="orb" aria-hidden="true"><Icon name="sparkle" size={14} weight="bold" /></span>
-        <b>Asistan</b><span className="spacer" /><span className="chip pv-chip">ÖNİZLEME</span>
+        <span className="orb" aria-hidden="true"><Icon name="sparkle" size={12} weight="bold" /></span>
+        <b>{t('sql.assistant')}</b><span className="spacer" /><span className="chip pv-chip">{t('common.preview')}</span>
       </div>
       <Empty icon="sparkle">
-        <b>Asistan henüz açık değil</b>
-        <p>Şemanızı bilen, sorgu yazıp açıklayan bir yardımcı bu panele gelecek. Şimdilik sorgular yalnızca sizin yazdığınız gibi çalışır.</p>
+        <b>{t('sql.assistantOff')}</b>
+        <p>{t('sql.assistantText')}</p>
       </Empty>
-      <div className="ask" aria-hidden="true"><span>Bir soru sorun…</span><span className="send"><Icon name="arrow-up-right" size={14} /></span></div>
     </aside>
   )
 }

@@ -213,7 +213,10 @@ input[type="file"]::file-selector-button { height: 30px; padding: 0 13px; margin
 .field { display: flex; flex-direction: column; gap: 7px; }
 .field > span, .lbl, .lbl label { font-size: 12px; font-weight: 500; color: var(--muted); }
 .lbl { display: flex; justify-content: space-between; align-items: center; }
-.lbl a { color: var(--accent-text); text-decoration: none; }
+.lbl a, .field-extra a { color: var(--accent-text); text-decoration: none; }
+/* after the input in the DOM (tab order: field, then the link), drawn on the label row */
+.field:has(> .field-extra) { position: relative; }
+.field-extra { position: absolute; top: 0; right: 0; font-size: 12px; font-weight: 500; line-height: 18px; }
 .field.inline { flex-direction: row; align-items: center; gap: 8px; }
 .field.inline select { max-width: 180px; }
 .check { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
@@ -288,6 +291,9 @@ input[type="file"]::file-selector-button { height: 30px; padding: 0 13px; margin
 .side-meter .row { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
 .side-meter .row b { color: var(--text); font-weight: 500; }
 .side-meter .dots { margin: 10px 0 0; }
+.lang { display: flex; align-items: center; gap: 8px; padding: 0 6px 0 12px; font-size: 12px; color: var(--muted); }
+.lang span { flex: 1; }
+.lang select { height: 28px; padding: 0 8px; font-size: 12px; }
 .user { display: flex; align-items: center; gap: 10px; padding: 6px; border-radius: 999px; min-width: 0; }
 .user .t { flex: 1; min-width: 0; font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .main { position: relative; margin: 10px 10px 10px 0; border-radius: 22px; background: var(--panel); min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
@@ -498,9 +504,6 @@ button.th-btn:hover { background: var(--surface-2); }
 .asst .ah { display: flex; align-items: center; gap: 10px; min-height: 60px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
 .orb { width: 28px; height: 28px; border-radius: 999px; display: grid; place-items: center; color: var(--accent-ink); background: conic-gradient(from 200deg, var(--accent), #8BE0B8, var(--violet), var(--accent)); }
 .asst .state { flex: 1; }
-.ask { margin: 0 12px 12px; padding: 10px 8px 10px 16px; display: flex; align-items: center; gap: 8px; border-radius: 24px; color: var(--dim); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line-2); opacity: .6; }
-.ask > span:first-child { flex: 1; }
-.send { width: 32px; height: 32px; border-radius: 999px; display: grid; place-items: center; background: var(--surface-3); }
 
 /* ================= RLS, logs ================= */
 .card-head .mono { font-size: 13px; }

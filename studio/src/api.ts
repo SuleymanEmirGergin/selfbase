@@ -1,5 +1,6 @@
 // The one client module for control's /platform API (plan Tasks 10, 13, 14). Same origin, authenticated by the
 // httpOnly session cookies; nothing from the session is kept in the browser beyond them. Contract fixes go here.
+import { t } from './i18n/index.ts'
 
 export class ApiError extends Error {
   status: number
@@ -41,7 +42,7 @@ async function send(method: string, path: string, opts: Opts) {
   try {
     return await fetch('/platform' + path, { method, headers, body, credentials: 'same-origin' })
   } catch {
-    throw new ApiError(0, 'Sunucuya ulaşılamadı')
+    throw new ApiError(0, t('api.unreachable'))
   }
 }
 
