@@ -9,7 +9,7 @@ import type { SqlResult } from '../api.ts'
 import { Grid, cellText } from '../Grid.tsx'
 import { Drawer, Empty, ErrorBox, Icon } from '../ui.tsx'
 import { sqlMemo, useAdmin, useProject } from './context.ts'
-import { rich, t } from '../i18n/index.ts'
+import { locale, nf, rich, t } from '../i18n/index.ts'
 
 
 const theme = EditorView.theme({
@@ -90,13 +90,15 @@ export default function Sql() {
         sqlLang(),
         theme,
         highlight,
-        EditorView.contentAttributes.of({ 'aria-label': t('sql.editor') }),
         EditorView.updateListener.of((u) => { if (u.docChanged) { mem.query = u.state.doc.toString(); setQuery(mem.query) } }),
       ],
     })
     editor.current = view
     return () => view.destroy()
   }, [mem])
+  // set here, not in the editor's extensions, so a language switch renames it for screen readers too
+  const lang = locale()
+  useEffect(() => { editor.current?.contentDOM.setAttribute('aria-label', t('sql.editor')) }, [mem, lang])
 
   const goTo = (pos: number) => {
     const view = editor.current
@@ -125,7 +127,7 @@ export default function Sql() {
           <>
             <span className="badge ok">{t('sql.success')}</span>
             <span className="muted">{resultSummary(ok)}</span>
-            <span className="muted">{ok.durationMs} ms</span>
+            <span className="muted">{nf(ok.durationMs)} ms</span>
             {ok.truncated && <span className="badge warn">{t('sql.truncated', { shown: ok.rows.length, total: ok.rowCount ?? 0 })}</span>}
           </>
         )}

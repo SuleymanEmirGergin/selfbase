@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { fx, mockApi, routes } from './helpers.ts'
+import { REF, fx, mockApi, routes } from './helpers.ts'
 
 // Studio is English unless the viewer picks Türkçe; the choice changes the copy, <html lang> and number formatting,
 // and survives a reload.
@@ -72,6 +72,17 @@ test('server errors read in the chosen language: known codes from the catalogue,
   await mockApi(page, fail({ error: 'validation_failed', message: 'name must be 1 to 100 characters' }))
   await page.reload()
   await expect(page.getByRole('alert')).toContainText('name must be 1 to 100 characters')
+})
+
+test('on the SQL screen a switch renames the editor for screen readers and reformats the duration', async ({ page }) => {
+  await mockApi(page, { ...routes(), [`POST /projects/${REF}/admin/sql`]: { body: { columns: ['n'], rows: [[1]], rowCount: 1, durationMs: 1234 } } })
+  await page.goto(`/project/${REF}/sql`)
+  await expect(page.getByRole('textbox', { name: 'SQL query' })).toBeVisible()
+  await page.getByRole('button', { name: 'Run', exact: true }).click()
+  await expect(page.getByText('1,234 ms')).toBeVisible()
+  await page.getByLabel('Language').selectOption('tr')
+  await expect(page.getByRole('textbox', { name: 'SQL sorgusu' })).toBeVisible()
+  await expect(page.getByText('1.234 ms')).toBeVisible()
 })
 
 test('the Ctrl+K palette offers the other language and switches to it', async ({ page }) => {

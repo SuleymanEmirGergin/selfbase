@@ -10,8 +10,16 @@ export const nf = (n: number, digits: number, lang: Lang) =>
 export const pct = (v: number, digits: number, lang: Lang) =>
   new Intl.NumberFormat(TAG[lang], { style: 'percent', minimumFractionDigits: digits, maximumFractionDigits: digits }).format(v)
 
-export const fmtSize = (n: number | undefined, lang: Lang) =>
-  n === undefined ? '—' : n < 1024 ? `${nf(n, 0, lang)} B` : n < 1048576 ? `${nf(n / 1024, 1, lang)} KB` : `${nf(n / 1048576, 1, lang)} MB`
+const UNITS = ['KiB', 'MiB', 'GiB', 'TiB']
+/** 1024-based, labelled as such; a value that would round to 1024 shows in the next unit ("1.0 MiB", not "1,024.0 KiB"). */
+export function fmtSize(n: number | undefined, lang: Lang) {
+  if (n === undefined) return '—'
+  if (n < 1024) return `${nf(n, 0, lang)} B`
+  let v = n / 1024
+  let i = 0
+  while (i < UNITS.length - 1 && Math.round(v * 10) >= 10240) { v /= 1024; i++ }
+  return `${nf(v, 1, lang)} ${UNITS[i]}`
+}
 
 /** Short date and time; a value that does not parse is shown as it came. */
 export function fmtDate(s: string | null | undefined, lang: Lang, timeStyle: 'short' | 'medium' = 'short') {

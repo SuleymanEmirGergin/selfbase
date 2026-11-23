@@ -16,8 +16,12 @@ test('numbers, percentages, sizes and relative times follow the locale', () => {
   expect(nf(12408, 0, 'en')).toBe('12,408')
   expect(nf(1255.75, 2, 'en')).toBe('1,255.75')
   expect(pct(0.962, 1, 'en')).toBe('96.2%')
-  expect(fmtSize(1536, 'tr')).toBe('1,5 KB')
-  expect(fmtSize(1536, 'en')).toBe('1.5 KB')
+  // 1024-based, so the units say so (KiB, not KB); a value that rounds up to 1024 moves to the next unit
+  expect(fmtSize(1536, 'tr')).toBe('1,5 KiB')
+  expect(fmtSize(1536, 'en')).toBe('1.5 KiB')
+  expect(fmtSize(1023, 'en')).toBe('1,023 B')
+  expect(fmtSize(1048575, 'en')).toBe('1.0 MiB')
+  expect(fmtSize(5 * 1024 ** 3, 'tr')).toBe('5,0 GiB')
   expect(fmtSize(undefined, 'en')).toBe('—')
   expect(fmtDate('not a date', 'en')).toBe('not a date') // a log line with an odd timestamp keeps it
   expect(fmtDate(null, 'en')).toBe('—')
