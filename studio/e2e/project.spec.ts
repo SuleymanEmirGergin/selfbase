@@ -358,7 +358,7 @@ test('settings: a custom domain is checked and confirmed; backup status is in Tu
   await page.getByRole('button', { name: 'Ekle', exact: true }).click()
   const dialog = page.locator('dialog.confirm')
   await expect(dialog).toContainText('sertifika')
-  await expect(dialog).toContainText('haftada en çok 3')
+  await expect(dialog).toContainText('haftalık yeni sertifika hakkından')
   await dialog.getByRole('button', { name: 'Vazgeç' }).click()
   expect(api.count(`POST ${P}/domains`)).toBe(0)
   await page.getByRole('button', { name: 'Ekle', exact: true }).click()

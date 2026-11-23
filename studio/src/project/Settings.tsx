@@ -68,7 +68,7 @@ function Domains() {
     if (!HOSTNAME.test(host)) return setHostErr('Geçerli bir alan adı yazın (ör. api.ornek.com).')
     setHostErr('')
     if (kind === 'custom' && !(await confirmDanger('Özel alan adı eklensin mi?',
-      <><code>{host}</code> için bir sertifika adresi kullanılır: haftada en çok 3 yeni adres için sertifika alınabilir. Yazım hatası o haftanın hakkını harcar.</>,
+      <><code>{host}</code> için sunucunun haftalık yeni sertifika hakkından biri kullanılır (Kapasite sayfasında görünür). Yazım hatası o hakkı harcar.</>,
       'Ekle'))) return
     job.start(async () => { const r = await platform.addDomain(ref, { hostname: host, kind }); setHostname(''); reload(); return r })
   }
