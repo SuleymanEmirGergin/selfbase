@@ -14,7 +14,7 @@ const IMAGES = ['db', 'core', 'fn', 'rest', 'pooler', 'job', 'control', 'provisi
 test('the root lists exactly the six workspaces, with their package names', () => {
   const pkg = JSON.parse(read('package.json'))
   assert.equal(pkg.private, true)
-  assert.equal(pkg.version, '2.1.0')
+  assert.equal(pkg.version, '2.1.1')
   assert.deepEqual(pkg.workspaces, Object.keys(WORKSPACES))
   for (const [dir, name] of Object.entries(WORKSPACES)) assert.equal(JSON.parse(read(`${dir}/package.json`)).name, name, dir)
 })
