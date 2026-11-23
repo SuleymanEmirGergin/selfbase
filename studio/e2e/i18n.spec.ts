@@ -32,6 +32,15 @@ test('switching to Türkçe in the sidebar changes the copy, lang and numbers, a
   expect(await lang(page)).toBe('tr')
 })
 
+test('a switch on Members also changes the role options in the invite form', async ({ page }) => {
+  await mockApi(page, routes())
+  await page.goto('/org/acme/members')
+  const roles = page.locator('form select').first()
+  await expect(roles.locator('option')).toHaveText(['Owner', 'Administrator', 'Developer', 'Read-only'])
+  await page.getByLabel('Language').selectOption('tr')
+  await expect(roles.locator('option')).toHaveText(['Sahip', 'Yönetici', 'Geliştirici', 'Salt okunur'])
+})
+
 test('the Ctrl+K palette offers the other language and switches to it', async ({ page }) => {
   await mockApi(page, routes())
   await page.goto('/org/acme')

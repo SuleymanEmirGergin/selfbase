@@ -14,7 +14,8 @@ export const ROLES: Record<Role, Key> = {
   developer: 'role.developer',
   read_only: 'role.read_only',
 }
-const roleOptions = (Object.keys(ROLES) as Role[]).map((r) => <option key={r} value={r}>{t(ROLES[r])}</option>)
+// built per render, so a language switch reaches the options
+const roleOptions = () => (Object.keys(ROLES) as Role[]).map((r) => <option key={r} value={r}>{t(ROLES[r])}</option>)
 
 function InviteForm({ slug }: { slug: string }) {
   const [email, setEmail] = useState('')
@@ -47,7 +48,7 @@ function InviteForm({ slug }: { slug: string }) {
           <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
         </label>
         <label className="field"><span>{t('members.role')}</span>
-          <select value={role} onChange={(e) => setRole(e.target.value as Role)}>{roleOptions}</select>
+          <select value={role} onChange={(e) => setRole(e.target.value as Role)}>{roleOptions()}</select>
         </label>
         <label className="field"><span>{t('members.project')}</span>
           <input value={project} onChange={(e) => setProject(e.target.value)} placeholder={t('members.projectRef')} className="mono" />
@@ -104,7 +105,7 @@ export function Members({ org, canManage }: OrgProps) {
                   <td>
                     {canManage
                       ? <select aria-label={t('members.roleOf', { email: m.email })} value={m.role} disabled={busy === m.user_id}
-                          onChange={(e) => act(m, () => platform.setRole(org.slug, m.user_id, e.target.value as Role, m.id), t('members.roleChanged'))}>{roleOptions}</select>
+                          onChange={(e) => act(m, () => platform.setRole(org.slug, m.user_id, e.target.value as Role, m.id), t('members.roleChanged'))}>{roleOptions()}</select>
                       : ROLES[m.role] ? t(ROLES[m.role]) : m.role}
                   </td>
                   <td>{m.project_ref ? <span className="chip">{m.project_ref}</span> : <span className="muted small">{t('members.allProjects')}</span>}</td>
