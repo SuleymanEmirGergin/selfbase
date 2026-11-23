@@ -32,9 +32,11 @@ export async function migrate(): Promise<void> {
        proxy_network = excluded.proxy_network, memory_budget_mb = excluded.memory_budget_mb`,
     [config.nodeName, config.provisionerUrl, config.proxyMode, config.proxyNetwork, config.memoryBudgetMb],
   )
-  await pool.query(`insert into control.settings (key, value) values ('current_template_version', $1) on conflict (key) do nothing`, [
-    config.templateVersion,
-  ])
+  // the running release is current: projects created from now on use it; existing ones move only by project.upgrade
+  await pool.query(`insert into control.settings (key, value) values ('current_template_version', $1)
+    on conflict (key) do update set value = excluded.value`, [config.templateVersion])
+  // the control host's router (with the resolver) appears with the first start: its certificate counts in the weekly cap
+  await pool.query(`insert into control.settings (key, value) values ('control_host_first_issued_at', now()::text) on conflict (key) do nothing`)
 }
 
 /** Closes the pool (tests, shutdown). Safe to call twice. */

@@ -37,16 +37,63 @@ test('a missing container enqueues project.apply once, even after three passes',
   expect(await jobsOf(p.id)).toEqual([{ type: 'project.apply', status: 'pending', payload: { recreate: [] } }])
 })
 
-test('an exited container, another template version or a detached control network also enqueue project.apply', async () => {
+test('an exited container, another template version, a detached control network or a stale proxy address also enqueue project.apply', async () => {
   const a = await add('ACTIVE_HEALTHY')
   const b = await add('ACTIVE_HEALTHY')
   const c = await add('ACTIVE_HEALTHY')
-  for (const p of [a, b, c]) fake.running(p.ref, 'test')
+  const d = await add('ACTIVE_HEALTHY')
+  for (const p of [a, b, c, d]) fake.running(p.ref, 'test')
   fake.set(a.ref, 'fn', { state: 'exited' })
   fake.set(b.ref, 'core', { templateVersion: 'old' })
   fake.projects.get(c.ref)!.controlAttached = false
+  fake.set(d.ref, 'core', { proxyStale: true })
   await reconcileOnce(deps())
-  for (const p of [a, b, c]) expect((await jobsOf(p.id)).map((j) => j.type), p.ref).toEqual(['project.apply'])
+  for (const p of [a, b, c, d]) expect((await jobsOf(p.id)).map((j) => j.type), p.ref).toEqual(['project.apply'])
+  // a dead service is not healthy; a version or network drift alone says nothing about health
+  expect(await status(a.id)).toBe('ACTIVE_UNHEALTHY')
+  for (const p of [b, c, d]) expect(await status(p.id)).toBe('ACTIVE_HEALTHY')
+})
+
+test('a crash-looping service makes the project ACTIVE_UNHEALTHY; repeated applies back off, capped', async () => {
+  const p = await add('ACTIVE_HEALTHY')
+  fake.running(p.ref, 'test')
+  fake.set(p.ref, 'fn', { state: 'restarting' })
+  // three applies of reconcile's own already ran in the last hours, the last one just now
+  for (let i = 0; i < 3; i++) {
+    await pool.query(`insert into control.jobs (type, project_id, lane, status) values ('project.apply', $1, 'light', 'succeeded')`, [p.id])
+  }
+  const r = await reconcileOnce(deps())
+  expect(await status(p.id)).toBe('ACTIVE_UNHEALTHY')
+  expect(r.actions).toContainEqual({ ref: p.ref, action: 'backoff' })
+  expect((await jobsOf(p.id)).filter((j) => j.status === 'pending')).toEqual([])
+  // the fourth waits 4 minutes after the third ended
+  await pool.query(`update control.jobs set updated_at = now() - interval '3 minutes' where project_id = $1`, [p.id])
+  await reconcileOnce(deps())
+  expect((await jobsOf(p.id)).filter((j) => j.status === 'pending')).toEqual([])
+  await pool.query(`update control.jobs set updated_at = now() - interval '5 minutes' where project_id = $1`, [p.id])
+  await reconcileOnce(deps())
+  expect((await jobsOf(p.id)).filter((j) => j.status === 'pending')).toHaveLength(1)
+  // never more than an hour apart, however many failed
+  await pool.query(`delete from control.jobs where project_id = $1`, [p.id])
+  for (let i = 0; i < 20; i++) {
+    await pool.query(`insert into control.jobs (type, project_id, lane, status, updated_at) values ('project.apply', $1, 'light', 'failed', now() - interval '61 minutes')`, [p.id])
+  }
+  await reconcileOnce(deps())
+  expect((await jobsOf(p.id)).filter((j) => j.status === 'pending')).toHaveLength(1)
+})
+
+test("reconcile's finished applies older than a week are deleted; other jobs stay", async () => {
+  const p = await add('ACTIVE_HEALTHY')
+  fake.running(p.ref, 'test')
+  const old = `now() - interval '8 days'`
+  await pool.query(`insert into control.jobs (type, project_id, lane, status, created_at) values
+    ('project.apply', $1, 'light', 'failed', ${old}), ('project.apply', $1, 'light', 'succeeded', now()),
+    ('project.backup', $1, 'heavy', 'succeeded', ${old})`, [p.id])
+  await pool.query(`insert into control.jobs (type, project_id, lane, status, created_at, created_by) values
+    ('project.apply', $1, 'light', 'succeeded', ${old}, gen_random_uuid())`, [p.id])
+  await reconcileOnce(deps())
+  expect((await pool.query('select type, created_by is null as auto from control.jobs where project_id = $1 order by type, auto', [p.id])).rows)
+    .toEqual([{ type: 'project.apply', auto: false }, { type: 'project.apply', auto: true }, { type: 'project.backup', auto: true }])
 })
 
 test('a core detached from the proxy network is attached again', async () => {

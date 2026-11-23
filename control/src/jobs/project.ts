@@ -5,7 +5,7 @@ import { admit, AdmissionError, type Size } from '../admission.ts'
 import { config } from '../config.ts'
 import { forgetCoreIp } from '../core-addr.ts'
 import { ApiError } from '../errors.ts'
-import { allocateHost, hostsOf, releaseHost } from '../hosts.ts'
+import { allocateHost, assertRoutable, hostsOf, releaseHost } from '../hosts.ts'
 import { newRef } from '../ids.ts'
 import { loadProjectEnv } from '../project-env.ts'
 import { generateProjectSecrets } from '../project-secrets.ts'
@@ -97,14 +97,8 @@ const pause = (ms: number) => new Promise((r) => setTimeout(r, ms))
 async function ensure(ctx: JobCtx, recreate: string[] = []) {
   const p = need(ctx)
   const { env, hosts } = await loadProjectEnv(ctx.db, p)
-  // only hosts that came through allocateHost or LEGACY_HOSTNAMES may route under the base domain (one cert each)
-  const base = config.baseDomain.toLowerCase()
-  const slots = new Set((await ctx.db.query('select hostname from control.host_slots where project_id = $1', [p.id])).rows.map((r) => r.hostname))
-  for (const h of hosts) {
-    if ((h === base || h.endsWith(`.${base}`)) && !slots.has(h) && !config.legacyHostnames.includes(h)) {
-      throw new Error(`${h} is under ${base} but holds no host slot and is not a legacy hostname`)
-    }
-  }
+  // every host gets the resolver: only counted ones (a slot, an issued host) or LEGACY_HOSTNAMES may route
+  await assertRoutable(ctx.db, p.id, hosts)
   await ctx.provisioner.ensure({ ref: p.ref, templateVersion: p.template_version ?? config.templateVersion, size: p.size,
     subnet: p.subnet, hosts, env, recreate })
 }

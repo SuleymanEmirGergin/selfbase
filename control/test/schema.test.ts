@@ -80,11 +80,28 @@ describe('control schema', () => {
     expect(v).toEqual([{ value: config.templateVersion }])
   })
 
+  test('every start makes the running release current; existing projects keep theirs until an upgrade', async () => {
+    await pool.query(`update control.settings set value = 'old-release' where key = 'current_template_version'`)
+    await migrate()
+    expect((await pool.query(`select value from control.settings where key = 'current_template_version'`)).rows)
+      .toEqual([{ value: config.templateVersion }])
+  })
+
+  test('the first start records when the control host first reached the resolver; later starts keep it', async () => {
+    await pool.query(`delete from control.settings where key = 'control_host_first_issued_at'`)
+    await migrate()
+    const at = (await pool.query(`select value::timestamptz as at from control.settings where key = 'control_host_first_issued_at'`)).rows[0].at
+    expect(Date.now() - at.getTime()).toBeLessThan(60_000)
+    await pool.query(`update control.settings set value = '2026-01-01T00:00:00Z' where key = 'control_host_first_issued_at'`)
+    await migrate()
+    expect((await pool.query(`select value from control.settings where key = 'control_host_first_issued_at'`)).rows[0].value).toBe('2026-01-01T00:00:00Z')
+  })
+
   test('migrations run twice without error', async () => {
     await migrate()
     await migrate()
     expect((await pool.query(`select count(*)::int as n from control.nodes`)).rows[0].n).toBe(1)
-    expect((await pool.query(`select version from control.migrations order by version`)).rows).toEqual([{ version: '0001' }, { version: '0002' }])
+    expect((await pool.query(`select version from control.migrations order by version`)).rows).toEqual([{ version: '0001' }, { version: '0002' }, { version: '0003' }])
   })
 
   test('0002 and later are safe to run again by hand', async () => {

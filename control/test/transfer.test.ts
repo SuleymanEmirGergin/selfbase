@@ -357,6 +357,9 @@ describe('schedule', () => {
     await pool.query(`delete from control.jobs where type in ('project.backup', 'control.backup')`)
     const a = await project(acme.id, { name: 'sa' })
     const b = await project(acme.id, { name: 'sb' })
+    // a failing certificate probe or one unhealthy service on the night is exactly when a backup matters
+    const coming = await project(acme.id, { name: 'sc', status: 'COMING_UP' })
+    const unhealthy = await project(acme.id, { name: 'su', status: 'ACTIVE_UNHEALTHY' })
     const paused = await project(acme.id, { name: 'sp', status: 'INACTIVE' })
     const busy = await project(acme.id, { name: 'sbusy' })
     await enqueue(pool, { type: 'project.pause', projectId: busy.id, payload: {}, createdBy: null })
@@ -367,6 +370,8 @@ describe('schedule', () => {
     const of = (id: string) => jobs.filter((j) => j.project_id === id).length
     expect(of(a.id)).toBe(1)
     expect(of(b.id)).toBe(1)
+    expect(of(coming.id)).toBe(1)
+    expect(of(unhealthy.id)).toBe(1)
     expect(of(paused.id)).toBe(0)
     expect(of(busy.id)).toBe(0)
     expect(jobs.filter((j) => j.type === 'control.backup')).toHaveLength(1)

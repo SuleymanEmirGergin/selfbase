@@ -6,6 +6,12 @@ import type { Db } from './db.ts'
 import { ApiError } from './errors.ts'
 
 type HostCode = 'new_host_cap' | 'test_host_busy' | 'custom_under_base' | 'legacy_not_allowed' | 'hostname_taken' | 'invalid_hostname'
+  | 'wildcard_dns_refused'
+
+// Wildcard-IP DNS services answer any name with the address written in it (dotted, dashed, hex, ...): every such name
+// draws on the same registered-domain certificate quota the weekly cap protects, so none may be added by hand.
+const WILDCARD_DNS = ['sslip.io', 'nip.io', 'xip.io', 'traefik.me']
+export const isWildcardDns = (h: string) => WILDCARD_DNS.some((d) => h === d || h.endsWith(`.${d}`))
 
 export class HostError extends ApiError {
   details: Record<string, unknown>
@@ -43,6 +49,8 @@ async function issuedThisWeek(db: Db): Promise<Date[]> {
      union all
      select at from (select case when key = 'control_host_first_issued_at' then value::timestamptz end as at from control.settings) s
       where at > now() - interval '7 days'
+     union all
+     select first_issued_at from control.issued_hosts where first_issued_at > now() - interval '7 days'
      order by 1`,
   )).rows
   return rows.map((r) => r.at as Date)
@@ -106,8 +114,9 @@ export async function releaseHost(db: Db, projectId: string): Promise<void> {
 }
 
 /**
- * A legacy or custom hostname for the project. Neither counts against the cap (no slot is made), so a name under
- * BASE_DOMAIN is accepted only when it already holds a certificate (LEGACY_HOSTNAMES).
+ * A legacy or custom hostname for the project. A name under BASE_DOMAIN is accepted only when it already holds a
+ * certificate (LEGACY_HOSTNAMES); any other name gets one from the resolver, so it counts against the weekly cap the
+ * first time it is added (control.issued_hosts). Wildcard-IP DNS names are refused outside BASE_DOMAIN.
  */
 export async function addDomain(db: Db, projectId: string, hostname: string, kind: 'legacy' | 'custom'): Promise<void> {
   const h = hostname.trim().toLowerCase()
@@ -119,7 +128,11 @@ export async function addDomain(db: Db, projectId: string, hostname: string, kin
     throw new HostError('hostname_taken', `${h} is used by selfbase itself. Choose another hostname.`)
   }
   const base = config.baseDomain.toLowerCase()
-  if (h === base || h.endsWith(`.${base}`)) {
+  const underBase = h === base || h.endsWith(`.${base}`)
+  if (!underBase && isWildcardDns(h)) {
+    throw new HostError('wildcard_dns_refused', `${h} is a wildcard-IP DNS name; its certificate would draw on this server's shared quota. Use a hostname of your own domain.`)
+  }
+  if (underBase) {
     if (kind === 'custom') {
       throw new HostError('custom_under_base', `${h} is under ${base}, which selfbase manages itself. Use a hostname of your own domain.`)
     }
@@ -133,8 +146,31 @@ export async function addDomain(db: Db, projectId: string, hostname: string, kin
       'select 1 from control.project_domains where hostname = $1 union all select 1 from control.host_slots where hostname = $1', [h],
     )
     if (taken.rowCount) throw new HostError('hostname_taken', `${h} is already used by a project on this server. Choose another hostname.`)
+    // a name added before (its certificate exists) is not new again
+    if (!config.legacyHostnames.includes(h) && !(await c.query('select 1 from control.issued_hosts where hostname = $1', [h])).rowCount) {
+      await checkCap(c)
+      await c.query('insert into control.issued_hosts (hostname) values ($1)', [h])
+    }
     await c.query('insert into control.project_domains (project_id, hostname, kind) values ($1, $2, $3)', [projectId, h, kind])
   })
+}
+
+/**
+ * The job-side guard before ensure: a host reaches the proxy with the resolver only when it was counted (a slot, an
+ * issued host) or is a LEGACY_HOSTNAMES name, and never a wildcard-IP DNS name outside BASE_DOMAIN.
+ */
+export async function assertRoutable(db: Db, projectId: string, hosts: string[]): Promise<void> {
+  const base = config.baseDomain.toLowerCase()
+  const counted = new Set((await db.query(
+    `select hostname from control.host_slots where project_id = $1 union all select hostname from control.issued_hosts`, [projectId],
+  )).rows.map((r) => r.hostname))
+  for (const h of hosts) {
+    const underBase = h === base || h.endsWith(`.${base}`)
+    if (!underBase && isWildcardDns(h)) throw new Error(`${h} is a wildcard-IP DNS name outside ${base}`)
+    if (!counted.has(h) && !config.legacyHostnames.includes(h)) {
+      throw new Error(`${h} holds no host slot, was never counted as a new host and is not a legacy hostname`)
+    }
+  }
 }
 
 /** Removes a legacy or custom hostname; the default host goes only with releaseHost. True when a row went. */

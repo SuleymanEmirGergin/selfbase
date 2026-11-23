@@ -13,10 +13,19 @@ export type ReconcileReport = { checked: string[]; skipped: string[]; actions: {
 
 const INTERVAL_MS = 30_000
 const BUSY = `exists (select 1 from control.jobs j where j.project_id = p.id and j.status in ('pending', 'running'))`
+// reconcile's own applies (created_by null): a project whose apply keeps failing or whose service keeps dying (an image
+// gone after Coolify's cleanup, a crash loop) is retried after 1, 2, 4 ... 60 minutes, not on every 30 s pass
+const RECENT_APPLIES = `select count(*)::int as n, max(updated_at) as last from control.jobs
+  where project_id = $1 and type = 'project.apply' and created_by is null and created_at > now() - interval '6 hours'`
+const backoffMs = (n: number) => Math.min(60_000 * 2 ** (n - 1), 3_600_000)
+// finished applies reconcile made are history nobody reads after a week: the job table stays bounded
+const PRUNE = `delete from control.jobs where type = 'project.apply' and created_by is null and status in ('succeeded', 'failed')
+  and created_at < now() - interval '7 days'`
 
 export async function reconcileOnce(deps: ReconcileDeps): Promise<ReconcileReport> {
   const probe = deps.probe ?? probeCertificate
   const report: ReconcileReport = { checked: [], skipped: [], actions: [], orphans: [], errors: [] }
+  await deps.db.query(PRUNE)
   const projects = (await deps.db.query(
     `select p.*, ${BUSY} as busy from control.projects p`,
   )).rows as (Project & { busy: boolean })[]
@@ -46,8 +55,13 @@ export async function reconcileOnce(deps: ReconcileDeps): Promise<ReconcileRepor
       }
       // other statuses (INIT_FAILED, *_FAILED, ...) wait for the operator
       if (!DESIRED_RUNNING.includes(p.status)) continue
-      const drift = !s.network || s.services.some((x) => !x.exists || x.state !== 'running' || x.templateVersion !== p.template_version)
+      const drift = !s.network || s.services.some((x) => !x.exists || x.state !== 'running' || x.templateVersion !== p.template_version
+        || x.proxyStale)
       if (drift || !s.controlAttached) {
+        // a service that is missing, exited or restarting: the project is not healthy, whatever the apply does next
+        if (s.services.some((x) => !x.exists || x.state !== 'running') && p.status !== 'ACTIVE_UNHEALTHY') await setStatus('ACTIVE_UNHEALTHY')
+        const recent = (await deps.db.query(RECENT_APPLIES, [p.id])).rows[0]
+        if (recent.n && Date.now() - new Date(recent.last).getTime() < backoffMs(recent.n)) { act('backoff'); continue }
         if (await still(DESIRED_RUNNING)
           && await enqueueIfIdle(deps.db, { type: 'project.apply', projectId: p.id, payload: { recreate: [] }, createdBy: null })) act('apply')
         continue

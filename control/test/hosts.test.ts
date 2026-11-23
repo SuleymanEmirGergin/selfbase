@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { config } from '../src/config.ts'
 import { pool } from '../src/db.ts'
 import { newRef } from '../src/ids.ts'
-import { addDomain, allocateHost, HostError, hostsOf, newHostsThisWeek, releaseHost, removeDomain } from '../src/hosts.ts'
+import { addDomain, allocateHost, assertRoutable, HostError, hostsOf, newHostsThisWeek, releaseHost, removeDomain } from '../src/hosts.ts'
 
 const BASE = config.baseDomain
 let orgId: string
@@ -22,6 +22,7 @@ beforeEach(async () => {
   // the cap counts every slot, so each test starts with none
   await pool.query('delete from control.projects')
   await pool.query('delete from control.host_slots')
+  await pool.query('delete from control.issued_hosts')
   await pool.query(`delete from control.settings where key = 'control_host_first_issued_at'`)
   orgId = (await pool.query(`insert into control.organizations (slug, name) values ($1, 'o') returning id`, [`o-${newRef()}`])).rows[0].id
   n = 0
@@ -119,7 +120,7 @@ describe('domains', () => {
   beforeEach(() => { config.legacyHostnames = [`legacy.${BASE}`] })
   afterEach(() => { config.legacyHostnames = [] })
 
-  test('custom under the base domain is refused; legacy and custom elsewhere do not count', async () => {
+  test('custom under the base domain is refused; a custom name elsewhere counts once, a listed legacy name never', async () => {
     const a = await project()
     await allocateHost(pool, { ...a, pool: 'project' })
     expect((await refusal(addDomain(pool, a.projectId, `shop.${BASE}`, 'custom'))).code).toBe('custom_under_base')
@@ -127,7 +128,11 @@ describe('domains', () => {
     await addDomain(pool, a.projectId, `legacy.${BASE}`, 'legacy')
     await addDomain(pool, a.projectId, 'API.Example.com', 'custom')
     expect(await hostsOf(pool, a.projectId)).toEqual([`${a.ref}.${BASE}`, 'api.example.com', `legacy.${BASE}`])
-    expect(await newHostsThisWeek(pool)).toBe(1)
+    expect(await newHostsThisWeek(pool)).toBe(2)
+    expect(await removeDomain(pool, a.projectId, 'api.example.com')).toBe(true)
+    // its certificate exists: adding it again is not new
+    await addDomain(pool, a.projectId, 'api.example.com', 'custom')
+    expect(await newHostsThisWeek(pool)).toBe(2)
     expect(await removeDomain(pool, a.projectId, 'api.example.com')).toBe(true)
     // the default host is not removed this way
     expect(await removeDomain(pool, a.projectId, `${a.ref}.${BASE}`)).toBe(false)
@@ -184,7 +189,37 @@ describe('domains', () => {
     await addDomain(pool, a.projectId, 'old.example.org', 'legacy')
     await addDomain(pool, a.projectId, `LEGACY.${BASE}`, 'legacy')
     expect(await hostsOf(pool, a.projectId)).toEqual([`legacy.${BASE}`, 'old.example.org'])
+    // unlisted, it gets a certificate from the resolver
+    expect(await newHostsThisWeek(pool)).toBe(1)
+  })
+
+  test('wildcard-IP DNS names are refused outside the base domain, in every notation', async () => {
+    const a = await project()
+    for (const h of ['x.192-0-2-1.sslip.io', 'x.c0000201.sslip.io', 'a.192.0.2.1.sslip.io', 'sslip.io', 'b.10.0.0.1.nip.io', 'app.traefik.me']) {
+      for (const kind of ['legacy', 'custom'] as const) {
+        expect((await refusal(addDomain(pool, a.projectId, h, kind))).code, h).toBe('wildcard_dns_refused')
+      }
+    }
     expect(await newHostsThisWeek(pool)).toBe(0)
+    expect(await hostsOf(pool, a.projectId)).toEqual([])
+  })
+
+  test('custom names are held to the weekly cap', async () => {
+    const a = await project()
+    for (let i = 0; i < config.maxNewHostsPerWeek; i++) await addDomain(pool, a.projectId, `h${i}.example.com`, 'custom')
+    expect((await refusal(addDomain(pool, a.projectId, 'one-more.example.com', 'custom'))).code).toBe('new_host_cap')
+    expect(await hostsOf(pool, a.projectId)).not.toContain('one-more.example.com')
+  })
+
+  test('the job-side guard lets through only counted or listed hosts, never a wildcard-IP name', async () => {
+    const a = await project()
+    const { hostname } = await allocateHost(pool, { ...a, pool: 'project' })
+    await addDomain(pool, a.projectId, 'api.example.com', 'custom')
+    await expect(assertRoutable(pool, a.projectId, [hostname, 'api.example.com', `legacy.${BASE}`])).resolves.toBeUndefined()
+    await expect(assertRoutable(pool, a.projectId, ['sneaked-in.example.com'])).rejects.toThrow(/never counted/)
+    await expect(assertRoutable(pool, a.projectId, [`other.${BASE}`])).rejects.toThrow(/never counted/)
+    await pool.query(`insert into control.issued_hosts (hostname) values ('x.192-0-2-1.sslip.io')`)
+    await expect(assertRoutable(pool, a.projectId, ['x.192-0-2-1.sslip.io'])).rejects.toThrow(/wildcard/)
   })
 })
 
