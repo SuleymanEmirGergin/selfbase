@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync, existsSync, readdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 // config and the storage module read env at import, so set it before loading app (dynamic imports below)
 const base = mkdtempSync(join(tmpdir(), 'sb-storage-'))
@@ -328,5 +328,18 @@ describe('storage', () => {
 
     expect(await (await json('DELETE', `/object/${PRIV}`, tokB, { prefixes: [keep] })).json()).toEqual([])
     expect(existsSync(onDisk(PRIV, keep))).toBe(true)
+  })
+
+  it('a delete removes the folders it leaves empty, up to the first that still holds something', async () => {
+    const dir = dirname(fresh('x'))
+    await upload(PRIV, `${dir}/sub/x.txt`, 'x', tokA)
+    await upload(PRIV, `${dir}/y.txt`, 'y', tokA)
+    await json('DELETE', `/object/${PRIV}`, tokA, { prefixes: [`${dir}/sub/x.txt`] })
+    expect(existsSync(onDisk(PRIV, `${dir}/sub`))).toBe(false)
+    expect(existsSync(onDisk(PRIV, dir))).toBe(true)
+    await json('DELETE', `/object/${PRIV}`, tokA, { prefixes: [`${dir}/y.txt`] })
+    expect(existsSync(onDisk(PRIV, dir))).toBe(false)
+    // a later upload into the same folders recreates them
+    expect((await upload(PRIV, `${dir}/sub/x.txt`, 'again', tokA)).status).toBe(200)
   })
 })

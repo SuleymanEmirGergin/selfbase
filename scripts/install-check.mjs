@@ -109,7 +109,8 @@ if (v('PROJECT_SUBNET_POOL')) {
 const base = v('BASE_DOMAIN').toLowerCase()
 const under = (host) => host === base || host.endsWith(`.${base}`)
 if (v('TEST_HOST') && base && !under(v('TEST_HOST').toLowerCase())) bad('TEST_HOST', 'must end with BASE_DOMAIN')
-if (v('PUBLIC_URL') && base && !under(URL.parse(v('PUBLIC_URL'))?.hostname ?? '')) bad('PUBLIC_URL', 'must be an http(s) URL whose host ends with BASE_DOMAIN')
+// control's router (control/compose.yml) answers selfbase.<BASE_DOMAIN> only: any other host would be a 404 Studio
+if (v('PUBLIC_URL') && base && URL.parse(v('PUBLIC_URL'))?.hostname !== `selfbase.${base}`) bad('PUBLIC_URL', 'must be an http(s) URL whose host is selfbase.<BASE_DOMAIN>')
 
 const mode = v('PROXY_MODE')
 if (mode && mode !== 'coolify' && mode !== 'own') bad('PROXY_MODE', 'must be coolify or own')

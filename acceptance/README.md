@@ -17,6 +17,7 @@ npm run acceptance -w acceptance      # configured only by the variables below
 | `SELFBASE_API_URL` | required | the control URL, e.g. `https://selfbase.<domain>` |
 | `SELFBASE_ACCESS_TOKEN` | required | an `sbp_` access token of a member allowed to run SQL and pause the project |
 | `SELFBASE_PROJECT_REF` | required | the project's ref |
+| `ACCEPTANCE_FULL_CONFIRM` | `full` | the same ref again: `full` pauses the project and writes to it, so it refuses to start without it |
 | `ACCEPTANCE_LOGIN_EMAIL`, `ACCEPTANCE_LOGIN_PASSWORD` | optional | `live`: one sign-in with this account (reported as skipped without them) |
 
 ## Modes

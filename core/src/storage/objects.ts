@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { createReadStream } from 'node:fs'
-import { mkdir, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { dirname } from 'node:path'
+import { mkdir, rename, rm, rmdir, stat, writeFile } from 'node:fs/promises'
+import { dirname, resolve } from 'node:path'
+import { config } from '../config.ts'
 import { Readable } from 'node:stream'
 import { asUser, pool } from '../db.ts'
 import type { JwtClaims } from '../jwt.ts'
@@ -67,7 +68,12 @@ export async function uploadObject(
 
     const tmp = `${file}.${randomUUID()}.tmp`
     try {
-      await writeFile(tmp, data)
+      // a delete of this folder's last object may remove the folder between mkdir and write: make it again once
+      await writeFile(tmp, data).catch(async (err: NodeJS.ErrnoException) => {
+        if (err.code !== 'ENOENT') throw err
+        await mkdir(dirname(file), { recursive: true })
+        await writeFile(tmp, data)
+      })
       await rename(tmp, file)
     } catch (err) {
       await rm(tmp, { force: true })
@@ -144,8 +150,17 @@ export async function removeObjects(claims: JwtClaims | null, bucket: string, na
   for (const row of rows) {
     await rm(resolveObjectPath(bucket, row.name), { force: true })
       .catch((err: NodeJS.ErrnoException) => logLine('error', `storage: unlink failed for ${bucket}/${row.name}: ${err.code}`))
+    await removeEmptyDirs(dirname(resolveObjectPath(bucket, row.name)))
   }
   return rows
+}
+
+/** Folders a delete left empty go, the bucket's own included; rmdir refuses one that still holds something. */
+async function removeEmptyDirs(dir: string) {
+  const root = resolve(config.storageDir)
+  for (; dir !== root && dir.startsWith(root); dir = dirname(dir)) {
+    if (!(await rmdir(dir).then(() => true, () => false))) return
+  }
 }
 
 /** One folder level under prefix, like Supabase's list: files with their row, sub-folders with id null. */

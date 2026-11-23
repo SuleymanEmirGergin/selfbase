@@ -24,6 +24,10 @@ export const env = {
   loginEmail: process.env.ACCEPTANCE_LOGIN_EMAIL ?? '',
   loginPassword: process.env.ACCEPTANCE_LOGIN_PASSWORD ?? '',
 }
+// full pauses the project and writes to it: the ref typed a second time says it is the throw-away one
+if (mode === 'full' && process.env.ACCEPTANCE_FULL_CONFIRM !== env.ref) {
+  throw new Error('ACCEPTANCE_MODE=full pauses and writes to the project: set ACCEPTANCE_FULL_CONFIRM to SELFBASE_PROJECT_REF to confirm')
+}
 
 // *.localhost is loopback (RFC 6761), but Node asks the DNS server for it; a local stack (test/e2e, Traefik's
 // default certificate) is reached only through such names. Nothing changes for any other host.

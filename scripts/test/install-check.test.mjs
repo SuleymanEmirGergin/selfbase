@@ -13,6 +13,9 @@ const SECRET = 'do-not-print-this-secret-value-0123456789'
 // On Linux the secret files must be root:10001, which only root can set: run this file as root there (CI uses sudo,
 // the documented check runs with --user 0)
 const asRoot = process.platform === 'linux' && process.getuid?.() === 0
+// as another user on Linux every secret file is refused (not root-owned): the checks that run the script skip there
+const needsRoot = process.platform === 'linux' && !asRoot && 'on Linux this file runs as root (sudo)'
+const rootTest = (name, opts, fn) => fn ? test(name, { ...opts, skip: opts.skip || needsRoot }, fn) : test(name, { skip: needsRoot }, opts)
 
 const good = {
   BASE_DOMAIN: 'example.test',
@@ -50,12 +53,12 @@ function run(env, { raw, secrets = goodSecrets, extraEnv = {} } = {}) {
   return { status: r.status, out: r.stdout + r.stderr }
 }
 
-test('a complete env file and secrets directory pass', () => {
+rootTest('a complete env file and secrets directory pass', () => {
   const r = run(good)
   assert.equal(r.status, 0, r.out)
 })
 
-test('comments, blank lines, quoted values and inline comments are read like compose does', () => {
+rootTest('comments, blank lines, quoted values and inline comments are read like compose does', () => {
   const raw = `# header\n\n${Object.entries(good).map(([k, v]) => `${k}="${v}"`).join('\n')}\n`
   assert.equal(run(null, { raw }).status, 0)
   // an unquoted value ends before " #": otherwise TEST_HOST would not end with BASE_DOMAIN
@@ -64,7 +67,7 @@ test('comments, blank lines, quoted values and inline comments are read like com
   assert.equal(r.status, 0, r.out)
 })
 
-test('each problem is one line naming the key, never a value', () => {
+rootTest('each problem is one line naming the key, never a value', () => {
   const r = run({ ...good, SURPRISE: SECRET, PROJECT_SUBNET_POOL: '10.207.0.0/24',
     TEST_HOST: 'sb-test.other.test', PUBLIC_URL: 'https://selfbase.other.test' })
   assert.equal(r.status, 1)
@@ -75,7 +78,7 @@ test('each problem is one line naming the key, never a value', () => {
   assert.ok(!r.out.includes(SECRET))
 })
 
-test('the four secrets live in files, not in the env file', () => {
+rootTest('the four secrets live in files, not in the env file', () => {
   const r = run({ ...good, CONTROL_DB_PASSWORD: SECRET, PROVISIONER_TOKEN: SECRET })
   assert.equal(r.status, 1)
   assert.match(r.out, /CONTROL_DB_PASSWORD: .*control_db_password/)
@@ -89,7 +92,7 @@ test('the four secrets live in files, not in the env file', () => {
   assert.equal(spawnSync(process.execPath, [script, join(root, 'control', '.env.example')], { encoding: 'utf8' }).status, 1)
 })
 
-test('the master key must decode to 32 bytes', () => {
+rootTest('the master key must decode to 32 bytes', () => {
   for (const k of [Buffer.alloc(31).toString('base64'), Buffer.alloc(33).toString('base64'), 'not base64 at all']) {
     const r = run(good, { secrets: { ...goodSecrets, master_key: k } })
     assert.equal(r.status, 1)
@@ -98,20 +101,21 @@ test('the master key must decode to 32 bytes', () => {
   }
 })
 
-test('the subnet pool is optional (default 10.207.0.0/16), else a /16 or larger network address', () => {
+rootTest('the subnet pool is optional (default 10.207.0.0/16), else a /16 or larger network address', () => {
   const { PROJECT_SUBNET_POOL, ...rest } = good
   assert.equal(run(rest).status, 0)
   assert.equal(run({ ...good, PROJECT_SUBNET_POOL: '10.0.0.0/8' }).status, 0)
   for (const p of ['10.207.0.0/17', '10.207.1.0/16', '10.207.0.0', '300.1.0.0/16']) assert.equal(run({ ...good, PROJECT_SUBNET_POOL: p }).status, 1, p)
 })
 
-test('settings that must agree with each other', () => {
+rootTest('settings that must agree with each other', () => {
   const bad = (patch, key) => {
     const r = run({ ...good, ...patch })
     assert.equal(r.status, 1, JSON.stringify(patch))
     assert.match(r.out, new RegExp(key))
   }
   bad({ PROXY_MODE: 'nginx' }, 'PROXY_MODE')
+  bad({ PUBLIC_URL: 'https://studio.example.test' }, 'PUBLIC_URL') // control's router answers selfbase.<BASE_DOMAIN> only
   bad({ PROXY_CERTRESOLVER: '' }, 'PROXY_CERTRESOLVER') // coolify needs its resolver
   bad({ PROXY_MODE: 'own' }, 'COMPOSE_PROFILES') // own mode needs the proxy profile
   bad({ BACKUP_HOST_DIR: '/var/backups' }, 'BACKUP_HOST_DIR')
@@ -123,7 +127,7 @@ test('settings that must agree with each other', () => {
   assert.equal(run({ ...good, PROXY_TRAEFIK_MAJOR: '2', COMPOSE_FILE: 'compose.yml:compose.traefik-v2.yml' }).status, 0)
 })
 
-test("DOCKER_SOCKET_GID must be the socket's group when that is not 0", () => {
+rootTest("DOCKER_SOCKET_GID must be the socket's group when that is not 0", () => {
   // inside the control image the socket is not mounted: the documented command passes its group as HOST_DOCKER_SOCKET_GID
   const r = run(good, { extraEnv: { HOST_DOCKER_SOCKET_GID: '998' } })
   assert.equal(r.status, 1)
@@ -132,7 +136,7 @@ test("DOCKER_SOCKET_GID must be the socket's group when that is not 0", () => {
   assert.equal(run(good, { extraEnv: { HOST_DOCKER_SOCKET_GID: '0' } }).status, 0)
 })
 
-test('the env file must be 0600 and the secret files not world-readable on Linux', { skip: process.platform !== 'linux' }, () => {
+rootTest('the env file must be 0600 and the secret files not world-readable on Linux', { skip: process.platform !== 'linux' }, () => {
   const dir = mkdtempSync(join(tmpdir(), 'sb-install-check-'))
   const file = join(dir, '.env')
   writeFileSync(file, Object.entries(good).map(([k, v]) => `${k}=${v}`).join('\n'))
@@ -145,7 +149,7 @@ test('the env file must be 0600 and the secret files not world-readable on Linux
   assert.match(r.stdout + r.stderr, /master_key: mode/)
 })
 
-test('TRUSTED_PROXY_HOSTS takes IP addresses only and PROXY_CONTAINER a plain name', () => {
+rootTest('TRUSTED_PROXY_HOSTS takes IP addresses only and PROXY_CONTAINER a plain name', () => {
   // a name would be resolved by DNS, and any container on the network can carry an alias
   const r = run({ ...good, TRUSTED_PROXY_HOSTS: '10.0.0.5,coolify-proxy', PROXY_CONTAINER: 'a/b' })
   assert.equal(r.status, 1)
