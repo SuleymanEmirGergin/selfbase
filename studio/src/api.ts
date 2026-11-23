@@ -101,7 +101,7 @@ export type ServiceState = {
 }
 export type JobRef = { id: string; type: string; status: Job['status']; step: number; error: string | null }
 export type ProjectDetail = Project & {
-  size: Size; template_version: string; current_template_version: string; urls: { api: string; legacy: string[] }
+  size: Size; template_version: string; current_template_version: string; urls: { api: string | null; legacy: string[] }
   certificate: 'ok' | 'pending'; smtp_configured: boolean; services: ServiceState[]; last_job: JobRef | null
 }
 /** The masked list: anon is a public key and comes in full; service_role is masked until revealed. */

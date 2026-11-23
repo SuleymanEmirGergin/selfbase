@@ -23,14 +23,14 @@ export default function Home() {
           <span className="badge">{p.size}</span>
           {p.certificate === 'pending' && <span className="badge warn">sertifika bekleniyor</span>}
         </div>
-        {p.status === 'INACTIVE' && <Lifecycle />}
+        {(p.status === 'INACTIVE' || p.status === 'RESTORE_FAILED') && <Lifecycle />}
       </Section>
 
       <Section title="Adresler">
         <dl className="kv">
           <div>
             <dt>API adresi</dt>
-            <dd className="secret-row"><code>{p.urls.api}</code><CopyButton text={p.urls.api} /></dd>
+            <dd className="secret-row">{p.urls.api ? <><code>{p.urls.api}</code><CopyButton text={p.urls.api} /></> : 'â€”'}</dd>
           </div>
           {p.urls.legacy.length > 0 && (
             <div>

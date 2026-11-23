@@ -246,7 +246,8 @@ test('import shows ignored and unknown key names and the job steps', async ({ pa
   })
   await page.goto('/import/acme')
   await page.getByLabel('Proje adı').fill('legacy')
-  await page.getByLabel('Yedek dizini').fill('corteqs/2026-11-21T03-15-00Z')
+  await expect(page.getByLabel('Yedek dizini')).toHaveAttribute('placeholder', '<subdir>/YYYYMMDD-HHMMSS')
+  await page.getByLabel('Yedek dizini').fill('import/acme/legacy-v1')
   await page.getByLabel('Env dosyası').setInputFiles({ name: '.env', mimeType: 'text/plain', buffer: Buffer.from('JWT_SECRET=x\n') })
   await page.getByRole('button', { name: 'İçe aktar' }).click()
   await expect(page.getByText('PANEL_ADMIN_PASSWORD_HASH')).toBeVisible()
@@ -255,6 +256,32 @@ test('import shows ignored and unknown key names and the job steps', async ({ pa
   const post = api.calls.find((c) => c.key === 'POST /projects/import')!
   expect(String(post.body)).toContain('name="backup_dir"')
   expect(String(post.body)).toContain('name="env_file"')
+  expect(String(post.body)).not.toContain('name="passphrase"')
+})
+
+test('an export imports with its passphrase and no env file; giving neither or both is refused before sending', async ({ page }) => {
+  const api = await mockApi(page, {
+    ...signedIn(),
+    'POST /projects/import': { status: 202, body: fx('import-created') },
+    'GET /jobs/5b7e0c3d-0000-4000-8000-0000000000f2': { body: fx('job-running') },
+  })
+  await page.goto('/import/acme')
+  await page.getByLabel('Proje adı').fill('restored')
+  await page.getByLabel('Yedek dizini').fill('export-abcdefghijklmnopqrst/20261122-031500')
+  await page.getByRole('button', { name: 'İçe aktar' }).click()
+  await expect(page.getByText(/yalnızca birini/)).toBeVisible()
+  await page.getByLabel('Dışa aktarma parolası').fill('correct horse battery')
+  await page.getByLabel('Env dosyası').setInputFiles({ name: '.env', mimeType: 'text/plain', buffer: Buffer.from('JWT_SECRET=x\n') })
+  await page.getByRole('button', { name: 'İçe aktar' }).click()
+  await expect(page.getByText(/yalnızca birini/)).toBeVisible()
+  expect(api.count('POST /projects/import')).toBe(0)
+  await page.getByLabel('Env dosyası').setInputFiles([])
+  await page.getByRole('button', { name: 'İçe aktar' }).click()
+  await expect(page.getByRole('list', { name: 'Adımlar' })).toBeVisible()
+  const post = String(api.calls.find((c) => c.key === 'POST /projects/import')!.body)
+  expect(post).toContain('name="passphrase"')
+  expect(post).toContain('correct horse battery')
+  expect(post).not.toContain('name="env_file"')
 })
 
 test('audit log and capacity render', async ({ page }) => {

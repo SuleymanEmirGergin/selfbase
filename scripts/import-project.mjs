@@ -2,10 +2,13 @@
 // Imports a v1 install as a new project (spec section 10), over SSH or anywhere control is reachable:
 //   SELFBASE_ACCESS_TOKEN=sbp_... node scripts/import-project.mjs --url https://selfbase.<BASE> --org <slug> \
 //     --name <name> --size micro|small|medium --backup-dir import/<org slug>/<name> --env-file <v1 .env>
+//   ... --backup-dir export-<ref>/<ts> --passphrase -          (an export: its passphrase on stdin, or a file name)
+// --passphrase names where the passphrase is (a file, or - for stdin), never the passphrase itself: argv is visible to
+// every user of the machine. Give exactly one of --env-file and --passphrase.
 // --backup-dir is relative to the host backup directory: a v1 or foreign dump goes in the drop area
 // import/<org slug>/<name> (a v1 backup directory moved there whole); <ref>/<ts> and export-<ref>/<ts> name backups
 // of the organization's own projects. Control refuses anything else.
-// Posts the env file to POST /platform/projects/import (control encrypts its secrets and does not keep the file), then
+// Posts the env file or passphrase to POST /platform/projects/import (control encrypts the secrets, keeps neither), then
 // follows the import job until it ends. Prints the project ref, the job's steps and the names of the env file's keys
 // that were ignored or not recognised; never a value from the env file or the token. Exit 0 when the import succeeded.
 // Node's standard library only, so it also runs inside the control image.
@@ -29,11 +32,13 @@ try {
 async function main() {
   let opts
   try {
-    opts = parseArgs({ options: Object.fromEntries(['url', 'org', 'name', 'size', 'backup-dir', 'env-file'].map((k) => [k, { type: 'string' }])) }).values
+    opts = parseArgs({ options: Object.fromEntries(['url', 'org', 'name', 'size', 'backup-dir', 'env-file', 'passphrase']
+      .map((k) => [k, { type: 'string' }])) }).values
   } catch (e) {
     die(e.message)
   }
-  for (const k of ['url', 'org', 'name', 'size', 'backup-dir', 'env-file']) if (!opts[k]) die(`--${k} is required`)
+  for (const k of ['url', 'org', 'name', 'size', 'backup-dir']) if (!opts[k]) die(`--${k} is required`)
+  if (!opts['env-file'] === !opts.passphrase) die('give exactly one of --env-file (a v1 backup) and --passphrase (an export)')
   const token = process.env.SELFBASE_ACCESS_TOKEN
   if (!token) die('set SELFBASE_ACCESS_TOKEN to a personal access token (sbp_...)')
   const url = URL.parse(opts.url)
@@ -43,18 +48,25 @@ async function main() {
   const base = url.href.replace(/\/+$/, '')
   const headers = { authorization: `Bearer ${token}` }
 
-  let env
-  try {
-    env = readFileSync(opts['env-file'])
-  } catch (e) {
-    die(`cannot read the env file (${e.code ?? e.name})`)
-  }
   const form = new FormData()
   form.set('organization_slug', opts.org)
   form.set('name', opts.name)
   form.set('size', opts.size)
   form.set('backup_dir', opts['backup-dir'])
-  form.set('env_file', new Blob([env]), basename(opts['env-file']))
+  // the error names the code only: a passphrase typed in place of a file name must not be printed back
+  const read = (path, what) => {
+    try {
+      return readFileSync(path === '-' ? 0 : path)
+    } catch (e) {
+      die(`cannot read the ${what} (${e.code ?? e.name})`)
+    }
+  }
+  if (opts['env-file']) form.set('env_file', new Blob([read(opts['env-file'], 'env file')]), basename(opts['env-file']))
+  else {
+    const passphrase = read(opts.passphrase, 'passphrase').toString('utf8').replace(/\r?\n$/, '')
+    if (!passphrase) die('the passphrase is empty')
+    form.set('passphrase', passphrase)
+  }
 
   // control's answers carry codes, messages and key names only
   async function call(method, path, body) {
@@ -75,7 +87,10 @@ async function main() {
   if (started.unknown.length) console.log(`unknown keys (not imported): ${started.unknown.join(', ')}`)
 
   let shown = 0
+  // control gives a restore 6 h; past that the job is stuck, not slow
+  const until = Date.now() + 7 * 3600_000
   for (;;) {
+    if (Date.now() > until) die(`gave up after 7 h; the job goes on in control: GET /platform/jobs/${started.job_id}`)
     const job = await call('GET', `/platform/jobs/${encodeURIComponent(started.job_id)}`)
     for (const e of job.events.slice(shown)) console.log(`  ${e.event}`)
     shown = job.events.length

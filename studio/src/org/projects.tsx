@@ -132,6 +132,13 @@ export function ImportProject({ org, canManage }: OrgProps) {
     e.preventDefault()
     const form = new FormData(e.currentTarget)
     form.set('organization_slug', org.slug)
+    // control takes exactly one: an export's passphrase, or a v1 backup's env file (an empty field is not sent)
+    if (!form.get('passphrase')) form.delete('passphrase')
+    if (!(form.get('env_file') as File | null)?.size) form.delete('env_file')
+    if (form.has('passphrase') === form.has('env_file')) {
+      setError('Dışa aktarılan yedek için parolayı, v1 yedeği için env dosyasını verin: yalnızca birini.')
+      return
+    }
     setBusy(true)
     setError('')
     try {
@@ -149,7 +156,7 @@ export function ImportProject({ org, canManage }: OrgProps) {
         {!canManage ? <div className="note">Bu organizasyonda proje içe aktarma yetkiniz yok.</div>
           : result ? (
             <div className="form">
-              <div className="note">Env dosyasındaki değerler kaydedildi; aşağıda yalnızca anahtar adları var.</div>
+              <div className="note">Anahtarlar şifrelenip kaydedildi; aşağıda yalnızca anahtar adları var.</div>
               <KeyList label="Yok sayılan anahtarlar" keys={result.ignored} />
               <KeyList label="Tanınmayan anahtarlar" keys={result.unknown} />
               <JobSteps jobId={result.job_id} onDone={(j) => setEnded(j.status === 'succeeded')} />
@@ -161,12 +168,18 @@ export function ImportProject({ org, canManage }: OrgProps) {
               <label className="field"><span>Proje adı</span><input name="name" required maxLength={64} autoFocus /></label>
               <SizePicker size={size} setSize={setSize} />
               <label className="field"><span>Yedek dizini</span>
-                <input name="backup_dir" required placeholder="corteqs/2026-11-21T03-15-00Z" className="mono" />
+                <input name="backup_dir" required placeholder="<subdir>/YYYYMMDD-HHMMSS" className="mono" />
+              </label>
+              <p className="muted small">Bu organizasyonun bir yedeği (<code>&lt;ref&gt;/…</code>, <code>export-&lt;ref&gt;/…</code>) ya da
+                {' '}<code>import/{org.slug}/&lt;ad&gt;</code>.</p>
+              <label className="field"><span>Dışa aktarma parolası</span>
+                <input name="passphrase" type="password" autoComplete="off" />
               </label>
               <label className="field"><span>Env dosyası</span>
-                <input name="env_file" type="file" required />
+                <input name="env_file" type="file" />
               </label>
-              <p className="muted small">v1 kurulumunun env dosyası. Değerler sunucuda şifrelenir; dosya saklanmaz.</p>
+              <p className="muted small">Dışa aktarılan bir yedek için parolası, v1 yedeği için kurulumun env dosyası: yalnızca biri.
+                Değerler sunucuda şifrelenir; dosya saklanmaz.</p>
               {error && <ErrorBox message={error} />}
               <div className="row-actions end">
                 <Link className="btn" to={`/org/${org.slug}`}>Vazgeç</Link>

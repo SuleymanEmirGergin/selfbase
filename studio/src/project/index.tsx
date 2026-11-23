@@ -37,7 +37,8 @@ class ChunkBoundary extends Component<{ children: ReactNode }, { failed: boolean
 }
 
 type Screen = { path: string; label: string; icon: string; group?: string; Screen: ComponentType; needs?: Action; data?: true }
-// `data` screens talk to the project's own services, so they are unavailable unless it is ACTIVE_HEALTHY.
+// `data` screens talk to the project's own services, so they are unavailable unless it is ACTIVE_* (control forwards
+// admin calls for an unhealthy project too: SQL is most needed then).
 const SCREENS: Screen[] = [
   { path: 'home', label: 'Ana sayfa', icon: 'folder', Screen: Home },
   { path: 'editor', label: 'Tablolar', icon: 'table', Screen: Tables, data: true },
@@ -75,7 +76,7 @@ export default function ProjectArea({ me, onSignOut }: { me: Me; onSignOut: () =
   }
   if (!ctx) return <div className="boot"><Loading /></div>
 
-  const paused = ctx.project.status !== 'ACTIVE_HEALTHY'
+  const paused = !ctx.project.status.startsWith('ACTIVE_')
   const visible = SCREENS.filter((s) => (!s.needs || ctx.can(s.needs)) && !(paused && s.data))
   const current = SCREENS.find((s) => s.path === sub) ?? SCREENS[0]
   const allowed = !current.needs || ctx.can(current.needs)

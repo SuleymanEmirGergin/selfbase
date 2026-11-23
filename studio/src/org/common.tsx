@@ -35,6 +35,9 @@ const STATUS: Record<string, [string, string]> = {
   UPGRADING: ['Güncelleniyor', 'warn'],
   ACTIVE_UNHEALTHY: ['Sorunlu', 'danger'],
   REMOVED: ['Silindi', ''],
+  INIT_FAILED: ['KurulamadÄ±', 'danger'],
+  RESTORE_FAILED: ['Devam ettirilemedi', 'danger'],
+  REMOVE_FAILED: ['Silinemedi', 'danger'],
 }
 export function StatusBadge({ status }: { status: string }) {
   const [label, kind] = STATUS[status] ?? [status, '']

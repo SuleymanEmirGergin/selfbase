@@ -43,7 +43,8 @@ export function Lifecycle() {
   const { ref, project, can } = useProject()
   const job = useJob()
   if (!can('project.manage')) return null
-  const paused = project.status === 'INACTIVE'
+  // control restores from both (canRestore); a failed restore is retried, not paused
+  const paused = project.status === 'INACTIVE' || project.status === 'RESTORE_FAILED'
   const pause = async () => {
     if (!(await confirmDanger('Proje duraklatılsın mı?', <><code>{project.name}</code> durdurulur; API ve veritabanı devam ettirilene kadar yanıt vermez.</>, 'Duraklat'))) return
     job.start(() => platform.pause(ref))

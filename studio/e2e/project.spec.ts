@@ -263,6 +263,20 @@ test('a project in transition gets no data screens and shows its status', async 
   expect(api.calls.some((c) => c.key.includes('/admin/'))).toBe(false)
 })
 
+test('a failed restore offers Devam ettir with a Turkish status; an unhealthy project keeps SQL', async ({ page }) => {
+  const r = routes()
+  r[`GET /projects/${PAUSED}`] = { body: { ...fx('project-paused'), status: 'RESTORE_FAILED' } }
+  r[`GET ${P}`] = { body: { ...fx('project-detail'), status: 'ACTIVE_UNHEALTHY', urls: { api: null, legacy: [] } } }
+  const api = await mockApi(page, r)
+  await page.goto(`/project/${PAUSED}/home`)
+  await expect(page.getByText('Devam ettirilemedi').first()).toBeVisible()
+  await page.getByRole('button', { name: 'Devam ettir' }).click()
+  await expect.poll(() => api.count(`POST /projects/${PAUSED}/restore`)).toBe(1)
+  await page.goto(`/project/${REF}/home`)
+  await expect(page.getByRole('navigation', { name: 'Ana menü' }).getByRole('link', { name: 'SQL', exact: true })).toBeVisible()
+  await expect(page.getByRole('term').filter({ hasText: 'API adresi' })).toBeVisible()
+})
+
 test('a failed SQL chunk shows a reload hint and keeps the app', async ({ page }) => {
   await mockApi(page, routes())
   await page.route('**/src/project/Sql.tsx*', (route) => route.abort())
