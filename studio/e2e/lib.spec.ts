@@ -1,23 +1,73 @@
 import { expect, test } from '@playwright/test'
-import { ago, nf, pct } from '../src/lib/format.ts'
+import { ago, fmtDate, fmtSize, nf, pct } from '../src/lib/format.ts'
+import { fill, readLocale, saveLocale } from '../src/lib/locale.ts'
 import { nextTheme, readTheme, saveTheme } from '../src/lib/theme.ts'
 import { filterCommands, norm } from '../src/lib/palette.ts'
 import { startUndo } from '../src/lib/undo.ts'
+import { en } from '../src/i18n/en.ts'
+import { tr } from '../src/i18n/tr.ts'
 
 // Plain logic: no page, so Playwright runs these without a browser.
 
-test('tr-TR numbers, percentages and relative times', () => {
-  expect(nf(12408)).toBe('12.408')
-  expect(nf(1255.75, 2)).toBe('1.255,75')
-  expect(pct(0.962)).toBe('%96,2')
+test('numbers, percentages, sizes and relative times follow the locale', () => {
+  expect(nf(12408, 0, 'tr')).toBe('12.408')
+  expect(nf(1255.75, 2, 'tr')).toBe('1.255,75')
+  expect(pct(0.962, 1, 'tr')).toBe('%96,2')
+  expect(nf(12408, 0, 'en')).toBe('12,408')
+  expect(nf(1255.75, 2, 'en')).toBe('1,255.75')
+  expect(pct(0.962, 1, 'en')).toBe('96.2%')
+  // 1024-based, so the units say so (KiB, not KB); a value that rounds up to 1024 moves to the next unit
+  expect(fmtSize(1536, 'tr')).toBe('1,5 KiB')
+  expect(fmtSize(1536, 'en')).toBe('1.5 KiB')
+  expect(fmtSize(1023, 'en')).toBe('1,023 B')
+  expect(fmtSize(1048575, 'en')).toBe('1.0 MiB')
+  expect(fmtSize(5 * 1024 ** 3, 'tr')).toBe('5,0 GiB')
+  expect(fmtSize(undefined, 'en')).toBe('—')
+  expect(fmtDate('not a date', 'en')).toBe('not a date') // a log line with an odd timestamp keeps it
+  expect(fmtDate(null, 'en')).toBe('—')
   const now = Date.parse('2026-11-23T12:00:00Z')
-  expect(ago('2026-11-23T11:59:40Z', now)).toBe('şimdi')
-  expect(ago('2026-11-23T11:57:00Z', now)).toBe('3 dakika önce')
-  expect(ago('2026-11-23T09:00:00Z', now)).toBe('3 saat önce')
-  expect(ago('2026-11-22T12:00:00Z', now)).toBe('dün')
-  expect(ago('2026-11-21T12:00:00Z', now)).toBe('2 gün önce') // not Intl's "evvelsi gün"
-  expect(ago('2026-11-13T12:00:00Z', now)).toBe('10 gün önce')
-  expect(ago(null, now)).toBe('—')
+  expect(ago('2026-11-23T11:59:40Z', now, 'tr')).toBe('şimdi')
+  expect(ago('2026-11-23T11:57:00Z', now, 'tr')).toBe('3 dakika önce')
+  expect(ago('2026-11-23T09:00:00Z', now, 'tr')).toBe('3 saat önce')
+  expect(ago('2026-11-22T12:00:00Z', now, 'tr')).toBe('dün')
+  expect(ago('2026-11-21T12:00:00Z', now, 'tr')).toBe('2 gün önce') // not Intl's "evvelsi gün"
+  expect(ago('2026-11-13T12:00:00Z', now, 'tr')).toBe('10 gün önce')
+  expect(ago(null, now, 'tr')).toBe('—')
+  expect(ago('2026-11-23T11:59:40Z', now, 'en')).toBe('now')
+  expect(ago('2026-11-23T11:57:00Z', now, 'en')).toBe('3 minutes ago')
+  expect(ago('2026-11-22T12:00:00Z', now, 'en')).toBe('yesterday')
+  expect(ago('2026-11-21T12:00:00Z', now, 'en')).toBe('2 days ago')
+})
+
+test('the locale is English unless Turkish was chosen, and a broken storage does not throw', () => {
+  const mem = new Map<string, string>()
+  const store = { getItem: (k: string) => mem.get(k) ?? null, setItem: (k: string, v: string) => void mem.set(k, v) }
+  expect(readLocale(store)).toBe('en')
+  saveLocale(store, 'tr')
+  expect(readLocale(store)).toBe('tr')
+  mem.set('studio-locale', 'de')
+  expect(readLocale(store)).toBe('en')
+  const broken = { getItem: () => { throw new Error('denied') }, setItem: () => { throw new Error('denied') } }
+  expect(readLocale(broken)).toBe('en')
+  expect(() => saveLocale(broken, 'tr')).not.toThrow()
+})
+
+test('messages fill their parameters, format numbers for the locale and pick the English plural', () => {
+  expect(fill('{n} project|{n} projects', { n: 1 }, 'en')).toBe('1 project')
+  expect(fill('{n} project|{n} projects', { n: 2336 }, 'en')).toBe('2,336 projects')
+  expect(fill('{n} proje', { n: 2336 }, 'tr')).toBe('2.336 proje')
+  expect(fill('{used} / {total} GiB', { used: '1,5', total: '12' }, 'tr')).toBe('1,5 / 12 GiB')
+  expect(fill('Role: {email}', { email: 'a@b.test' }, 'en')).toBe('Role: a@b.test')
+  expect(fill('left as is: {x}', undefined, 'en')).toBe('left as is: {x}')
+})
+
+test('the Turkish catalogue has exactly the keys and parameters of the English one', () => {
+  const params = (s: string) => [...new Set(s.match(/\{\w+\}/g) ?? [])].sort().join()
+  expect(Object.keys(tr).sort()).toEqual(Object.keys(en).sort())
+  const keys = Object.keys(en) as (keyof typeof en)[]
+  expect(keys.filter((k) => params(en[k]) !== params(tr[k]))).toEqual([])
+  // Turkish has no plural after a number, so an English "one|other" pair must not leak into it
+  expect(keys.filter((k) => tr[k].includes('|'))).toEqual([])
 })
 
 test('the theme is read back from storage, falls back to the system, and a broken storage does not throw', () => {
@@ -110,4 +160,18 @@ test('the undo timer commits once after the delay, never after an undo', () => {
   d.resume()
   advance(10000)
   expect(commits).toBe(2)
+
+  // flush (sign-out inside the window): commits at once, exactly once, even while paused; nothing after an undo
+  const e = startUndo(5000, () => commits++, () => {}, clock)
+  e.pause()
+  expect(e.flush()).toBe(true)
+  expect(commits).toBe(3)
+  expect(e.flush()).toBe(false)
+  expect(e.undo()).toBe(false)
+  advance(10000)
+  expect(commits).toBe(3)
+  const f = startUndo(5000, () => commits++, () => {}, clock)
+  f.undo()
+  expect(f.flush()).toBe(false)
+  expect(commits).toBe(3)
 })

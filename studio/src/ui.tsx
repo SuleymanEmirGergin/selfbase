@@ -5,12 +5,13 @@ import {
   ArrowClockwiseIcon, ArrowDownIcon, ArrowRightIcon, ArrowUUpLeftIcon, ArrowUpIcon, ArrowUpRightIcon, BracketsCurlyIcon,
   CaretDownIcon, CaretLeftIcon, CaretRightIcon, CaretUpDownIcon, CheckCircleIcon, CheckIcon, CircleDashedIcon, CircleHalfIcon,
   CopyIcon, DatabaseIcon, DownloadSimpleIcon, EnvelopeSimpleIcon, EyeIcon, EyeSlashIcon, FileTextIcon, FlowArrowIcon, FolderSimpleIcon, FunnelSimpleIcon,
-  GaugeIcon, GearSixIcon, HouseIcon, InfoIcon, KeyIcon, LinkSimpleIcon, ListIcon, LockKeyIcon, MagnifyingGlassIcon, MoonIcon, PauseIcon, PlayIcon,
+  GaugeIcon, GearSixIcon, GlobeSimpleIcon, HouseIcon, InfoIcon, KeyIcon, LinkSimpleIcon, ListIcon, LockKeyIcon, MagnifyingGlassIcon, MoonIcon, PauseIcon, PlayIcon,
   PlusIcon, PulseIcon, ScrollIcon, ShieldCheckIcon, SignOutIcon, SparkleIcon, SpinnerGapIcon, SquaresFourIcon, SunIcon, TableIcon,
   TerminalWindowIcon, TrashIcon, TrayIcon, UploadSimpleIcon, UsersIcon, WarningCircleIcon, XCircleIcon, XIcon,
 } from '@phosphor-icons/react'
 import { GLYPHS } from './glyphs.tsx'
 import { startUndo } from './lib/undo.ts'
+import { t } from './i18n/index.ts'
 
 // Small shared pieces: icons, status pills, state views, the side sheet, the confirm dialog and toasts.
 
@@ -26,7 +27,7 @@ const ICONS: Record<string, IconC> = {
   check: CheckIcon, 'check-circle': CheckCircleIcon, 'x-circle': XCircleIcon, undo: ArrowUUpLeftIcon, info: InfoIcon,
   warning: WarningCircleIcon, mail: EnvelopeSimpleIcon, lock: LockKeyIcon, eye: EyeIcon, 'eye-slash': EyeSlashIcon, link: LinkSimpleIcon, braces: BracketsCurlyIcon,
   flow: FlowArrowIcon, database: DatabaseIcon, sparkle: SparkleIcon, spinner: SpinnerGapIcon, dashed: CircleDashedIcon,
-  theme: CircleHalfIcon, funnel: FunnelSimpleIcon, empty: TrayIcon, ...GLYPHS,
+  theme: CircleHalfIcon, globe: GlobeSimpleIcon, funnel: FunnelSimpleIcon, empty: TrayIcon, ...GLYPHS,
 }
 
 /** Phosphor Regular by default; Duotone for active nav and empty states, Bold only at 12 px. */
@@ -52,7 +53,7 @@ export const Dots = ({ fill, n = 32 }: { fill: number; n?: number }) => (
 )
 
 /** A skeleton while data loads; screen readers hear the label. */
-export const Loading = ({ label = 'Yükleniyor…' }: { label?: string }) => (
+export const Loading = ({ label = t('common.loading') }: { label?: string }) => (
   <div className="state loading" role="status">
     <span className="sr-only">{label}</span>
     <span className="sk-block" aria-hidden="true"><span className="sk" /><span className="sk" /><span className="sk short" /></span>
@@ -64,25 +65,28 @@ export const Empty = ({ icon = 'empty', children }: { icon?: string; children: R
     <div>{children}</div>
   </div>
 )
+/** Error text with `code` spans in mono (the server's error code in the generic message). */
+export const errText = (s: string) => s.split(/`([^`]+)`/).map((p, i) => (i % 2 ? <code key={i}>{p}</code> : p))
+
 export const ErrorBox = ({ message, onRetry }: { message: string; onRetry?: () => void }) => (
   <div className="error-box" role="alert">
     <Icon name="warning" />
-    <div className="grow">{message}</div>
-    {onRetry && <button className="btn sm" onClick={onRetry}>Tekrar dene</button>}
+    <div className="grow">{errText(message)}</div>
+    {onRetry && <button className="btn sm" onClick={onRetry}>{t('common.retry')}</button>}
   </div>
 )
 
 /** Copies `text`; the icon turns into a check for a moment. */
-export function Copy({ text, label = 'Kopyala' }: { text: string; label?: string }) {
+export function Copy({ text, label = t('common.copy') }: { text: string; label?: string }) {
   const [ok, setOk] = useState(false)
   const copy = () => navigator.clipboard.writeText(text).then(() => {
     setOk(true)
     setTimeout(() => setOk(false), 1500)
-    toast('Kopyalandı')
-  }, () => toast('Kopyalanamadı', 'error'))
+    toast(t('common.copied'))
+  }, () => toast(t('common.copyFailed'), 'error'))
   return (
     <button type="button" className={`copy ${ok ? 'ok' : ''}`} onClick={copy} aria-label={label} title={label}>
-      <CopyIcon size={13} className="icon a" /><CheckIcon size={13} weight="bold" className="icon b" />
+      <CopyIcon size={13} className="icon a" /><CheckIcon size={12} weight="bold" className="icon b" />
     </button>
   )
 }
@@ -127,7 +131,7 @@ export function Drawer({ title, subtitle, onClose, children, footer }: {
             <h2>{title}</h2>
             {subtitle && <div className="muted mono small">{subtitle}</div>}
           </div>
-          <button className="icon-btn" onClick={onClose} aria-label="Kapat"><Icon name="close" /></button>
+          <button className="icon-btn" onClick={onClose} aria-label={t('common.close')}><Icon name="close" /></button>
         </header>
         <div className="drawer-body">{children}</div>
         {footer && <footer className="drawer-foot">{footer}</footer>}
@@ -140,7 +144,7 @@ type ConfirmReq = { title: string; message: ReactNode; confirmLabel: string; res
 let openConfirm: (r: ConfirmReq) => void = () => {}
 
 /** Asks before a destructive action; resolves true only on the explicit confirm button. */
-export const confirmDanger = (title: string, message: ReactNode, confirmLabel = 'Sil') =>
+export const confirmDanger = (title: string, message: ReactNode, confirmLabel = t('common.delete')) =>
   new Promise<boolean>((resolve) => openConfirm({ title, message, confirmLabel, resolve }))
 
 export function ConfirmHost() {
@@ -160,7 +164,7 @@ export function ConfirmHost() {
           <h2 id="confirm-title">{req.title}</h2>
           <div className="confirm-msg">{req.message}</div>
           <div className="row-actions end">
-            <button className="btn" onClick={() => done(false)} autoFocus>Vazgeç</button>
+            <button className="btn" onClick={() => done(false)} autoFocus>{t('common.cancel')}</button>
             <button className="btn danger" onClick={() => done(true)}>{req.confirmLabel}</button>
           </div>
         </>
@@ -169,20 +173,30 @@ export function ConfirmHost() {
   )
 }
 
-type Toast = { id: number; text: string; kind: 'ok' | 'error' } | { id: number; text: string; kind: 'undo'; body: string; commit: () => void; undo: () => void }
+type Toast = { id: number; text: string; kind: 'ok' | 'error' } | { id: number; text: string; kind: 'undo'; body: string; commit: () => unknown; undo: () => void }
 let pushToast: (t: Toast) => void = () => {}
 let toastId = 0
 export const toast = (text: string, kind: 'ok' | 'error' = 'ok') => pushToast({ id: ++toastId, text, kind })
 /**
- * A reversible action instead of a confirm dialog: `commit` runs after 5 seconds unless "Geri al" is pressed first,
- * in which case `undo` restores what the caller hid. A page closed before then never commits.
+ * A reversible action instead of a confirm dialog: `commit` runs after 5 seconds unless Undo is pressed first, in
+ * which case `undo` restores what the caller hid. Sign-out commits at once and waits for the promise `commit` returns;
+ * a page closed before then never commits (the toast says "Deleting…", not "Deleted").
  */
-export const toastUndo = (text: string, body: string, commit: () => void, undo: () => void) =>
+export const toastUndo = (text: string, body: string, commit: () => unknown, undo: () => void) =>
   pushToast({ id: ++toastId, text, kind: 'undo', body, commit, undo })
 
 const UNDO_MS = 5000
+// pending undo windows; sign-out commits them first, while the session that may send them still exists
+const flushers = new Set<() => void>()
+// committed requests not yet answered, however they were committed (timer, button-less flush): sign-out waits for them
+const inflight = new Set<Promise<unknown>>()
+const track = (p: unknown) => {
+  if (p instanceof Promise) { inflight.add(p); const done = () => { inflight.delete(p) }; p.then(done, done) }
+}
+/** Commits every pending window now; settles when every committed request has been answered. */
+export const flushUndo = () => { flushers.forEach((f) => f()); return Promise.allSettled([...inflight]) }
 
-function UndoToast({ t, close }: { t: Extract<Toast, { kind: 'undo' }>; close: () => void }) {
+function UndoToast({ item, close }: { item: Extract<Toast, { kind: 'undo' }>; close: () => void }) {
   const [left, setLeft] = useState(UNDO_MS / 1000)
   const [held, setHeld] = useState({ focus: false, hover: false })
   const timer = useRef<ReturnType<typeof startUndo> | null>(null)
@@ -201,12 +215,14 @@ function UndoToast({ t, close }: { t: Extract<Toast, { kind: 'undo' }>; close: (
     before.current = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null
     // the only way back is this button: keyboard and screen-reader users land on it at once
     button.current?.focus()
-    timer.current = startUndo(UNDO_MS, () => { t.commit(); finish() }, setLeft)
-    return () => { timer.current?.undo() } // unmounted without an answer: nothing is committed
+    timer.current = startUndo(UNDO_MS, () => { track(item.commit()); finish() }, setLeft)
+    const flush = () => { timer.current?.flush() }
+    flushers.add(flush)
+    return () => { flushers.delete(flush); timer.current?.undo() } // unmounted without an answer: nothing is committed
   }, [])
   const paused = held.focus || held.hover
   useEffect(() => { if (paused) timer.current?.pause(); else timer.current?.resume() }, [paused])
-  const id = `undo-${t.id}`
+  const id = `undo-${item.id}`
   return (
     <div className={`toast${paused ? ' paused' : ''}`} role="status" ref={box}
       onFocus={() => setHeld((h) => ({ ...h, focus: true }))}
@@ -215,13 +231,15 @@ function UndoToast({ t, close }: { t: Extract<Toast, { kind: 'undo' }>; close: (
       onPointerEnter={(e) => e.pointerType === 'mouse' && setHeld((h) => ({ ...h, hover: true }))}
       onPointerLeave={(e) => e.pointerType === 'mouse' && setHeld((h) => ({ ...h, hover: false }))}>
       <span className="ti s-mute"><Icon name="trash" /></span>
-      <span className="tx" id={id}><b>{t.text}</b><span>{t.body}</span></span>
-      <span className="cd" aria-hidden="true">{paused ? 'durdu' : `${left} sn`}</span>
-      {paused && <span className="sr-only">Geri sayım durdu</span>}
-      <button className="btn sm" ref={button} aria-describedby={id} onClick={() => { if (timer.current?.undo()) t.undo(); finish() }}>
-        <Icon name="undo" />Geri al
+      <span className="tx" id={id}><b>{item.text}</b><span>{item.body}</span></span>
+      <span className="cd" aria-hidden="true">{paused ? t('undo.held') : t('undo.seconds', { n: left })}</span>
+      {paused && <span className="sr-only">{t('undo.heldSr')}</span>}
+      <button className="btn sm" ref={button} aria-describedby={id} onClick={() => { if (timer.current?.undo()) item.undo(); finish() }}>
+        <Icon name="undo" />{t('undo.undo')}
       </button>
-      <span className="drain" style={{ animationDuration: `${UNDO_MS}ms` }} aria-hidden="true" />
+      {/* driven by the count, not a CSS clock, so a pause or a slow tick never lets the bar run ahead of the time left */}
+      <span className="drain" aria-hidden="true"
+        style={{ transform: `scaleX(${(paused ? left : left - 1) / (UNDO_MS / 1000)})`, transition: paused ? 'none' : 'transform 1s linear' }} />
     </div>
   )
 }
@@ -237,19 +255,14 @@ export function ToastHost() {
   }, [])
   return (
     <div className="toasts" aria-live="polite">
-      {items.map((t) => t.kind === 'undo' ? <UndoToast key={t.id} t={t} close={() => drop(t.id)} /> : (
-        <div key={t.id} className={`toast ${t.kind}`} role={t.kind === 'error' ? 'alert' : 'status'}>
-          <span className={`ti ${t.kind === 'error' ? 's-err' : 's-ok'}`}><Icon name={t.kind === 'error' ? 'x-circle' : 'check-circle'} /></span>
-          <span className="tx"><b>{t.text}</b></span>
-          <button className="icon-btn sm" onClick={() => drop(t.id)} aria-label="Bildirimi kapat"><Icon name="close" size={14} /></button>
+      {items.map((x) => x.kind === 'undo' ? <UndoToast key={x.id} item={x} close={() => drop(x.id)} /> : (
+        <div key={x.id} className={`toast ${x.kind}`} role={x.kind === 'error' ? 'alert' : 'status'}>
+          <span className={`ti ${x.kind === 'error' ? 's-err' : 's-ok'}`}><Icon name={x.kind === 'error' ? 'x-circle' : 'check-circle'} /></span>
+          <span className="tx"><b>{x.kind === 'error' ? errText(x.text) : x.text}</b></span>
+          <button className="icon-btn sm" onClick={() => drop(x.id)} aria-label={t('toast.dismiss')}><Icon name="close" size={14} /></button>
         </div>
       ))}
     </div>
   )
 }
 
-export const fmtDate = (s: string | null | undefined) =>
-  s ? new Date(s).toLocaleString('tr-TR', { dateStyle: 'short', timeStyle: 'short' }) : '—'
-
-export const fmtSize = (n: number | undefined) =>
-  n === undefined ? '—' : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`

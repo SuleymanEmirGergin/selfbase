@@ -4,7 +4,8 @@ import { errMsg } from '../api.ts'
 import { useAdmin, useCan } from './context.ts'
 import type { Policy, Relation } from '../api.ts'
 import { Drawer, Empty, ErrorBox, Icon, Loading, confirmDanger, toast } from '../ui.tsx'
-import { RlsBadge, SchemaSelect, hasRls } from './Tables.tsx'
+import { RlsBadge, SchemaSelect, hasRls, kindLabel } from './Tables.tsx'
+import { rich, t } from '../i18n/index.ts'
 
 const COMMANDS = ['ALL', 'SELECT', 'INSERT', 'UPDATE', 'DELETE']
 
@@ -15,7 +16,7 @@ export default function Policies() {
   const [search, setSearch] = useState('')
   const [adding, setAdding] = useState<string | null>(null)
   const [tick, setTick] = useState(0)
-  const reload = () => setTick((t) => t + 1)
+  const reload = () => setTick((n) => n + 1)
   const api = useAdmin()
   const canWrite = useCan()('project.write')
 
@@ -27,78 +28,77 @@ export default function Policies() {
     return () => { live = false }
   }, [schema, tick])
 
-  const setRls = async (t: Relation, enabled: boolean) => {
-    if (!enabled && !(await confirmDanger('RLS kapatılsın mı?',
-      <><code>{t.schema}.{t.name}</code> için RLS kapatılırsa policy'ler devre dışı kalır ve tabloya erişimi olan her rol tüm satırları görebilir.</>,
-      'RLS kapat'))) return
+  const setRls = async (rel: Relation, enabled: boolean) => {
+    if (!enabled && !(await confirmDanger(t('rls.disableConfirm'),
+      rich('rls.disableMsg', { table: <code>{rel.schema}.{rel.name}</code> }),
+      t('rls.disableBtn')))) return
     try {
-      await api.setRls(t.schema, t.name, enabled)
-      toast(enabled ? `RLS açıldı: ${t.name}` : `RLS kapatıldı: ${t.name}`)
+      await api.setRls(rel.schema, rel.name, enabled)
+      toast(t(enabled ? 'rls.enabled' : 'rls.disabled', { table: rel.name }))
       reload()
     } catch (e) { toast(errMsg(e), 'error') }
   }
 
   const drop = async (p: Policy) => {
-    if (!(await confirmDanger('Policy silinsin mi?', <><code>{p.schema}.{p.table}</code> tablosundaki <code>{p.name}</code> policy'si silinecek.</>))) return
+    if (!(await confirmDanger(t('rls.dropConfirm'), rich('rls.dropMsg', { policy: <code>{p.name}</code>, table: <code>{p.schema}.{p.table}</code> })))) return
     try {
       await api.dropPolicy(p.schema, p.table, p.name)
-      toast('Policy silindi')
+      toast(t('rls.dropped'))
       reload()
     } catch (e) { toast(errMsg(e), 'error') }
   }
 
-  const tables = data?.tables.filter((t) => t.name.toLowerCase().includes(search.toLowerCase())) ?? []
-  const off = data?.tables.filter((t) => hasRls(t) && !t.rls_enabled).length ?? 0
+  const tables = data?.tables.filter((x) => x.name.toLowerCase().includes(search.toLowerCase())) ?? []
+  const off = data?.tables.filter((x) => hasRls(x) && !x.rls_enabled).length ?? 0
 
   return (
     <section className="page-main">
       <div className="toolbar">
-        <h1 className="title">RLS policy'leri</h1>
+        <h1 className="title">{t('rls.title')}</h1>
         <div className="spacer" />
         <SchemaSelect value={schema} onChange={(s) => { setSchema(s); setData(null) }} />
         <label className="search">
           <Icon name="search" size={14} />
-          <input type="search" placeholder="Tablo ara" aria-label="Tablo ara" value={search} onChange={(e) => setSearch(e.target.value)} />
+          <input type="search" placeholder={t('tables.search')} aria-label={t('tables.search')} value={search} onChange={(e) => setSearch(e.target.value)} />
         </label>
       </div>
       <div className="scroll-area">
         {error ? <ErrorBox message={error} onRetry={reload} />
           : !data ? <Loading />
-          : !data.tables.length ? <Empty>Bu şemada tablo yok.</Empty>
+          : !data.tables.length ? <Empty>{t('tables.noTables')}</Empty>
           : (
             <>
               {off > 0 && (
                 <div className="warn-banner" role="note">
-                  <strong>{off} tabloda RLS kapalı.</strong> RLS kapalı bir tabloda policy'ler hiç uygulanmaz: tabloda yetkisi olan
-                  her rol (anon ve authenticated dahil) bütün satırları okuyup değiştirebilir. Bu tablolar için RLS'i açın ve gereken policy'leri ekleyin.
+                  <strong>{t('rls.offCount', { n: off })}</strong> {t('rls.offText')}
                 </div>
               )}
-              {!tables.length && <Empty>Eşleşen tablo yok.</Empty>}
-              {tables.map((t) => {
-                const ps = data.policies.filter((p) => p.table === t.name)
-                if (!hasRls(t)) return (
-                  <article key={t.name} className="card" aria-label={t.name}>
+              {!tables.length && <Empty>{t('tables.noMatch')}</Empty>}
+              {tables.map((rel) => {
+                const ps = data.policies.filter((p) => p.table === rel.name)
+                if (!hasRls(rel)) return (
+                  <article key={rel.name} className="card" aria-label={rel.name}>
                     <header className="card-head">
-                      <h2 className="mono">{t.name}</h2>
-                      <RlsBadge rel={t} />
+                      <h2 className="mono">{rel.name}</h2>
+                      <RlsBadge rel={rel} />
                     </header>
-                    <p className="card-empty muted">Bu bir {t.relkind === 'f' ? 'yabancı tablo' : 'görünüm'}; RLS ve policy tanımlanamaz.</p>
+                    <p className="card-empty muted">{t('rls.noRls', { kind: kindLabel(rel.relkind) })}</p>
                   </article>
                 )
                 return (
-                  <article key={t.name} className={`card ${t.rls_enabled ? '' : 'card-danger'}`} aria-label={t.name}>
+                  <article key={rel.name} className={`card ${rel.rls_enabled ? '' : 'card-danger'}`} aria-label={rel.name}>
                     <header className="card-head">
-                      <h2 className="mono">{t.name}</h2>
-                      <RlsBadge rel={t} />
-                      <span className="muted small">{ps.length} policy</span>
+                      <h2 className="mono">{rel.name}</h2>
+                      <RlsBadge rel={rel} />
+                      <span className="muted small">{t('rls.policyCount', { n: ps.length })}</span>
                       <div className="spacer" />
                       {canWrite && <>
-                        <button role="switch" aria-checked={t.rls_enabled} className="switch" onClick={() => setRls(t, !t.rls_enabled)}
-                          aria-label={`${t.name} için RLS`}>
+                        <button role="switch" aria-checked={rel.rls_enabled} className="switch" onClick={() => setRls(rel, !rel.rls_enabled)}
+                          aria-label={t('rls.switch', { table: rel.name })}>
                           <span className="switch-track"><span className="switch-thumb" /></span>
-                          {t.rls_enabled ? 'RLS açık' : 'RLS kapalı'}
+                          {t(rel.rls_enabled ? 'rls.on' : 'rls.off')}
                         </button>
-                        <button className="btn sm" onClick={() => setAdding(t.name)}><Icon name="plus" size={14} />Policy ekle</button>
+                        <button className="btn sm" onClick={() => setAdding(rel.name)}><Icon name="plus" size={14} />{t('rls.add')}</button>
                       </>}
                     </header>
                     {ps.length ? (
@@ -112,7 +112,7 @@ export default function Policies() {
                               <span className="mono small muted">{p.roles.join(', ')}</span>
                               <div className="spacer" />
                               {canWrite && (
-                                <button className="icon-btn danger" onClick={() => drop(p)} aria-label={`${p.name} policy'sini sil`} title="Sil">
+                                <button className="icon-btn danger" onClick={() => drop(p)} aria-label={t('rls.dropOf', { policy: p.name })} title={t('common.delete')}>
                                   <Icon name="trash" />
                                 </button>
                               )}
@@ -126,7 +126,7 @@ export default function Policies() {
                       </ul>
                     ) : (
                       <p className="card-empty muted">
-                        {t.rls_enabled ? 'Policy yok. RLS açık olduğundan tablo sahibi ve service_role dışında kimse satırlara erişemez.' : 'Policy yok.'}
+                        {t(rel.rls_enabled ? 'rls.noneOn' : 'rls.none')}
                       </p>
                     )}
                   </article>
@@ -148,7 +148,7 @@ function PolicyDrawer({ tables, table, onClose, onSaved }: {
 }) {
   const [f, setF] = useState({ table, name: '', command: 'ALL', roles: 'public', using: '', check: '' })
   // the schema always comes from the relation the form names, never from the current selector
-  const schema = tables.find((t) => t.name === f.table)!.schema
+  const schema = tables.find((x) => x.name === f.table)!.schema
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const api = useAdmin()
@@ -166,7 +166,7 @@ function PolicyDrawer({ tables, table, onClose, onSaved }: {
         using: noUsing ? undefined : f.using.trim() || undefined,
         check: noCheck ? undefined : f.check.trim() || undefined,
       })
-      toast('Policy eklendi')
+      toast(t('rls.added'))
       onSaved()
     } catch (err) {
       setError(errMsg(err))
@@ -175,31 +175,31 @@ function PolicyDrawer({ tables, table, onClose, onSaved }: {
   }
 
   return (
-    <Drawer title="Policy ekle" subtitle={`${schema}.${f.table}`} onClose={onClose}
-      footer={<><div className="spacer" /><button type="button" className="btn" onClick={onClose}>Vazgeç</button>
-        <button className="btn primary" form="policy-form" disabled={busy}>{busy ? 'Kaydediliyor…' : 'Kaydet'}</button></>}>
+    <Drawer title={t('rls.add')} subtitle={`${schema}.${f.table}`} onClose={onClose}
+      footer={<><div className="spacer" /><button type="button" className="btn" onClick={onClose}>{t('common.cancel')}</button>
+        <button className="btn primary" form="policy-form" disabled={busy}>{t(busy ? 'common.saving' : 'common.save')}</button></>}>
       <form id="policy-form" className="form" onSubmit={save}>
-        <label className="field"><span>Ad</span>
-          <input required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="ör. kendi satırlarını okur" />
+        <label className="field"><span>{t('common.name')}</span>
+          <input required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder={t('rls.namePlaceholder')} />
         </label>
-        <label className="field"><span>Tablo</span>
+        <label className="field"><span>{t('rls.table')}</span>
           <select value={f.table} onChange={(e) => setF({ ...f, table: e.target.value })}>
-            {tables.map((t) => <option key={t.name}>{t.name}</option>)}
+            {tables.map((x) => <option key={x.name}>{x.name}</option>)}
           </select>
         </label>
-        <label className="field"><span>Komut</span>
+        <label className="field"><span>{t('rls.command')}</span>
           <select value={f.command} onChange={(e) => setF({ ...f, command: e.target.value })}>
             {COMMANDS.map((c) => <option key={c}>{c}</option>)}
           </select>
         </label>
-        <label className="field"><span>Roller <span className="muted">(virgülle ayırın)</span></span>
+        <label className="field"><span>{t('rls.roles')} <span className="muted">{t('rls.rolesHint')}</span></span>
           <input className="mono" required value={f.roles} onChange={(e) => setF({ ...f, roles: e.target.value })} placeholder="authenticated, anon" />
         </label>
-        <label className="field"><span>USING {noUsing && <span className="muted">· INSERT için kullanılmaz</span>}</span>
+        <label className="field"><span>USING {noUsing && <span className="muted">{t('rls.notFor', { cmd: 'INSERT' })}</span>}</span>
           <textarea className="mono" rows={3} disabled={noUsing} value={f.using} onChange={(e) => setF({ ...f, using: e.target.value })}
             placeholder="auth.uid() = user_id" />
         </label>
-        <label className="field"><span>WITH CHECK {noCheck && <span className="muted">· {f.command} için kullanılmaz</span>}</span>
+        <label className="field"><span>WITH CHECK {noCheck && <span className="muted">{t('rls.notFor', { cmd: f.command })}</span>}</span>
           <textarea className="mono" rows={3} disabled={noCheck} value={f.check} onChange={(e) => setF({ ...f, check: e.target.value })}
             placeholder="auth.uid() = user_id" />
         </label>

@@ -2,6 +2,10 @@ import { expect, test } from '@playwright/test'
 import type { Page } from '@playwright/test'
 import { REF, fx, mockApi, routes } from './helpers.ts'
 
+// These specs match the Turkish copy, so they run in Turkish; i18n.spec.ts covers the English default.
+const inTurkish = () => localStorage.setItem('studio-locale', 'tr')
+test.beforeEach(({ page }) => page.addInitScript(inTurkish))
+
 // v3 shell behaviour: theme switch, Ctrl+K palette, the undo toast and keyboard focus order.
 
 const theme = (page: Page) => page.evaluate(() => document.documentElement.dataset.theme)
@@ -28,6 +32,7 @@ test('the sign-in art is hidden from assistive tech, its only control is the vid
 
 test('under reduced motion the sign-in panel shows only the still: no video, no light passes', async ({ browser }) => {
   const ctx = await browser.newContext({ reducedMotion: 'reduce' })
+  await ctx.addInitScript(inTurkish)
   const page = await ctx.newPage()
   await mockApi(page, signedOut)
   await page.goto('/sign-in')
@@ -55,6 +60,11 @@ test('the video toggle is reachable by keyboard, pauses to the still and stays p
   await expect(page.locator('.si-left .a-art')).not.toHaveClass(/has-vid/)
   await expect(page.locator('.si-left .sheen')).toHaveCount(0)
   await expect(page.locator('.si-left .gl-c.done')).toHaveCount(4)
+  // the still is still: no hover glow, and the drift holds where it is instead of jumping back to the start
+  await page.locator('.si-left .a-panel').hover()
+  expect(await page.locator('.si-left .torch').evaluate((e) => getComputedStyle(e).display)).toBe('none')
+  expect(await page.locator('.si-left .a-art').evaluate((e) => { const s = getComputedStyle(e); return [s.animationName, s.animationPlayState] }))
+    .toEqual(['drift', 'paused'])
 
   await page.reload()
   await expect(play).toBeVisible()
@@ -68,6 +78,7 @@ test('the video toggle is reachable by keyboard, pauses to the still and stays p
 test('a phone strip or Data Saver gets the still only: no video element, no toggle, no video request', async ({ browser }) => {
   for (const opts of [{ viewport: { width: 390, height: 844 } }, { saveData: true }]) {
     const ctx = await browser.newContext('viewport' in opts ? opts : {})
+    await ctx.addInitScript(inTurkish)
     const page = await ctx.newPage()
     if ('saveData' in opts) await page.addInitScript(() => Object.defineProperty(navigator, 'connection', { value: { saveData: true } }))
     const media: string[] = []
@@ -81,6 +92,37 @@ test('a phone strip or Data Saver gets the still only: no video element, no togg
     expect(media).toEqual([])
     await ctx.close()
   }
+})
+
+test('at tablet width (800 px) sign-in stacks: the art is a band above a full-width form, and there is no video', async ({ browser }) => {
+  const ctx = await browser.newContext({ viewport: { width: 800, height: 900 } })
+  await ctx.addInitScript(inTurkish)
+  const page = await ctx.newPage()
+  await mockApi(page, signedOut)
+  await page.goto('/sign-in')
+  const art = await page.locator('.si-left .a-panel').boundingBox()
+  const form = await page.locator('.si-form').boundingBox()
+  expect(art!.y + art!.height).toBeLessThanOrEqual(form!.y)
+  expect(form!.width).toBeGreaterThan(400)
+  await expect(page.locator('.si-left video')).toHaveCount(0)
+  await ctx.close()
+})
+
+test('a hidden tab stops the sample pipeline; showing it again starts it', async ({ page }) => {
+  await mockApi(page, signedOut)
+  await page.goto('/sign-in')
+  await expect(page.locator('.si-left video')).toHaveCount(1)
+  const done = page.locator('.si-left .gl-c.done')
+  const setHidden = (hidden: boolean) => page.evaluate((h) => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => h })
+    document.dispatchEvent(new Event('visibilitychange'))
+  }, hidden)
+  await setHidden(true)
+  const k = await done.count()
+  await page.waitForTimeout(1600) // more than one step (1.5 s): a running ticker would have moved
+  await expect(done).toHaveCount(k)
+  await setHidden(false)
+  await expect.poll(() => done.count(), { timeout: 10_000 }).not.toBe(k)
 })
 
 test('turning reduced motion on while the page is open stops the video and the pipeline', async ({ page }) => {
@@ -103,9 +145,10 @@ test('on sign-in, keyboard focus starts and stays in the form', async ({ page })
   const order: string[] = []
   for (let i = 0; i < 4; i++) {
     await page.keyboard.press('Tab')
-    order.push(await page.evaluate(() => { const el = document.activeElement as HTMLElement; return (el.getAttribute('aria-label') || el.textContent || el.getAttribute('type') || '').trim() }))
+    order.push(await page.evaluate(() => { const el = document.activeElement as HTMLInputElement; return (el.getAttribute('aria-label') || el.labels?.[0]?.textContent || el.textContent || '').trim() }))
   }
-  expect(order).toEqual(['Şifremi unuttum', 'password', 'Karakterleri göster', 'Giriş yap'])
+  // the forgot link comes after the password field and its show toggle, not between e-mail and password
+  expect(order).toEqual(['Şifre', 'Karakterleri göster', 'Şifremi unuttum', 'Giriş yap'])
 })
 
 test('the theme follows the system first, then the switch, and the choice survives a reload', async ({ page }) => {
@@ -127,6 +170,7 @@ test('the theme follows the system first, then the switch, and the choice surviv
 
 test('a light system with nothing stored starts light; reduced motion switches without the reveal', async ({ browser }) => {
   const ctx = await browser.newContext({ colorScheme: 'light', reducedMotion: 'reduce' })
+  await ctx.addInitScript(inTurkish)
   const page = await ctx.newPage()
   await mockApi(page, routes())
   await page.goto('/org/acme')
@@ -182,18 +226,19 @@ test('Ctrl+K opens the palette; search ignores Turkish letters, arrows and Enter
 })
 
 test('deleting a row waits five seconds; Geri al keeps it and nothing is sent', async ({ page }) => {
+  await page.clock.install() // the 5 s undo window runs on a fake clock, not real waits
   const api = await mockApi(page, routes())
   await page.goto(`/project/${REF}/editor`)
   const row = page.getByRole('row').filter({ hasText: 'ilk sürüm yayında' })
 
   await row.click()
   await page.getByRole('dialog', { name: 'Satırı düzenle' }).getByRole('button', { name: 'Sil' }).click()
-  const toast = page.getByRole('status').filter({ hasText: 'Satır silindi' })
+  const toast = page.getByRole('status').filter({ hasText: 'Satır siliniyor' })
   await expect(toast).toContainText('public.notes · id=2')
   await expect(row).toHaveCount(0)
   await toast.getByRole('button', { name: 'Geri al' }).click()
   await expect(row).toHaveCount(1)
-  await page.waitForTimeout(5600)
+  await page.clock.runFor(5600)
   expect(api.count(`DELETE /projects/${REF}/admin/rows/public/notes`)).toBe(0)
 
   await row.click()
@@ -202,19 +247,21 @@ test('deleting a row waits five seconds; Geri al keeps it and nothing is sent', 
   // focus lands on Geri al and holds the count: nothing is sent while the toast keeps it
   await expect(toast.getByRole('button', { name: 'Geri al' })).toBeFocused()
   await expect(toast).toContainText('durdu')
-  await page.waitForTimeout(5600)
+  await page.clock.runFor(5600)
   expect(api.count(`DELETE /projects/${REF}/admin/rows/public/notes`)).toBe(0)
   await page.getByRole('heading', { level: 1 }).click() // moving on resumes the count
   await expect(toast).toContainText(/\d sn/)
-  await page.waitForTimeout(2000)
+  await page.clock.runFor(2000)
   expect(api.count(`DELETE /projects/${REF}/admin/rows/public/notes`)).toBe(0) // still inside the window
-  await expect.poll(() => api.count(`DELETE /projects/${REF}/admin/rows/public/notes`), { timeout: 6000 }).toBe(1)
+  await page.clock.runFor(3600)
+  await expect.poll(() => api.count(`DELETE /projects/${REF}/admin/rows/public/notes`)).toBe(1)
   expect(api.calls.find((c) => c.key.startsWith('DELETE'))!.body).toEqual({ pk: { id: 2 } })
-  await expect(page.getByRole('status').filter({ hasText: 'Satır silindi' })).toHaveCount(0)
+  await expect(page.getByRole('status').filter({ hasText: 'Satır siliniyor' })).toHaveCount(0)
   await expect(row).toHaveCount(0)
 })
 
 test('a keyboard delete puts focus on Geri al; Enter there keeps the row and nothing is sent', async ({ page }) => {
+  await page.clock.install() // the 5 s undo window runs on a fake clock, not real waits
   const api = await mockApi(page, routes())
   await page.goto(`/project/${REF}/editor`)
   const row = page.getByRole('row').filter({ hasText: 'ilk sürüm yayında' })
@@ -225,29 +272,31 @@ test('a keyboard delete puts focus on Geri al; Enter there keeps the row and not
   await sheet.getByRole('button', { name: 'Sil' }).focus()
   await page.keyboard.press('Enter')
 
-  const toast = page.getByRole('status').filter({ hasText: 'Satır silindi' })
+  const toast = page.getByRole('status').filter({ hasText: 'Satır siliniyor' })
   const undo = toast.getByRole('button', { name: 'Geri al' })
   await expect(row).toHaveCount(0)
   await expect(undo).toBeFocused()
   // a screen reader hears what Geri al would bring back
-  await expect(undo).toHaveAccessibleDescription(/Satır silindi.*public\.notes · id=2/)
+  await expect(undo).toHaveAccessibleDescription(/Satır siliniyor….*public\.notes · id=2/)
   await page.keyboard.press('Enter')
   await expect(row).toHaveCount(1)
   await expect(toast).toHaveCount(0)
   await expect(row).toBeFocused() // back where the delete started
-  await page.waitForTimeout(5600)
+  await page.clock.runFor(5600)
   expect(api.count(`DELETE /projects/${REF}/admin/rows/public/notes`)).toBe(0)
 })
 
 test('a tap on the undo toast does not hold the delete; a mouse hover does, and says so to a screen reader', async ({ browser }) => {
   const ctx = await browser.newContext({ hasTouch: true })
+  await ctx.addInitScript(inTurkish)
   const page = await ctx.newPage()
+  await page.clock.install() // the 5 s undo window runs on a fake clock, not real waits
   const api = await mockApi(page, routes())
   const DEL = `DELETE /projects/${REF}/admin/rows/public/notes`
   await page.goto(`/project/${REF}/editor`)
   await page.getByRole('row').filter({ hasText: 'ilk sürüm yayında' }).click()
   await page.getByRole('dialog', { name: 'Satırı düzenle' }).getByRole('button', { name: 'Sil' }).click()
-  const toast = page.getByRole('status').filter({ hasText: 'Satır silindi' })
+  const toast = page.getByRole('status').filter({ hasText: 'Satır siliniyor' })
   await expect(toast.getByText('Geri sayım durdu')).toHaveCount(1) // focus holds it: announced in the live region
   await page.getByRole('heading', { level: 1 }).tap() // focus leaves: the count runs
   await expect(toast.getByText('Geri sayım durdu')).toHaveCount(0)
@@ -259,10 +308,11 @@ test('a tap on the undo toast does not hold the delete; a mouse hover does, and 
   await expect(toast).not.toContainText('durdu')
   await toast.locator('.tx').hover() // a real mouse does hold it
   await expect(toast).toContainText('durdu')
-  await page.waitForTimeout(5600)
+  await page.clock.runFor(5600)
   expect(api.count(DEL)).toBe(0)
   await page.mouse.move(700, 40)
-  await expect.poll(() => api.count(DEL), { timeout: 6500 }).toBe(1)
+  await page.clock.runFor(5600)
+  await expect.poll(() => api.count(DEL)).toBe(1)
   await ctx.close()
 })
 
@@ -287,7 +337,7 @@ test('keyboard focus runs skip link, sidebar, top bar, then the page; the skip l
   await page.goto('/org/acme')
   await expect(page.getByRole('heading', { name: 'Projeler' })).toBeVisible()
   const names: string[] = []
-  for (let i = 0; i < 15; i++) {
+  for (let i = 0; i < 16; i++) {
     await page.keyboard.press('Tab')
     names.push(await page.evaluate(() => {
       const el = document.activeElement as HTMLElement
@@ -296,7 +346,7 @@ test('keyboard focus runs skip link, sidebar, top bar, then the page; the skip l
   }
   expect(names).toEqual([
     'İçeriğe geç', 'Organizasyon',
-    'Projeler', 'Üyeler', 'Erişim belirteçleri', 'Denetim kaydı', 'Kapasite',
+    'Projeler', 'Üyeler', 'Erişim belirteçleri', 'Denetim kaydı', 'Kapasite', 'Dil',
     'Çıkış', 'Acme', 'Ara veya komut çalıştır…CtrlK', 'Temayı değiştir',
     'Yenile', 'İçe aktar', 'Yeni proje', expect.stringContaining('Tümü'),
   ])
@@ -306,4 +356,155 @@ test('keyboard focus runs skip link, sidebar, top bar, then the page; the skip l
   await expect(page.getByRole('link', { name: 'İçeriğe geç' })).toBeFocused()
   await page.keyboard.press('Enter')
   await expect(page.locator('main.content')).toBeFocused()
+})
+
+test('two quick theme switches land back on the first theme', async ({ page }) => {
+  await mockApi(page, routes())
+  await page.goto('/org/acme')
+  await expect(page.getByRole('heading', { name: 'Projeler' })).toBeVisible()
+  expect(await theme(page)).toBe('dark')
+  // two presses in one task: the second comes before the first reveal has swapped the theme
+  await page.evaluate(() => { for (let i = 0; i < 2; i++) dispatchEvent(new KeyboardEvent('keydown', { key: 'L', ctrlKey: true, shiftKey: true })) })
+  await page.waitForTimeout(1200) // both reveals done
+  expect(await theme(page)).toBe('dark')
+  expect(await page.evaluate(() => localStorage.getItem('studio-theme'))).toBe('dark')
+})
+
+test('global shortcuts leave an open sheet and the editor alone', async ({ page }) => {
+  await mockApi(page, routes())
+  await page.goto(`/project/${REF}/editor`)
+  await page.getByRole('row').filter({ hasText: 'ilk sürüm yayında' }).click()
+  await expect(page.getByRole('dialog', { name: 'Satırı düzenle' })).toBeVisible()
+  await page.keyboard.press('Control+K')
+  await expect(page.getByRole('combobox', { name: 'Komut ara' })).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('dialog', { name: 'Satırı düzenle' })).toHaveCount(0)
+
+  // in the SQL editor Ctrl+Shift+L is CodeMirror's "select all matches", not the theme switch
+  await page.goto(`/project/${REF}/sql`)
+  const before = await theme(page)
+  await page.getByRole('textbox', { name: 'SQL sorgusu' }).click()
+  await page.keyboard.press('Control+Shift+L')
+  await page.waitForTimeout(900) // longer than the reveal
+  expect(await theme(page)).toBe(before)
+})
+
+test('a row deleted, then the table left and opened again inside the window, stays hidden until the delete lands', async ({ page }) => {
+  await page.clock.install()
+  const api = await mockApi(page, routes())
+  const DEL = `DELETE /projects/${REF}/admin/rows/public/notes`
+  await page.goto(`/project/${REF}/editor`)
+  const row = page.getByRole('row').filter({ hasText: 'ilk sürüm yayında' })
+  await row.click()
+  await page.getByRole('dialog', { name: 'Satırı düzenle' }).getByRole('button', { name: 'Sil' }).click()
+  await expect(row).toHaveCount(0)
+  await page.getByRole('link', { name: 'SQL' }).click()
+  await page.getByRole('link', { name: 'Tablolar' }).click()
+  await expect(page.getByRole('row').filter({ hasText: 'merhaba studio' })).toHaveCount(1)
+  await expect(row).toHaveCount(0) // remounted view: still hidden
+  await page.getByRole('heading', { level: 1 }).click() // focus leaves the toast: the count runs
+  await page.clock.runFor(5600)
+  await expect.poll(() => api.count(DEL)).toBe(1)
+  await expect(row).toHaveCount(0) // and gone for good: the list was read again after the delete
+})
+test('signing out inside the undo window sends the delete first, while the session still exists', async ({ page }) => {
+  await page.clock.install()
+  const r = routes()
+  const order: string[] = []
+  const del = r[`DELETE /projects/${REF}/admin/rows/public/notes`] as (req: import('@playwright/test').Request) => { body?: unknown }
+  r[`DELETE /projects/${REF}/admin/rows/public/notes`] = (req) => { order.push('delete'); return del(req) }
+  r['POST /logout'] = () => { order.push('logout'); return { body: {} } }
+  await mockApi(page, r)
+  await page.goto(`/project/${REF}/editor`)
+  await page.getByRole('row').filter({ hasText: 'ilk sürüm yayında' }).click()
+  await page.getByRole('dialog', { name: 'Satırı düzenle' }).getByRole('button', { name: 'Sil' }).click()
+  await expect(page.getByRole('status').filter({ hasText: 'Satır siliniyor' })).toBeVisible()
+  await page.getByRole('button', { name: 'Çıkış' }).click()
+  await expect.poll(() => order).toEqual(['delete', 'logout'])
+})
+
+// the server must have answered the DELETE before logout ends the session, not just have seen it first
+const slowDelete = async (page: Page, ms: number, order: string[], beforeSignOut?: () => Promise<unknown>) => {
+  const r = routes()
+  const key = `DELETE /projects/${REF}/admin/rows/public/notes`
+  const del = r[key] as (req: import('@playwright/test').Request) => { body?: unknown }
+  r[key] = (req) => { order.push('delete'); setTimeout(() => order.push('deleted'), ms); return { ...del(req), delay: ms } }
+  r['POST /logout'] = () => { order.push('logout'); return { body: {} } }
+  await mockApi(page, r)
+  await page.goto(`/project/${REF}/editor`)
+  await page.getByRole('row').filter({ hasText: 'ilk sürüm yayında' }).click()
+  await page.getByRole('dialog', { name: 'Satırı düzenle' }).getByRole('button', { name: 'Sil' }).click()
+  await beforeSignOut?.()
+  await page.getByRole('button', { name: 'Çıkış' }).click()
+}
+
+test('sign-out waits for the server to answer the pending delete before it logs out', async ({ page }) => {
+  await page.clock.install()
+  const order: string[] = []
+  await slowDelete(page, 1500, order)
+  await expect.poll(() => order).toEqual(['delete', 'deleted', 'logout'])
+})
+
+test('sign-out waits at most 3 seconds for a pending delete', async ({ page }) => {
+  await page.clock.install()
+  const order: string[] = []
+  await slowDelete(page, 20_000, order)
+  await expect.poll(() => order).toEqual(['delete'])
+  await page.clock.runFor(3100)
+  await expect.poll(() => order).toEqual(['delete', 'logout'])
+})
+
+test('the undo drain bar follows the count: held, it stops at the second shown; running, it drains toward the next', async ({ page }) => {
+  await page.clock.install()
+  await mockApi(page, routes())
+  await page.goto(`/project/${REF}/editor`)
+  await page.getByRole('row').filter({ hasText: 'ilk sürüm yayında' }).click()
+  await page.getByRole('dialog', { name: 'Satırı düzenle' }).getByRole('button', { name: 'Sil' }).click()
+  const drain = page.locator('.toast .drain')
+  await expect(drain).toHaveAttribute('style', /scaleX\(1\)/) // focus on Undo holds it at 5 of 5
+  await page.getByRole('heading', { level: 1 }).click()
+  await expect(drain).toHaveAttribute('style', /scaleX\(0\.8\)/) // running: toward 4 of 5 over the next second
+  await page.clock.runFor(1000)
+  await expect(drain).toHaveAttribute('style', /scaleX\(0\.6\)/)
+})
+
+test('the undo toast sits above the table pager, so Previous and Next stay usable', async ({ page }) => {
+  await mockApi(page, routes())
+  await page.goto(`/project/${REF}/editor`)
+  await page.getByRole('row').filter({ hasText: 'ilk sürüm yayında' }).click()
+  await page.getByRole('dialog', { name: 'Satırı düzenle' }).getByRole('button', { name: 'Sil' }).click()
+  const toast = await page.locator('.toast').boundingBox()
+  const pager = await page.locator('.pager').boundingBox()
+  expect(toast!.y + toast!.height).toBeLessThanOrEqual(pager!.y)
+})
+
+test('the keyboard focus ring survives Windows forced colors (an outline, not only a shadow)', async ({ page }) => {
+  await page.emulateMedia({ forcedColors: 'active' })
+  await mockApi(page, routes())
+  await page.goto(`/project/${REF}/editor`)
+  await page.getByRole('heading', { level: 1 }).click()
+  await page.keyboard.press('Tab')
+  const ring = await page.evaluate(() => { const s = getComputedStyle(document.activeElement!); return `${s.outlineStyle} ${s.outlineWidth}` })
+  expect(ring).toBe('solid 2px')
+})
+
+test('a second sign-out click while the delete is out still waits, and logs out once', async ({ page }) => {
+  await page.clock.install()
+  const order: string[] = []
+  await slowDelete(page, 1500, order)
+  await page.getByRole('button', { name: 'Çıkış' }).click()
+  await expect.poll(() => order).toEqual(['delete', 'deleted', 'logout'])
+  await page.waitForTimeout(300)
+  expect(order).toEqual(['delete', 'deleted', 'logout'])
+})
+
+test('a delete its own timer sent just before sign-out is waited for too', async ({ page }) => {
+  await page.clock.install()
+  const order: string[] = []
+  await slowDelete(page, 1500, order, async () => {
+    await page.getByRole('heading', { level: 1 }).click() // focus leaves the toast: the count runs
+    await page.clock.runFor(5600)
+    await expect.poll(() => order).toEqual(['delete'])
+  })
+  await expect.poll(() => order).toEqual(['delete', 'deleted', 'logout'])
 })

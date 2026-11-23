@@ -2,8 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { errMsg, platform } from '../api.ts'
 import type { Job, OrgRef, Size } from '../api.ts'
-import { Copy, Icon, Status } from '../ui.tsx'
+import { Copy, Icon, Status, errText } from '../ui.tsx'
 import type { Tone } from '../ui.tsx'
+import { has, t } from '../i18n/index.ts'
+import type { Key } from '../i18n/index.ts'
 
 /** Organization screens get the current organization; `canManage` gates create, import and member actions. */
 export type OrgProps = { org: OrgRef; canManage: boolean; email: string }
@@ -28,34 +30,16 @@ export const SIZES: Record<Size, Record<string, number>> = {
 }
 export const sizeMb = (s: Size) => Object.values(SIZES[s]).reduce((a, b) => a + b, 0)
 
-const STATUS: Record<string, [string, Tone]> = {
-  ACTIVE_HEALTHY: ['Çalışıyor', 'ok'],
-  COMING_UP: ['Başlatılıyor', 'warn'],
-  INACTIVE: ['Duraklatıldı', 'mute'],
-  RESTORING: ['Geri yükleniyor', 'warn'],
-  UPGRADING: ['Güncelleniyor', 'warn'],
-  ACTIVE_UNHEALTHY: ['Sorunlu', 'err'],
-  REMOVED: ['Silindi', 'mute'],
-  INIT_FAILED: ['Kurulamadı', 'err'],
-  RESTORE_FAILED: ['Devam ettirilemedi', 'err'],
-  REMOVE_FAILED: ['Silinemedi', 'err'],
+const TONE: Record<string, Tone> = {
+  ACTIVE_HEALTHY: 'ok', COMING_UP: 'warn', INACTIVE: 'mute', RESTORING: 'warn', UPGRADING: 'warn',
+  ACTIVE_UNHEALTHY: 'err', REMOVED: 'mute', INIT_FAILED: 'err', RESTORE_FAILED: 'err', REMOVE_FAILED: 'err',
 }
-export const statusTone = (status: string): Tone => STATUS[status]?.[1] ?? 'mute'
+export const statusTone = (status: string): Tone => TONE[status] ?? 'mute'
+/** The status in the current language; an unknown one (a newer server) as it came. */
+export const statusLabel = (status: string) => { const k = `status.${status}`; return has(k) ? t(k) : status }
 export function StatusBadge({ status }: { status: string }) {
-  const [label, tone] = STATUS[status] ?? [status, 'mute']
-  return <Status tone={tone} live={tone === 'ok' || tone === 'warn'} title={status}>{label}</Status>
-}
-
-const STEP: Record<string, string> = {
-  allocate: 'Ağ ve adres ayrılıyor',
-  secrets: 'Anahtarlar üretiliyor',
-  ensure: 'Konteynerler kuruluyor',
-  healthy: 'Servislerin hazır olması bekleniyor',
-  certificate: 'Sertifika bekleniyor',
-  activate: 'Etkinleştiriliyor',
-  stop: 'Servisler durduruluyor',
-  restore: 'Yedek geri yükleniyor',
-  start: 'Servisler başlatılıyor',
+  const tone = statusTone(status)
+  return <Status tone={tone} live={tone === 'ok' || tone === 'warn'} title={status}>{statusLabel(status)}</Status>
 }
 
 /** Polls a job every second until it ends; shows each step as done, running or waiting. */
@@ -84,10 +68,10 @@ export function JobSteps({ jobId, onDone }: { jobId: string; onDone?: (job: Job)
     return () => { stopped = true; clearTimeout(timer) }
   }, [jobId])
 
-  if (!job) return error ? <div className="error-box" role="alert">{error}</div> : <div className="muted small">İş başlatılıyor…</div>
+  if (!job) return error ? <div className="error-box" role="alert">{errText(error)}</div> : <div className="muted small">{t('job.starting')}</div>
   return (
     <div className="job">
-      <ol className="steps" aria-label="Adımlar">
+      <ol className="steps" aria-label={t('job.steps')}>
         {job.steps.map((s, i) => {
           const state = job.status === 'succeeded' || i < job.step ? 'done' : i === job.step ? (job.status === 'failed' ? 'failed' : 'running') : 'waiting'
           return (
@@ -96,14 +80,15 @@ export function JobSteps({ jobId, onDone }: { jobId: string; onDone?: (job: Job)
                 <Icon name={{ done: 'check', running: 'spinner', failed: 'close', waiting: 'dashed' }[state]} size={state === 'done' ? 12 : 15}
                   weight={state === 'done' ? 'bold' : undefined} />
               </span>
-              <span className="t"><b>{s}</b><small>{STEP[s] ?? s}</small></span>
-              <span className="sr-only">{{ done: 'tamam', running: 'sürüyor', failed: 'başarısız', waiting: 'bekliyor' }[state]}</span>
+              {/* the step in words first; the raw id after it, small, for whoever reads the server logs */}
+              <span className="t">{has(`step.${s}`) ? <><b>{t(`step.${s}` as Key)}</b><small className="mono">{s}</small></> : <b className="mono">{s}</b>}</span>
+              <span className="sr-only">{t(`job.${state}`)}</span>
             </li>
           )
         })}
       </ol>
-      {job.status === 'failed' && <div className="error-box" role="alert">{job.error || 'İş başarısız oldu.'}</div>}
-      {error && <div className="muted small">{error}</div>}
+      {job.status === 'failed' && <div className="error-box" role="alert">{job.error || t('job.failedMsg')}</div>}
+      {error && <div className="muted small">{errText(error)}</div>}
     </div>
   )
 }

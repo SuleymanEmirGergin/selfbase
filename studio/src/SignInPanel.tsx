@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { CSSProperties, PointerEvent } from 'react'
 import { Icon, Status } from './ui.tsx'
 import { Brand } from './glyphs.tsx'
+import { rich, t } from './i18n/index.ts'
 
 // Left half of the pages reachable without a session: sign-in direction A, "Malzeme" (sdd signin-v4.html?v=a).
 // Self-contained so another direction can replace it without touching the forms. The art is decorative and aria-hidden:
@@ -19,7 +20,7 @@ const media = (q: string) => [
   () => matchMedia(q).matches,
 ] as const
 const REDUCE = media('(prefers-reduced-motion: reduce)')
-const NARROW = media('(max-width: 760px)') // the stacked layout in styles.css
+const NARROW = media('(max-width: 900px)') // the stacked layout in styles.css
 const subscribeVisible = (cb: () => void) => { document.addEventListener('visibilitychange', cb); return () => document.removeEventListener('visibilitychange', cb) }
 const saveData = () => (navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData === true
 const readPaused = () => { try { return sessionStorage.getItem(PAUSE_KEY) === '1' } catch { return false } }
@@ -81,21 +82,21 @@ export function SignInPanel() {
         </div>
         <Brand />
         <div className="a-hero">
-          <p className="si-title">Verin senin.<br /><span className="serif">Sunucun</span> da.</p>
+          <p className="si-title">{t('signin.line1')}<br />{rich('signin.line2', { server: <span className="serif">{t('signin.server')}</span> })}</p>
           <div className="placard">
-            <div className="t">Eloksallı alüminyum, makro</div>
-            <div className="m">Her dağıtım adımında ışık yüzeyden bir kez geçer.</div>
-            <div className="no"><span className="micro">Dağıtım</span><b>örnek</b></div>
+            <div className="t">{t('signin.placardTitle')}</div>
+            <div className="m">{t('signin.placardText')}</div>
+            <div className="no"><span className="micro">{t('signin.deploy')}</span><b>{t('signin.sample')}</b></div>
             <div className="live">
-              <Status tone={ok ? 'ok' : 'warn'} live={!ok}>{ok ? 'Sağlıklı' : 'Dağıtılıyor'}</Status>
+              <Status tone={ok ? 'ok' : 'warn'} live={!ok}>{t(ok ? 'signin.healthy' : 'signin.deploying')}</Status>
               <span className="gl-p">
                 {STEPS.map((s, i) => {
                   const st = i < k ? 'done' : i === k ? 'running' : ''
                   return (
                     <span key={s} style={{ display: 'contents' }}>
-                      {i > 0 && <Icon name="caret-right" size={10} weight="bold" />}
+                      {i > 0 && <Icon name="caret-right" size={12} />}
                       <span className={`gl-c ${st}`}>
-                        <span className="gi"><Icon name={st === 'done' ? 'check' : st === 'running' ? 'spinner' : 'dashed'} size={10} weight="bold" /></span>{s}
+                        <span className="gi"><Icon name={st === 'done' ? 'check' : st === 'running' ? 'spinner' : 'dashed'} size={12} weight="bold" /></span>{s}
                       </span>
                     </span>
                   )
@@ -106,8 +107,8 @@ export function SignInPanel() {
         </div>
       </div>
       {canVideo && (
-        <button type="button" className="a-toggle" onClick={toggle} aria-label={paused ? 'Videoyu oynat' : 'Videoyu durdur'}>
-          <Icon name={paused ? 'play' : 'pause'} size={14} weight="fill" />
+        <button type="button" className="a-toggle" onClick={toggle} aria-label={t(paused ? 'signin.play' : 'signin.pause')}>
+          <Icon name={paused ? 'play' : 'pause'} size={12} weight="bold" />
         </button>
       )}
     </div>

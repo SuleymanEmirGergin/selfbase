@@ -5,8 +5,10 @@ import { platform, projectAdmin } from '../api.ts'
 import type { Me } from '../api.ts'
 import { Link, navigate, usePath } from '../router.tsx'
 import { Shell } from '../shell.tsx'
-import { ErrorBox, Icon, Loading } from '../ui.tsx'
-import { useLoad } from '../org/common.tsx'
+import { ErrorBox, Icon, Loading, Status } from '../ui.tsx'
+import { statusLabel, statusTone, useLoad } from '../org/common.tsx'
+import { t, upper } from '../i18n/index.ts'
+import type { Key } from '../i18n/index.ts'
 import { Ctx, can, projectRole } from './context.ts'
 import type { Action, ProjectCtx } from './context.ts'
 import { Paused } from './parts.tsx'
@@ -30,26 +32,26 @@ class ChunkBoundary extends Component<{ children: ReactNode }, { failed: boolean
     if (!this.state.failed) return this.props.children
     return (
       <div className="error-box" role="alert">
-        <div>Bu ekran yüklenemedi; Studio güncellenmiş olabilir. Sayfayı yenileyin.</div>
-        <button className="btn sm" onClick={() => location.reload()}>Sayfayı yenileyin</button>
+        <div>{t('project.chunkFailed')}</div>
+        <button className="btn sm" onClick={() => location.reload()}>{t('project.reload')}</button>
       </div>
     )
   }
 }
 
-type Screen = { path: string; label: string; icon: string; group?: string; Screen: ComponentType; needs?: Action; data?: true; preview?: true }
+type Screen = { path: string; label: Key; icon: string; group?: Key; Screen: ComponentType; needs?: Action; data?: true; preview?: true }
 // `data` screens talk to the project's own services, so they are unavailable unless it is ACTIVE_* (control forwards
 // admin calls for an unhealthy project too: SQL is most needed then).
 const SCREENS: Screen[] = [
-  { path: 'home', label: 'Ana sayfa', icon: 'home', Screen: Home },
-  { path: 'editor', label: 'Tablolar', group: 'Veritabanı', icon: 'table', Screen: Tables, data: true },
-  { path: 'sql', label: 'SQL', group: 'Veritabanı', icon: 'terminal', Screen: Sql, needs: 'project.sql', data: true },
-  { path: 'policies', label: 'RLS', group: 'Veritabanı', icon: 'shield', Screen: Policies, data: true },
-  { path: 'auth/users', label: 'Kullanıcılar', group: 'Uygulama', icon: 'g-auth', Screen: Users, data: true },
-  { path: 'storage', label: 'Dosyalar', group: 'Uygulama', icon: 'g-storage', Screen: Files, data: true },
-  { path: 'sites', label: 'Siteler', group: 'Uygulama', icon: 'g-sites', Screen: Sites, preview: true },
-  { path: 'logs', label: 'Günlükler', group: 'Uygulama', icon: 'pulse', Screen: Logs },
-  { path: 'settings', label: 'Ayarlar', group: 'Uygulama', icon: 'gear', Screen: Settings },
+  { path: 'home', label: 'nav.home', icon: 'home', Screen: Home },
+  { path: 'editor', label: 'nav.tables', group: 'nav.groupDb', icon: 'table', Screen: Tables, data: true },
+  { path: 'sql', label: 'nav.sql', group: 'nav.groupDb', icon: 'terminal', Screen: Sql, needs: 'project.sql', data: true },
+  { path: 'policies', label: 'nav.rls', group: 'nav.groupDb', icon: 'shield', Screen: Policies, data: true },
+  { path: 'auth/users', label: 'nav.users', group: 'nav.groupApp', icon: 'g-auth', Screen: Users, data: true },
+  { path: 'storage', label: 'nav.files', group: 'nav.groupApp', icon: 'g-storage', Screen: Files, data: true },
+  { path: 'sites', label: 'nav.sites', group: 'nav.groupApp', icon: 'g-sites', Screen: Sites, preview: true },
+  { path: 'logs', label: 'nav.logs', group: 'nav.groupApp', icon: 'pulse', Screen: Logs },
+  { path: 'settings', label: 'nav.settings', group: 'nav.groupApp', icon: 'gear', Screen: Settings },
 ]
 
 export default function ProjectArea({ me, onSignOut }: { me: Me; onSignOut: () => void }) {
@@ -68,9 +70,9 @@ export default function ProjectArea({ me, onSignOut }: { me: Me; onSignOut: () =
   if (error) {
     return (
       <main className="login"><div className="login-card">
-        <h1>Proje açılamadı</h1>
+        <h1>{t('project.openFailed')}</h1>
         <ErrorBox message={error} onRetry={reload} />
-        <Link to="/" className="btn">Projelere dön</Link>
+        <Link to="/" className="btn">{t('notFound.back')}</Link>
       </div></main>
     )
   }
@@ -89,16 +91,17 @@ export default function ProjectArea({ me, onSignOut }: { me: Me; onSignOut: () =
       <Shell
         email={me.email} onSignOut={onSignOut}
         switcher={
-          <Link to={orgBase} className="switcher" title="Projelere dön">
-            <span className="avatar" aria-hidden="true">{ctx.project.name.slice(0, 1).toUpperCase()}</span>
+          <Link to={orgBase} className="switcher" title={t('notFound.back')}>
+            <span className="avatar" aria-hidden="true">{upper(ctx.project.name.slice(0, 1))}</span>
             <span className="t"><b>{ctx.project.name}</b><span>{ref}{ctx.org ? ` · ${ctx.org.name}` : ''}</span></span>
+            <Status tone={statusTone(ctx.project.status)} title={statusLabel(ctx.project.status)}><span className="sr-only">{statusLabel(ctx.project.status)}</span></Status>
             <Icon name="caret-up-down" />
           </Link>
         }
-        nav={visible.map((s) => ({ to: `${base}/${s.path}`, label: s.label, icon: s.icon, group: s.group, active: s === current, preview: s.preview }))}
-        crumbs={[...(ctx.org ? [{ label: ctx.org.name, to: orgBase }] : []), { label: ctx.project.name, to: `${base}/home` }, { label: current.label }]}
-        commands={[{ label: 'Projelere dön', hint: ctx.org?.name, icon: 'projects', group: 'Gezinme', run: () => navigate(orgBase) }]}>
-        {!allowed ? <div className="state">Bu ekran için yetkiniz yok.</div>
+        nav={visible.map((s) => ({ to: `${base}/${s.path}`, label: t(s.label), icon: s.icon, group: s.group && t(s.group), active: s === current, preview: s.preview }))}
+        crumbs={[...(ctx.org ? [{ label: ctx.org.name, to: orgBase }] : []), { label: ctx.project.name, to: `${base}/home` }, { label: t(current.label) }]}
+        commands={[{ label: t('notFound.back'), hint: ctx.org?.name, icon: 'projects', group: t('palette.groupNav'), run: () => navigate(orgBase) }]}>
+        {!allowed ? <div className="state">{t('project.noAccess')}</div>
           : paused && current.data ? <Paused />
           : <ChunkBoundary key={`${ref}/${current.path}`}><Suspense fallback={<Loading />}><Screen /></Suspense></ChunkBoundary>}
       </Shell>

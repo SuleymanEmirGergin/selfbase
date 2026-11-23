@@ -27,5 +27,7 @@ export function startUndo(ms: number, commit: () => void, onTick: (left: number)
     undo: () => { if (!open) return false; open = false; stop(); return true },
     pause: () => { paused = true; stop() },
     resume: () => { if (!paused) return; paused = false; if (open) id = clock.set(tick, Math.min(1000, ms)) },
+    /** commit now (sign-out inside the window); true when it was still pending */
+    flush: () => { if (!open) return false; open = false; stop(); commit(); return true },
   }
 }

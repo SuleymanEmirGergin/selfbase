@@ -3,7 +3,8 @@ import type { FormEvent } from 'react'
 import { errMsg } from '../api.ts'
 import { useAdmin, useCan } from './context.ts'
 import type { Bucket, FileEntry } from '../api.ts'
-import { Empty, ErrorBox, Icon, Loading, confirmDanger, fmtDate, fmtSize, toast } from '../ui.tsx'
+import { Empty, ErrorBox, Icon, Loading, confirmDanger, toast } from '../ui.tsx'
+import { fmtDate, fmtSize, rich, t } from '../i18n/index.ts'
 
 /** Admin API listing cap (core/src/admin/files.ts passes limit 1000). */
 const LIST_CAP = 1000
@@ -33,20 +34,20 @@ export default function Files() {
     e.preventDefault()
     try {
       const b = await api.createBucket(newId.trim(), newPublic)
-      toast(`Bucket oluşturuldu: ${b.id}`)
+      toast(t('files.created', { id: b.id }))
       setNewId('')
       setBucket(b.id)
-      setTick((t) => t + 1)
+      setTick((n) => n + 1)
     } catch (err) { toast(errMsg(err), 'error') }
   }
 
   return (
     <div className="split">
-      <aside className="subnav" aria-label="Bucket'lar">
-        <div className="subnav-head"><div className="subnav-title">Bucket'lar</div></div>
-        {bucketsErr ? <ErrorBox message={bucketsErr} onRetry={() => setTick((t) => t + 1)} />
+      <aside className="subnav" aria-label={t('files.buckets')}>
+        <div className="subnav-head"><div className="subnav-title">{t('files.buckets')}</div></div>
+        {bucketsErr ? <ErrorBox message={bucketsErr} onRetry={() => setTick((n) => n + 1)} />
           : !buckets ? <Loading />
-          : !buckets.length ? <Empty>Henüz bucket yok.</Empty>
+          : !buckets.length ? <Empty>{t('files.none')}</Empty>
           : (
             <ul className="list">
               {buckets.map((b) => (
@@ -54,19 +55,19 @@ export default function Files() {
                   <button className={b.id === bucket ? 'active' : undefined} onClick={() => setBucket(b.id)} aria-current={b.id === bucket}>
                     <Icon name="folder" size={14} />
                     <span className="list-name">{b.id}</span>
-                    {b.public && <span className="badge">herkese açık</span>}
+                    {b.public && <span className="badge">{t('files.public')}</span>}
                   </button>
                 </li>
               ))}
             </ul>
           )}
         {canWrite && <form className="new-bucket" onSubmit={create}>
-          <input aria-label="Yeni bucket adı" placeholder="yeni-bucket" className="mono" required value={newId} onChange={(e) => setNewId(e.target.value)} />
-          <label className="check"><input type="checkbox" checked={newPublic} onChange={(e) => setNewPublic(e.target.checked)} />Herkese açık</label>
-          <button className="btn sm"><Icon name="plus" size={14} />Bucket oluştur</button>
+          <input aria-label={t('files.newName')} placeholder={t('files.newPlaceholder')} className="mono" required value={newId} onChange={(e) => setNewId(e.target.value)} />
+          <label className="check"><input type="checkbox" checked={newPublic} onChange={(e) => setNewPublic(e.target.checked)} />{t('files.publicCheck')}</label>
+          <button className="btn sm"><Icon name="plus" size={14} />{t('files.create')}</button>
         </form>}
       </aside>
-      {bucket ? <BucketView key={bucket} bucket={bucket} /> : <section className="page-main">{buckets && <Empty>Soldan bir bucket seçin ya da oluşturun.</Empty>}</section>}
+      {bucket ? <BucketView key={bucket} bucket={bucket} /> : <section className="page-main">{buckets && <Empty>{t('files.pick')}</Empty>}</section>}
     </div>
   )
 }
@@ -79,7 +80,7 @@ function BucketView({ bucket }: { bucket: string }) {
   const [uploading, setUploading] = useState(false)
   const [tick, setTick] = useState(0)
   const input = useRef<HTMLInputElement>(null)
-  const reload = () => setTick((t) => t + 1)
+  const reload = () => setTick((n) => n + 1)
   const api = useAdmin()
   const canWrite = useCan()('project.write')
 
@@ -98,7 +99,7 @@ function BucketView({ bucket }: { bucket: string }) {
     setUploading(true)
     try {
       for (const f of Array.from(files)) await api.upload(bucket, prefix + f.name, f)
-      toast(files.length === 1 ? `Yüklendi: ${files[0].name}` : `${files.length} dosya yüklendi`)
+      toast(files.length === 1 ? t('files.uploaded', { name: files[0].name }) : t('files.uploadedMany', { n: files.length }))
     } catch (e) {
       toast(errMsg(e), 'error')
     } finally {
@@ -109,10 +110,10 @@ function BucketView({ bucket }: { bucket: string }) {
   }
 
   const remove = async ({ path }: { path: string }) => {
-    if (!(await confirmDanger('Dosya silinsin mi?', <><code>{bucket}/{path}</code> kalıcı olarak silinecek.</>))) return
+    if (!(await confirmDanger(t('files.deleteConfirm'), rich('files.deleteMsg', { path: <code>{bucket}/{path}</code> })))) return
     try {
       await api.deleteFile(bucket, path)
-      toast('Dosya silindi')
+      toast(t('files.deleted'))
       reload()
     } catch (e) { toast(errMsg(e), 'error') }
   }
@@ -122,7 +123,7 @@ function BucketView({ bucket }: { bucket: string }) {
   return (
     <section className="page-main">
       <div className="toolbar">
-        <nav className="crumbs" aria-label="Klasör yolu">
+        <nav className="crumbs" aria-label={t('files.path')}>
           <button className="link" onClick={() => setPrefix('')}>{bucket}</button>
           {parts.map((p, i) => (
             <span key={i}>
@@ -132,32 +133,32 @@ function BucketView({ bucket }: { bucket: string }) {
           ))}
         </nav>
         <div className="spacer" />
-        <button className="icon-btn" onClick={reload} aria-label="Yenile" title="Yenile"><Icon name="refresh" /></button>
+        <button className="icon-btn" onClick={reload} aria-label={t('common.refresh')} title={t('common.refresh')}><Icon name="refresh" /></button>
         {canWrite && <>
-          <input ref={input} type="file" multiple hidden onChange={(e) => upload(e.target.files)} aria-label="Yüklenecek dosyalar" />
+          <input ref={input} type="file" multiple hidden onChange={(e) => upload(e.target.files)} aria-label={t('files.toUpload')} />
           <button className="btn primary" onClick={() => input.current?.click()} disabled={uploading}>
-            <Icon name="upload" />{uploading ? 'Yükleniyor…' : 'Yükle'}
+            <Icon name="upload" />{t(uploading ? 'files.uploading' : 'files.upload')}
           </button>
         </>}
       </div>
       <div className="grid-area">
         {error ? <ErrorBox message={error} onRetry={reload} />
           : !items ? <Loading />
-          : !items.length ? <Empty>{prefix ? 'Bu klasör boş.' : 'Bu bucket boş. Dosya yüklemek için Yükle’ye basın.'}</Empty>
+          : !items.length ? <Empty>{t(prefix ? 'files.folderEmpty' : 'files.bucketEmpty')}</Empty>
           : (
             <>
             {items.length >= LIST_CAP && (
-              <div className="note list-cap" role="note">Bu klasörde gösterilenden fazla öğe var; yalnızca ilk {LIST_CAP} öğe listeleniyor.</div>
+              <div className="note list-cap" role="note">{t('files.cap', { n: LIST_CAP })}</div>
             )}
             <div className="grid-wrap">
               <table className="grid list-table">
                 <thead>
                   <tr>
-                    <th><div className="th-btn">Ad</div></th>
-                    <th><div className="th-btn">Boyut</div></th>
-                    <th><div className="th-btn">Tür</div></th>
-                    <th><div className="th-btn">Güncelleme</div></th>
-                    <th><div className="th-btn"><span className="sr-only">İşlemler</span></div></th>
+                    <th><div className="th-btn">{t('common.name')}</div></th>
+                    <th><div className="th-btn">{t('common.size')}</div></th>
+                    <th><div className="th-btn">{t('files.type')}</div></th>
+                    <th><div className="th-btn">{t('files.updated')}</div></th>
+                    <th><div className="th-btn"><span className="sr-only">{t('common.actions')}</span></div></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -177,10 +178,10 @@ function BucketView({ bucket }: { bucket: string }) {
                       <td className="small">{fmtDate(f.updated_at)}</td>
                       <td>
                         <div className="row-actions end">
-                          <a className="icon-btn" href={api.fileUrl(bucket, f.path)} download={f.name} aria-label={`${f.name} indir`} title="İndir">
+                          <a className="icon-btn" href={api.fileUrl(bucket, f.path)} download={f.name} aria-label={t('files.downloadOf', { name: f.name })} title={t('files.download')}>
                             <Icon name="download" />
                           </a>
-                          {canWrite && <button className="icon-btn danger" onClick={() => remove(f)} aria-label={`${f.name} sil`} title="Sil"><Icon name="trash" /></button>}
+                          {canWrite && <button className="icon-btn danger" onClick={() => remove(f)} aria-label={t('files.deleteOf', { name: f.name })} title={t('common.delete')}><Icon name="trash" /></button>}
                         </div>
                       </td>
                     </tr>

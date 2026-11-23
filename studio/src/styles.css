@@ -65,7 +65,8 @@ code, .mono, kbd, pre { font-family: var(--mono); font-feature-settings: "zero";
 code { font-size: 12px; background: var(--surface-2); padding: 1px 6px; border-radius: 6px; box-shadow: inset 0 0 0 1px var(--line); word-break: break-word; }
 pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 12px; }
 :focus { outline: none; }
-:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--accent) !important; }
+/* the transparent outline is invisible normally and painted in Windows forced colors, where box-shadow is dropped */
+:focus-visible { outline: 2px solid transparent; outline-offset: 2px; box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--accent) !important; }
 .muted { color: var(--muted); }
 .small { font-size: 12px; }
 .spacer, .sp { flex: 1; }
@@ -213,7 +214,10 @@ input[type="file"]::file-selector-button { height: 30px; padding: 0 13px; margin
 .field { display: flex; flex-direction: column; gap: 7px; }
 .field > span, .lbl, .lbl label { font-size: 12px; font-weight: 500; color: var(--muted); }
 .lbl { display: flex; justify-content: space-between; align-items: center; }
-.lbl a { color: var(--accent-text); text-decoration: none; }
+.lbl a, .field-extra a { color: var(--accent-text); text-decoration: none; }
+/* after the input in the DOM (tab order: field, then the link), drawn on the label row */
+.field:has(> .field-extra) { position: relative; }
+.field-extra { position: absolute; top: 0; right: 0; font-size: 12px; font-weight: 500; line-height: 18px; }
 .field.inline { flex-direction: row; align-items: center; gap: 8px; }
 .field.inline select { max-width: 180px; }
 .check { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
@@ -288,6 +292,9 @@ input[type="file"]::file-selector-button { height: 30px; padding: 0 13px; margin
 .side-meter .row { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
 .side-meter .row b { color: var(--text); font-weight: 500; }
 .side-meter .dots { margin: 10px 0 0; }
+.lang { display: flex; align-items: center; gap: 8px; padding: 0 6px 0 12px; font-size: 12px; color: var(--muted); }
+.lang span { flex: 1; }
+.lang select { height: 28px; padding: 0 8px; font-size: 12px; }
 .user { display: flex; align-items: center; gap: 10px; padding: 6px; border-radius: 999px; min-width: 0; }
 .user .t { flex: 1; min-width: 0; font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .main { position: relative; margin: 10px 10px 10px 0; border-radius: 22px; background: var(--panel); min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
@@ -316,7 +323,7 @@ input[type="file"]::file-selector-button { height: 30px; padding: 0 13px; margin
 /* theme reveal */
 ::view-transition-old(root), ::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
 ::view-transition-new(root) { z-index: 9999; }
-.reveal { position: fixed; inset: 0; z-index: 95; pointer-events: none; }
+.reveal { position: fixed; inset: 0; z-index: 95; pointer-events: none; background: var(--panel); } /* data-theme on the overlay picks the next theme's tokens */
 
 /* ================= Page parts ================= */
 .page-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; }
@@ -498,9 +505,6 @@ button.th-btn:hover { background: var(--surface-2); }
 .asst .ah { display: flex; align-items: center; gap: 10px; min-height: 60px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
 .orb { width: 28px; height: 28px; border-radius: 999px; display: grid; place-items: center; color: var(--accent-ink); background: conic-gradient(from 200deg, var(--accent), #8BE0B8, var(--violet), var(--accent)); }
 .asst .state { flex: 1; }
-.ask { margin: 0 12px 12px; padding: 10px 8px 10px 16px; display: flex; align-items: center; gap: 8px; border-radius: 24px; color: var(--dim); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line-2); opacity: .6; }
-.ask > span:first-child { flex: 1; }
-.send { width: 32px; height: 32px; border-radius: 999px; display: grid; place-items: center; background: var(--surface-3); }
 
 /* ================= RLS, logs ================= */
 .card-head .mono { font-size: 13px; }
@@ -552,6 +556,7 @@ button.th-btn:hover { background: var(--surface-2); }
 .confirm-msg code { color: var(--text); }
 .confirm-msg .form { gap: 10px; }
 .toasts { position: fixed; right: 22px; bottom: 22px; z-index: 70; display: grid; gap: 8px; justify-items: end; max-width: calc(100vw - 32px); }
+body:has(.pager) .toasts { bottom: 76px; } /* clear the table pager at the foot of the screen */
 .toast { position: relative; display: flex; align-items: center; gap: 12px; min-width: min(330px, calc(100vw - 32px)); padding: 7px 7px 7px 9px; border-radius: 999px; overflow: hidden; overflow-wrap: anywhere;
   background: color-mix(in oklab, var(--surface-3) 92%, transparent); backdrop-filter: blur(14px); box-shadow: inset 0 0 0 1px var(--line-2), inset 0 1px 0 var(--hi), var(--shadow-lg); animation: toastIn .6s var(--ease-spring) both; }
 @keyframes toastIn { from { opacity: 0; transform: translateY(16px) scale(.94); } }
@@ -560,9 +565,7 @@ button.th-btn:hover { background: var(--surface-2); }
 .toast .tx b { font-weight: 500; display: block; }
 .toast .tx span { color: var(--muted); font-size: 12px; }
 .toast .cd { font: 500 11px var(--mono); color: var(--dim); }
-.toast .drain { position: absolute; left: 18px; right: 18px; bottom: 0; height: 2px; border-radius: 2px; background: var(--accent); transform-origin: left; animation: drain 5s linear forwards; }
-.toast.paused .drain { animation-play-state: paused; }
-@keyframes drain { to { transform: scaleX(0); } }
+.toast .drain { position: absolute; left: 18px; right: 18px; bottom: 0; height: 2px; border-radius: 2px; background: var(--accent); transform-origin: left; }
 
 /* ================= Command palette ================= */
 .cmdk { position: fixed; inset: 0; z-index: 60; display: grid; justify-items: center; align-items: start; padding: 13vh 16px 16px; }
@@ -614,7 +617,9 @@ button.th-btn:hover { background: var(--surface-2); }
 .a-art .a-vid { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: 50% 92%; opacity: 0; transition: opacity 1.2s ease; }
 .a-art.has-vid .a-vid { opacity: 1; }
 .a-art.has-vid .sheen, .a-art.has-vid .torch { display: none; }
-.a-panel.still .a-art { animation: none; }
+/* paused, the drift holds where it is (no jump back to the start) and the pointer torch stays off */
+.a-panel.still .a-art { animation-play-state: paused; }
+.a-panel.still .torch { display: none; }
 /* the video toggle sits on the panel's top-right corner, outside the aria-hidden art; panel tokens, so the ring is lime on dark */
 .a-toggle { position: absolute; top: 54px; right: 52px; z-index: 2; display: inline-grid; place-items: center; width: 40px; height: 28px;
   border: 0; border-radius: 999px; cursor: pointer; color: #F4F5F7; background: rgba(7,8,10,.55); box-shadow: inset 0 0 0 1px rgba(255,255,255,.16);
@@ -648,6 +653,8 @@ button.th-btn:hover { background: var(--surface-2); }
 .si-form > .brand { margin-bottom: 18px; display: none; }
 .si-foot { display: flex; justify-content: space-between; gap: 12px; margin-top: 14px; color: var(--dim); font-size: 12px; }
 .si-foot a { color: var(--accent-text); text-decoration: none; }
+.si-foot .si-end { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+.si-foot .lang { padding: 0; gap: 6px; }
 .login .error-box, .login .note { margin: 0; }
 
 @media (prefers-reduced-motion: reduce) {
@@ -675,7 +682,7 @@ button.th-btn:hover { background: var(--surface-2); }
   .sql-layout { grid-template-columns: minmax(0, 1fr); }
   .asst { display: none; }
 }
-@media (max-width: 760px) {
+@media (max-width: 900px) { /* sign-in stacks: the art becomes a band above the form */
   .login { grid-template-columns: minmax(0, 1fr); align-content: start; }
   .si-left { padding: 10px 10px 0; }
   .a-panel { height: 300px; padding: 22px 22px 20px; border-radius: 20px; }

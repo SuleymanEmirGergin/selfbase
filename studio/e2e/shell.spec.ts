@@ -2,6 +2,9 @@ import { readFileSync } from 'node:fs'
 import { expect, test } from '@playwright/test'
 import type { Page, Request } from '@playwright/test'
 
+// These specs match the Turkish copy, so they run in Turkish; i18n.spec.ts covers the English default.
+test.beforeEach(({ page }) => page.addInitScript(() => localStorage.setItem('studio-locale', 'tr')))
+
 // Studio shell against /platform fixtures (shapes of plan Tasks 10 and 13). No server: every call is intercepted.
 const fx = (name: string) => JSON.parse(readFileSync(new URL(`./fixtures/${name}.json`, import.meta.url), 'utf8'))
 
@@ -52,7 +55,7 @@ test('sign-in shows the projects of the organization', async ({ page }) => {
   await expect(page).toHaveURL(/\/org\/acme$/)
   await expect(page.getByRole('heading', { name: 'Projeler' })).toBeVisible()
   const cards = page.getByRole('list', { name: 'Projeler' }).getByRole('listitem')
-  await expect(cards).toHaveCount(3)
+  await expect(cards).toHaveCount(4) // three projects and the new-project card, a list item like the rest
   await expect(cards.filter({ hasText: 'corteqs' })).toContainText('Çalışıyor')
   await expect(cards.filter({ hasText: 'staging' })).toContainText('Başlatılıyor')
   await expect(cards.filter({ hasText: 'staging' })).toContainText('sertifika bekleniyor')
@@ -87,11 +90,11 @@ test('create project posts organization_slug, name and size and follows the job 
   await page.goto('/org/acme')
   await page.getByRole('link', { name: 'Yeni proje' }).click()
   await expect(page).toHaveURL(/\/new\/acme$/)
-  await expect(page.getByText('9632 MiB boş')).toBeVisible()
+  await expect(page.getByText('9.632 MiB boş')).toBeVisible()
   await expect(page.getByText('Bu hafta kalan yeni adres: 1 / 3')).toBeVisible()
-  await expect(page.getByRole('radio', { name: /micro.*1184 MiB/ })).toBeChecked()
-  await expect(page.getByRole('radio', { name: /small.*2336 MiB/ })).toBeVisible()
-  await expect(page.getByRole('radio', { name: /medium.*3872 MiB/ })).toBeVisible()
+  await expect(page.getByRole('radio', { name: /micro.*1.184 MiB/ })).toBeChecked()
+  await expect(page.getByRole('radio', { name: /small.*2.336 MiB/ })).toBeVisible()
+  await expect(page.getByRole('radio', { name: /medium.*3.872 MiB/ })).toBeVisible()
 
   await page.getByLabel('Proje adı').fill('demo')
   await page.getByRole('radio', { name: /small/ }).check()
@@ -154,9 +157,9 @@ test('an owner can invite, change a role and remove a member', async ({ page }) 
   await expect(page.getByText(fx('invitation-created').link)).toBeVisible()
   expect(api.calls.find((c) => c.key === 'POST /organizations/acme/invitations')!.body).toEqual({ email: 'new@example.test', role: 'developer' })
 
-  await page.getByRole('combobox', { name: 'Rol: dev@example.test' }).selectOption('administrator')
+  await page.getByRole('combobox', { name: 'dev@example.test için rol' }).selectOption('administrator')
   await expect.poll(() => api.count('PATCH /organizations/acme/members/4f1c2a9e-0000-4000-8000-000000000002')).toBe(1)
-  await page.getByRole('button', { name: 'Çıkar: dev@example.test' }).click()
+  await page.getByRole('button', { name: 'dev@example.test üyesini çıkar' }).click()
   await page.getByRole('dialog').getByRole('button', { name: 'Çıkar' }).click()
   await expect.poll(() => api.count('DELETE /organizations/acme/members/4f1c2a9e-0000-4000-8000-000000000002')).toBe(1)
   // both address the membership row, not only the user
@@ -269,11 +272,11 @@ test('an export imports with its passphrase and no env file; giving neither or b
   await page.getByLabel('Proje adı').fill('restored')
   await page.getByLabel('Yedek dizini').fill('export-abcdefghijklmnopqrst/20261122-031500')
   await page.getByRole('button', { name: 'İçe aktar' }).click()
-  await expect(page.getByText(/yalnızca birini/)).toBeVisible()
+  await expect(page.getByRole('alert').filter({ hasText: /yalnızca birini/ })).toBeVisible()
   await page.getByLabel('Dışa aktarma şifresi').fill('correct horse battery')
   await page.getByLabel('Env dosyası').setInputFiles({ name: '.env', mimeType: 'text/plain', buffer: Buffer.from('JWT_SECRET=x\n') })
   await page.getByRole('button', { name: 'İçe aktar' }).click()
-  await expect(page.getByText(/yalnızca birini/)).toBeVisible()
+  await expect(page.getByRole('alert').filter({ hasText: /yalnızca birini/ })).toBeVisible()
   expect(api.count('POST /projects/import')).toBe(0)
   await page.getByLabel('Env dosyası').setInputFiles([])
   await page.getByRole('button', { name: 'İçe aktar' }).click()
@@ -290,7 +293,7 @@ test('audit log and capacity render', async ({ page }) => {
   await expect(page.getByRole('cell', { name: 'POST /platform/access-tokens' })).toBeVisible()
   await page.goto('/org/acme/capacity')
   await expect(page.getByRole('meter', { name: 'Bellek bütçesi' })).toBeVisible()
-  await expect(page.getByRole('cell', { name: '2336 MiB' })).toBeVisible()
+  await expect(page.getByRole('cell', { name: '2.336 MiB' })).toBeVisible()
 })
 
 test('a 401 triggers one refresh, then the sign-in screen', async ({ page }) => {

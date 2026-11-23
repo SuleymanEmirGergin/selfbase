@@ -1,4 +1,5 @@
 import { Icon } from './ui.tsx'
+import { t } from './i18n/index.ts'
 
 // Read-only data grid shared by the Tables and SQL pages. Rows are arrays aligned with `columns`.
 
@@ -32,7 +33,7 @@ export function Grid({ columns, rows, sort, onSort, onRowClick, selected }: {
               const label = (
                 <>
                   <span className="col-name">
-                    {c.pk && <span className="pk" title="Birincil anahtar"><Icon name="key" size={12} /></span>}
+                    {c.pk && <span className="pk" title={t('grid.pk')}><Icon name="key" size={12} /></span>}
                     {c.name}
                     {active && <Icon name={sort!.dir === 'asc' ? 'up' : 'down'} size={12} />}
                   </span>

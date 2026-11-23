@@ -3,6 +3,9 @@ import { fileURLToPath } from 'node:url'
 import { expect, test } from '@playwright/test'
 import type { Page, Request } from '@playwright/test'
 
+// These specs match the Turkish copy, so they run in Turkish; i18n.spec.ts covers the English default.
+test.beforeEach(({ page }) => page.addInitScript(() => localStorage.setItem('studio-locale', 'tr')))
+
 // Project screens against /platform fixtures (shapes of plan Tasks 13 and 14). Every call is intercepted.
 const fx = (name: string) => JSON.parse(readFileSync(new URL(`./fixtures/${name}.json`, import.meta.url), 'utf8'))
 
@@ -141,7 +144,7 @@ test('home shows the masked service key and the full one after göster', async (
   await expect(page.getByLabel('anon anahtarı')).toHaveText(fx('project-api-keys')[0].api_key)
   const service = page.getByLabel('service_role anahtarı')
   await expect(service).toHaveText(fx('project-api-keys')[1].api_key)
-  await expect(page.getByRole('cell', { name: '412 / 1024 MiB' })).toBeVisible()
+  await expect(page.getByRole('cell', { name: '412 / 1.024 MiB' })).toBeVisible()
   await expect(page.getByText('project.backup')).toBeVisible()
   await page.getByRole('button', { name: 'göster' }).click()
   await expect(service).toHaveText(fx('project-api-key-revealed').api_key)
@@ -216,7 +219,7 @@ test('a developer sees SQL; a read_only member sees neither SQL nor write or key
   await expect(menu.getByRole('link', { name: 'SQL', exact: true })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'göster' })).toHaveCount(0)
   await page.goto(`/project/${REF}/sql`)
-  await expect(page.getByText('Bu ekran için yetkiniz yok.')).toBeVisible()
+  await expect(page.getByText('Bu ekran için yetkin yok.')).toBeVisible()
   await page.goto(`/project/${REF}/editor`)
   await page.getByRole('complementary', { name: 'Tablolar' }).getByRole('button', { name: 'notes' }).click()
   await expect(page.getByText('Bu tablo boş.')).toBeVisible()
@@ -281,7 +284,7 @@ test('a failed SQL chunk shows a reload hint and keeps the app', async ({ page }
   await mockApi(page, routes())
   await page.route('**/src/project/Sql.tsx*', (route) => route.abort())
   await page.goto(`/project/${REF}/sql`)
-  await expect(page.getByRole('button', { name: 'Sayfayı yenileyin' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Sayfayı yenile' })).toBeVisible()
   await nav(page, 'Ana sayfa')
   await expect(page.getByRole('heading', { name: 'Ana sayfa' })).toBeVisible()
 })
@@ -352,9 +355,9 @@ test('settings: a custom domain is checked and confirmed; backup status is in Tu
   const host = page.getByLabel('Alan adı', { exact: true })
   await host.fill('not a host')
   await page.getByRole('button', { name: 'Ekle', exact: true }).click()
-  await expect(page.getByText('Geçerli bir alan adı yazın')).toBeVisible()
+  await expect(page.getByText('Geçerli bir alan adı yaz')).toBeVisible()
   await host.fill('API.Example.com')
-  await expect(page.getByText('Geçerli bir alan adı yazın')).toHaveCount(0) // editing clears the error
+  await expect(page.getByText('Geçerli bir alan adı yaz')).toHaveCount(0) // editing clears the error
   await page.getByRole('button', { name: 'Ekle', exact: true }).click()
   const dialog = page.locator('dialog.confirm')
   await expect(dialog).toContainText('sertifika')
@@ -388,7 +391,7 @@ test('screenshots of home, logs and settings', async ({ page }) => {
   r[`GET ${P}/logs`] = { body: fx('project-logs'), headers: { 'x-selfbase-log-source': 'container' } }
   await mockApi(page, r)
   for (const [sub, file, ready, height] of [
-    ['home', 'project-home', '412 / 1024 MiB', 960], ['logs', 'project-logs', 'POST /admin/sql 200 12ms', 600], ['settings', 'project-settings', 'Projeyi sil', 1480],
+    ['home', 'project-home', '412 / 1.024 MiB', 960], ['logs', 'project-logs', 'POST /admin/sql 200 12ms', 600], ['settings', 'project-settings', 'Projeyi sil', 1480],
   ] as const) {
     await page.setViewportSize({ width: 1440, height }) // the content scrolls inside the shell, so the viewport sets what is captured
     await page.goto(`/project/${REF}/${sub}`)
