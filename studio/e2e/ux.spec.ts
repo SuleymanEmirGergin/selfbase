@@ -60,6 +60,11 @@ test('the video toggle is reachable by keyboard, pauses to the still and stays p
   await expect(page.locator('.si-left .a-art')).not.toHaveClass(/has-vid/)
   await expect(page.locator('.si-left .sheen')).toHaveCount(0)
   await expect(page.locator('.si-left .gl-c.done')).toHaveCount(4)
+  // the still is still: no hover glow, and the drift holds where it is instead of jumping back to the start
+  await page.locator('.si-left .a-panel').hover()
+  expect(await page.locator('.si-left .torch').evaluate((e) => getComputedStyle(e).display)).toBe('none')
+  expect(await page.locator('.si-left .a-art').evaluate((e) => { const s = getComputedStyle(e); return [s.animationName, s.animationPlayState] }))
+    .toEqual(['drift', 'paused'])
 
   await page.reload()
   await expect(play).toBeVisible()
@@ -87,6 +92,37 @@ test('a phone strip or Data Saver gets the still only: no video element, no togg
     expect(media).toEqual([])
     await ctx.close()
   }
+})
+
+test('at tablet width (800 px) sign-in stacks: the art is a band above a full-width form, and there is no video', async ({ browser }) => {
+  const ctx = await browser.newContext({ viewport: { width: 800, height: 900 } })
+  await ctx.addInitScript(inTurkish)
+  const page = await ctx.newPage()
+  await mockApi(page, signedOut)
+  await page.goto('/sign-in')
+  const art = await page.locator('.si-left .a-panel').boundingBox()
+  const form = await page.locator('.si-form').boundingBox()
+  expect(art!.y + art!.height).toBeLessThanOrEqual(form!.y)
+  expect(form!.width).toBeGreaterThan(400)
+  await expect(page.locator('.si-left video')).toHaveCount(0)
+  await ctx.close()
+})
+
+test('a hidden tab stops the sample pipeline; showing it again starts it', async ({ page }) => {
+  await mockApi(page, signedOut)
+  await page.goto('/sign-in')
+  await expect(page.locator('.si-left video')).toHaveCount(1)
+  const done = page.locator('.si-left .gl-c.done')
+  const setHidden = (hidden: boolean) => page.evaluate((h) => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => h })
+    document.dispatchEvent(new Event('visibilitychange'))
+  }, hidden)
+  await setHidden(true)
+  const k = await done.count()
+  await page.waitForTimeout(1600) // more than one step (1.5 s): a running ticker would have moved
+  await expect(done).toHaveCount(k)
+  await setHidden(false)
+  await expect.poll(() => done.count(), { timeout: 10_000 }).not.toBe(k)
 })
 
 test('turning reduced motion on while the page is open stops the video and the pipeline', async ({ page }) => {

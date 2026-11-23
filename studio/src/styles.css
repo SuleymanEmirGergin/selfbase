@@ -617,7 +617,9 @@ body:has(.pager) .toasts { bottom: 76px; } /* clear the table pager at the foot 
 .a-art .a-vid { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: 50% 92%; opacity: 0; transition: opacity 1.2s ease; }
 .a-art.has-vid .a-vid { opacity: 1; }
 .a-art.has-vid .sheen, .a-art.has-vid .torch { display: none; }
-.a-panel.still .a-art { animation: none; }
+/* paused, the drift holds where it is (no jump back to the start) and the pointer torch stays off */
+.a-panel.still .a-art { animation-play-state: paused; }
+.a-panel.still .torch { display: none; }
 /* the video toggle sits on the panel's top-right corner, outside the aria-hidden art; panel tokens, so the ring is lime on dark */
 .a-toggle { position: absolute; top: 54px; right: 52px; z-index: 2; display: inline-grid; place-items: center; width: 40px; height: 28px;
   border: 0; border-radius: 999px; cursor: pointer; color: #F4F5F7; background: rgba(7,8,10,.55); box-shadow: inset 0 0 0 1px rgba(255,255,255,.16);
@@ -678,7 +680,7 @@ body:has(.pager) .toasts { bottom: 76px; } /* clear the table pager at the foot 
   .sql-layout { grid-template-columns: minmax(0, 1fr); }
   .asst { display: none; }
 }
-@media (max-width: 760px) {
+@media (max-width: 900px) { /* sign-in stacks: the art becomes a band above the form */
   .login { grid-template-columns: minmax(0, 1fr); align-content: start; }
   .si-left { padding: 10px 10px 0; }
   .a-panel { height: 300px; padding: 22px 22px 20px; border-radius: 20px; }

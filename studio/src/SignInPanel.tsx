@@ -20,7 +20,7 @@ const media = (q: string) => [
   () => matchMedia(q).matches,
 ] as const
 const REDUCE = media('(prefers-reduced-motion: reduce)')
-const NARROW = media('(max-width: 760px)') // the stacked layout in styles.css
+const NARROW = media('(max-width: 900px)') // the stacked layout in styles.css
 const subscribeVisible = (cb: () => void) => { document.addEventListener('visibilitychange', cb); return () => document.removeEventListener('visibilitychange', cb) }
 const saveData = () => (navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData === true
 const readPaused = () => { try { return sessionStorage.getItem(PAUSE_KEY) === '1' } catch { return false } }
