@@ -251,7 +251,7 @@ input[type="file"]::file-selector-button { height: 30px; padding: 0 13px; margin
 .row-actions { display: flex; gap: 6px; align-items: center; }
 .row-actions.end { justify-content: flex-end; }
 .kv { margin: 0; display: flex; flex-direction: column; gap: 12px; }
-.kv dt { font: 500 10.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--dim); margin-bottom: 2px; }
+.kv dt { font: 500 10.5px var(--mono); letter-spacing: .02em; color: var(--dim); margin-bottom: 2px; } /* no uppercase: dt holds identifiers, and lang="tr" would turn id into İD */
 .kv dd { margin: 0; overflow-wrap: anywhere; }
 
 /* ================= App shell ================= */

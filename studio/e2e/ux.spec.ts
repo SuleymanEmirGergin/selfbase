@@ -177,6 +177,22 @@ test('a keyboard delete puts focus on Geri al; Enter there keeps the row and not
   expect(api.count(`DELETE /projects/${REF}/admin/rows/public/notes`)).toBe(0)
 })
 
+test('key-value labels keep identifiers in their own case under lang="tr": id, not İD', async ({ page }) => {
+  const r = routes()
+  r[`POST /projects/${REF}/admin/sql`] = { body: { columns: ['id', 'is_admin'], rows: [[7, true]], rowCount: 1, durationMs: 2 } }
+  await mockApi(page, r)
+  await page.goto(`/project/${REF}/sql`)
+  await page.getByRole('textbox', { name: 'SQL sorgusu' }).click()
+  await page.keyboard.type('select id, is_admin from profiles')
+  await page.keyboard.press('Control+Enter')
+  await page.getByRole('cell', { name: '7', exact: true }).click()
+  // innerText is what is painted, so it includes any text-transform
+  await expect(page.getByRole('dialog', { name: 'Satır 1' }).locator('dt')).toHaveText(['id', 'is_admin'], { useInnerText: true })
+
+  await page.goto(`/project/${REF}`)
+  await expect(page.locator('dl.kv dt').filter({ hasText: 'service_role' })).toHaveText('service_role (gizli)', { useInnerText: true })
+})
+
 test('keyboard focus runs skip link, sidebar, top bar, then the page; the skip link jumps to the content', async ({ page }) => {
   await mockApi(page, routes())
   await page.goto('/org/acme')
