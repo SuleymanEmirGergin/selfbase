@@ -1,10 +1,50 @@
 import { expect, test } from '@playwright/test'
 import type { Page } from '@playwright/test'
-import { REF, mockApi, routes } from './helpers.ts'
+import { REF, fx, mockApi, routes } from './helpers.ts'
 
 // v3 shell behaviour: theme switch, Ctrl+K palette, the undo toast and keyboard focus order.
 
 const theme = (page: Page) => page.evaluate(() => document.documentElement.dataset.theme)
+const signedOut = { 'GET /me': { status: 401, body: fx('unauthorized') }, 'POST /refresh': { status: 401, body: fx('unauthorized') } }
+
+test('the sign-in art panel is hidden from assistive tech, has nothing to focus, and loads its loop muted with the still as poster', async ({ page }) => {
+  await mockApi(page, signedOut)
+  await page.goto('/sign-in')
+  const panel = page.locator('.si-left')
+  await expect(panel).toHaveAttribute('aria-hidden', 'true')
+  expect(await panel.locator('a, button, input, select, textarea, [tabindex], video[controls]').count()).toBe(0)
+  await expect(page.getByRole('heading', { name: 'Tekrar hoş geldiniz' })).toBeVisible()
+  const video = panel.locator('video')
+  await expect(video).toHaveCount(1)
+  expect(await video.evaluate((v: HTMLVideoElement) => [v.muted, v.loop, v.playsInline, v.preload, v.getAttribute('poster')]))
+    .toEqual([true, true, true, 'metadata', '/signin/art.webp'])
+  await expect(panel.getByText('#483')).toHaveCount(0) // no deploy number, only a sample label
+})
+
+test('under reduced motion the sign-in panel shows only the still: no video, no light passes', async ({ browser }) => {
+  const ctx = await browser.newContext({ reducedMotion: 'reduce' })
+  const page = await ctx.newPage()
+  await mockApi(page, signedOut)
+  await page.goto('/sign-in')
+  await expect(page.getByRole('heading', { name: 'Tekrar hoş geldiniz' })).toBeVisible()
+  await expect(page.locator('.si-left video')).toHaveCount(0)
+  await expect(page.locator('.si-left .sheen')).toHaveCount(0)
+  await expect(page.locator('.si-left .a-art')).not.toHaveClass(/has-vid/)
+  await expect(page.locator('.si-left .gl-c.done')).toHaveCount(4) // the sample pipeline sits finished
+  await ctx.close()
+})
+
+test('on sign-in, keyboard focus starts and stays in the form', async ({ page }) => {
+  await mockApi(page, signedOut)
+  await page.goto('/sign-in')
+  await expect(page.getByLabel('E-posta')).toBeFocused()
+  const order: string[] = []
+  for (let i = 0; i < 4; i++) {
+    await page.keyboard.press('Tab')
+    order.push(await page.evaluate(() => { const el = document.activeElement as HTMLElement; return (el.getAttribute('aria-label') || el.textContent || el.getAttribute('type') || '').trim() }))
+  }
+  expect(order).toEqual(['Şifremi unuttum', 'password', 'Karakterleri göster', 'Giriş yap'])
+})
 
 test('the theme follows the system first, then the switch, and the choice survives a reload', async ({ page }) => {
   await mockApi(page, routes())

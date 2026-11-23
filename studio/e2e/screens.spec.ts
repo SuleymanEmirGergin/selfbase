@@ -69,3 +69,25 @@ for (const scheme of ['dark', 'light'] as const) {
     }
   })
 }
+
+// Sign-in at phone width (the art becomes a band over the form), and once with motion so the loop video is captured.
+test.describe('sign-in extras', () => {
+  test('sign-in-phone', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await mockApi(page, signedOut)
+    await page.goto('/sign-in')
+    await h1('Tekrar hoş geldiniz')(page)
+    await page.evaluate(() => document.fonts.ready)
+    await page.screenshot({ path: fileURLToPath(new URL('sign-in-phone-dark.png', OUT)) })
+  })
+  test('sign-in-video', async ({ browser }) => {
+    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark', reducedMotion: 'no-preference' })
+    const page = await ctx.newPage()
+    await mockApi(page, signedOut)
+    await page.goto('/sign-in')
+    await expect(page.locator('.a-art.has-vid')).toHaveCount(1, { timeout: 10_000 }) // the loop really plays
+    await page.waitForTimeout(1500) // past the fade-in
+    await page.screenshot({ path: fileURLToPath(new URL('sign-in-video-dark.png', OUT)) })
+    await ctx.close()
+  })
+})
