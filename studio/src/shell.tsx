@@ -16,6 +16,13 @@ export type Command = { label: string; hint?: string; icon: string; group: strin
 const isMac = /Mac|iP(hone|ad)/.test(navigator.platform)
 const MOD = isMac ? '⌘' : 'Ctrl'
 
+/** The language picker: in the sidebar foot and on the signed-out screens. */
+export const LangSelect = () => (
+  <select aria-label={t('shell.language')} value={locale()} onChange={(e) => setLocale(e.target.value as typeof LANGS[number]['id'])}>
+    {LANGS.map((l) => <option key={l.id} value={l.id} lang={l.id}>{l.name}</option>)}
+  </select>
+)
+
 function Nav({ items }: { items: NavItem[] }) {
   const ref = useRef<HTMLDivElement>(null)
   const ind = useRef<HTMLSpanElement>(null)
@@ -158,9 +165,7 @@ export function Shell({ switcher, nav, crumbs, commands, loadCommands, email, on
           {foot}
           <label className="lang">
             <Icon name="globe" /><span>{t('shell.language')}</span>
-            <select aria-label={t('shell.language')} value={locale()} onChange={(e) => setLocale(e.target.value as typeof LANGS[number]['id'])}>
-              {LANGS.map((l) => <option key={l.id} value={l.id} lang={l.id}>{l.name}</option>)}
-            </select>
+            <LangSelect />
           </label>
           <div className="user">
             <span className="avatar v" aria-hidden="true">{upper(email.slice(0, 1))}</span>

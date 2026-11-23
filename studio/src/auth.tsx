@@ -6,6 +6,7 @@ import { Link, navigate } from './router.tsx'
 import { Icon, errText } from './ui.tsx'
 import { Brand } from './glyphs.tsx'
 import { SignInPanel } from './SignInPanel.tsx'
+import { LangSelect } from './shell.tsx'
 import { rich, t } from './i18n/index.ts'
 
 // Sign-in, invitation and password reset: the screens reachable without a session.
@@ -34,7 +35,8 @@ export function AuthCard({ title, lead, children, onSubmit, inviteHint }: {
           <h1>{title}</h1>
           {lead && <p className="sub">{lead}</p>}
           {children}
-          <div className="si-foot"><span>{inviteHint && t('auth.inviteHint')}</span><span className="mono">{location.host}</span></div>
+          <div className="si-foot"><span>{inviteHint && t('auth.inviteHint')}</span>
+            <span className="si-end"><span className="mono">{location.host}</span><span className="lang"><Icon name="globe" /><LangSelect /></span></span></div>
         </form>
       </div>
     </main>

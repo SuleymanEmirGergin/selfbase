@@ -27,6 +27,17 @@ test('an English visit does not download the Turkish catalogue; switching loads 
   expect(trLoads.length).toBeGreaterThan(0)
 })
 
+test('the signed-out screens have their own language switch', async ({ page }) => {
+  await mockApi(page, signedOut)
+  await page.goto('/sign-in')
+  await page.getByLabel('Language').selectOption('tr')
+  await expect(page.getByRole('heading', { name: 'Tekrar hoş geldin' })).toBeVisible()
+  await page.goto('/reset-password')
+  await expect(page.getByLabel('Dil')).toHaveValue('tr')
+  await page.getByLabel('Dil').selectOption('en')
+  await expect(page.getByRole('button', { name: 'Send link' })).toBeVisible()
+})
+
 test('switching to Türkçe in the sidebar changes the copy, lang and numbers, and survives a reload', async ({ page }) => {
   await mockApi(page, routes())
   await page.goto('/org/acme/capacity')
