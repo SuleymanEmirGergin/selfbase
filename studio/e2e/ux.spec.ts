@@ -423,6 +423,36 @@ test('signing out inside the undo window sends the delete first, while the sessi
   await expect.poll(() => order).toEqual(['delete', 'logout'])
 })
 
+// the server must have answered the DELETE before logout ends the session, not just have seen it first
+const slowDelete = async (page: Page, ms: number, order: string[]) => {
+  const r = routes()
+  const key = `DELETE /projects/${REF}/admin/rows/public/notes`
+  const del = r[key] as (req: import('@playwright/test').Request) => { body?: unknown }
+  r[key] = (req) => { order.push('delete'); setTimeout(() => order.push('deleted'), ms); return { ...del(req), delay: ms } }
+  r['POST /logout'] = () => { order.push('logout'); return { body: {} } }
+  await mockApi(page, r)
+  await page.goto(`/project/${REF}/editor`)
+  await page.getByRole('row').filter({ hasText: 'ilk sürüm yayında' }).click()
+  await page.getByRole('dialog', { name: 'Satırı düzenle' }).getByRole('button', { name: 'Sil' }).click()
+  await page.getByRole('button', { name: 'Çıkış' }).click()
+}
+
+test('sign-out waits for the server to answer the pending delete before it logs out', async ({ page }) => {
+  await page.clock.install()
+  const order: string[] = []
+  await slowDelete(page, 1500, order)
+  await expect.poll(() => order).toEqual(['delete', 'deleted', 'logout'])
+})
+
+test('sign-out waits at most 3 seconds for a pending delete', async ({ page }) => {
+  await page.clock.install()
+  const order: string[] = []
+  await slowDelete(page, 20_000, order)
+  await expect.poll(() => order).toEqual(['delete'])
+  await page.clock.runFor(3100)
+  await expect.poll(() => order).toEqual(['delete', 'logout'])
+})
+
 test('the undo drain bar follows the count: held, it stops at the second shown; running, it drains toward the next', async ({ page }) => {
   await page.clock.install()
   await mockApi(page, routes())

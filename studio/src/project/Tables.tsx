@@ -162,9 +162,8 @@ function TableView({ rel }: { rel: Relation }) {
     const unhide = () => setPending(key, false)
     setEditing(null)
     setPending(key, true)
-    toastUndo(t('tables.deleting'), `${rel.schema}.${rel.name} · ${label}`, () => {
-      api.deleteRow(rel.schema, rel.name, pkOf(row)).then(unhide, (e) => { unhide(); toast(errMsg(e), 'error') })
-    }, unhide)
+    toastUndo(t('tables.deleting'), `${rel.schema}.${rel.name} · ${label}`,
+      () => api.deleteRow(rel.schema, rel.name, pkOf(row)).then(unhide, (e) => { unhide(); toast(errMsg(e), 'error') }), unhide)
   }
 
   return (

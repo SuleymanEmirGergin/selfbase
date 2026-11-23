@@ -138,7 +138,8 @@ export default function App() {
   useEffect(() => { if (me === null) clearProjectMemory() }, [me])
 
   const signOut = useCallback(async () => {
-    flushUndo() // a delete still in its undo window goes out before the session ends
+    // a delete still in its undo window must be answered before logout ends the session it is sent with
+    await Promise.race([flushUndo(), new Promise((r) => setTimeout(r, 3000))])
     await platform.logout().catch(() => {})
     // An explicit sign-out keeps no `next`: the next account must not land on this one's page. Replacing the URL
     // without emitting keeps the redirect effect from adding it back; the render below reads the new path.
