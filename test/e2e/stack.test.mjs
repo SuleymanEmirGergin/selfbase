@@ -78,20 +78,26 @@ function teardown() {
   tornDown = true
   // control-db knows every project, also one whose create call the test never saw answered
   try { for (const r of psql('select ref from control.projects').split('\n').filter(Boolean)) refs.add(r) } catch {}
-  // projects first (control is attached to their networks), then the stack (its anonymous volumes with it; the named
+  // a removal that fails is listed and fails the teardown (case 11, or after()): leftovers are never silent
+  const failed = []
+  const attempt = (fn) => { try { fn() } catch (e) { failed.push(e.message.split('\n')[0]) } }
+  // control first: its reconcile (every 30 s) would recreate the project containers removed below
+  if (dockerOk('ps', '-aq', '--filter', 'name=^selfbase-control$')) attempt(() => docker('stop', '--time', '5', 'selfbase-control'))
+  // projects next (control is attached to their networks), then the stack (its anonymous volumes with it; the named
   // ones below, by compose's label: never `down -v`), then what the run made by hand
   const mine = runResources(refs, { proxyNetwork: madeProxyNetwork })
-  if (mine.containers.length) dockerOk('rm', '-f', '-v', ...mine.containers)
-  dockerOk('rm', '-f', '-v', IMPOSTOR) // run with --rm; only a killed run leaves it (before() checked it was not there)
-  try {
+  if (mine.containers.length) attempt(() => docker('rm', '-f', '-v', ...mine.containers))
+  attempt(() => docker('rm', '-f', '-v', IMPOSTOR)) // run with --rm; only a killed run leaves it (before() checked it was not there)
+  attempt(() => {
     compose(envPath, 'rm', '-f', '-s', '-v')
     compose(envPath, 'down', '--remove-orphans', '--timeout', '5')
-  } catch (e) { log(`compose down: ${e.message}`) }
-  for (const n of mine.networks) dockerOk('network', 'rm', n)
-  for (const v of mine.volumes) dockerOk('volume', 'rm', '-f', v)
+  })
+  for (const n of mine.networks) attempt(() => docker('network', 'rm', n))
+  for (const v of mine.volumes) attempt(() => docker('volume', 'rm', '-f', v))
   // the run's host directory (backups, secrets, the env file's copy), only when this run made it
-  if (madeE2EDir) dockerOk('run', '--rm', '--user', '0', '--network', 'none', '-v', '/opt/selfbase:/o', IMAGE, 'rm', '-rf', `/o/${E2E_DIR.split('/').pop()}`)
+  if (madeE2EDir) attempt(() => docker('run', '--rm', '--user', '0', '--network', 'none', '-v', '/opt/selfbase:/o', IMAGE, 'rm', '-rf', `/o/${E2E_DIR.split('/').pop()}`))
   rmSync(envDir, { recursive: true, force: true })
+  if (failed.length) throw new Error(`teardown could not remove:\n${failed.join('\n')}`)
 }
 
 // as root, no network, like the documented install commands (control/.env.example); an image without VOLUME (the job

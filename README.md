@@ -14,7 +14,7 @@ browser / app (selfbase-js)
         |  HTTPS + WSS
 reverse proxy (Coolify, Caddy, nginx)
         |
-      core :8080  Node: /auth/v1 /storage/v1 /realtime/v1 /admin /panel/, gateway
+      core :8080  Node: /auth/v1 /storage/v1 /realtime/v1 /admin, gateway
         |-- /rest/v1 ------> rest   PostgREST 14
         |-- /functions/v1 -> fn     Deno, mounts the app's supabase/functions read-only
         '------------------> db     Postgres 17 + PostGIS + pgvector + pg_cron
@@ -31,18 +31,18 @@ Only `core` is published. `net.http_post` calls are queued in the database and s
 | `core/` | auth, storage, realtime, admin API, gateway (Node 24, Hono) |
 | `fn/` | edge function host (Deno) |
 | `studio/` | dashboard (React), today's admin panel |
-| `control/`, `provisioner/` | control plane and Docker provisioner (stubs for now) |
+| `control/`, `provisioner/` | control plane (Studio's API, jobs, reconcile; `control/compose.yml`) and the Docker provisioner |
 | `rest/`, `pooler/`, `job/` | PostgREST and PgBouncer images; backup/restore job image (`job/backup.sh`, `job/restore.sh`) |
 | `client/` | `selfbase-js`, the supabase-js drop-in; `client/dist/` is committed |
 | `acceptance/` | acceptance suite against a deployed project, `full` and `live` modes (`acceptance/README.md`) |
-| `scripts/` | key generation, panel password, Supabase migration, sync |
+| `scripts/` | key generation, install check, project import, Supabase migration, sync |
 
 ## Quick start
 
 Needs Docker with Compose 2.24+ and Node 22+. Run everything from the repository root.
 
 ```sh
-cp .env.example .env
+cp template/.env.example .env
 node scripts/gen-keys.mjs       # paste the 3 lines into .env, add POSTGRES_PASSWORD (URL-safe)
 docker compose -f template/compose.yml --env-file .env up -d --build
 curl -s http://localhost:8080/health   # {"ok":true}
@@ -54,14 +54,15 @@ A second stack on the same host needs its own `COMPOSE_PROJECT_NAME`. Without `-
 compose reads `template/.env`. Commands that use plain `docker compose`, such as `job/restore.sh`,
 need `COMPOSE_FILE=template/compose.yml COMPOSE_ENV_FILES=.env` in the environment.
 
-Development: `npm ci` at the root installs every workspace. Tests need the test database:
-`docker compose -p sb-test -f template/compose.test.yml up -d --build --wait db rest`, then
+Development: `npm ci` at the root installs every workspace. Tests need the test databases:
+`docker compose -p sb-test -f template/compose.test.yml up -d --build --wait db db-empty db-v1`, the same
+`up -d rest` (it restarts until core's tests have migrated db), and
+`docker compose -f control/compose.test.yml up -d --build --wait` (control's, on port 54340), then
 `TEST_COMPOSE_PROJECT=sb-test TEST_COMPOSE_FILE=../template/compose.test.yml npm test --workspaces --if-present`.
 CI (`.github/workflows/ci.yml`) does the same and builds all eight images; a `v*` tag pushes them to
 GHCR (`images.yml`).
 
-The panel is at `http://localhost:8080/panel/`; set its login with `node scripts/set-panel-password.mjs`
-in a real terminal (after `npm ci` at the root).
+The dashboard is Studio, served by control (`control/compose.yml`); a single template stack has none.
 
 ## Guide
 

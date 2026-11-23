@@ -26,6 +26,8 @@ jobs:
       - run: npm ci
       # rest is not in --wait: it exits and restarts until core's global setup has migrated db (which then waits for it)
       - run: docker compose -p sb-ci -f template/compose.test.yml up -d --build --wait db db-empty db-v1 && docker compose -p sb-ci -f template/compose.test.yml up -d rest
+      # control's tests migrate their own control-db (localhost:54340)
+      - run: docker compose -f control/compose.test.yml up -d --build --wait
       - run: npm run typecheck --workspaces --if-present
       - run: npm test --workspaces --if-present
       - run: node --test scripts/test/workspace.test.mjs scripts/test/compose-env.test.mjs scripts/test/template.test.mjs
@@ -55,4 +57,8 @@ jobs:
       # as root: the secret-file checks need files owned by root:SECRETS_GID
       - run: sudo "$(command -v node)" --test scripts/test/install-check.test.mjs scripts/test/gen-keys.test.mjs
       - run: bash job/test/job.test.sh
+      # the provisioner behind the socket proxy (allow-list and refusals) in real Docker
+      - run: npm -w provisioner run test:docker
+      # Studio's role gating and 401 refresh path (page.route fixtures, a Vite dev server)
+      - run: npm -w studio run e2e
       - run: node --test --test-concurrency=1 test/e2e/teardown.test.mjs test/e2e/stack.test.mjs
