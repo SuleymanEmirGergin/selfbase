@@ -10,6 +10,7 @@ import { pool } from '../src/db.ts'
 import { createProject, enqueue, startWorkers } from '../src/jobs/index.ts'
 import { openManifest, sealManifest } from '../src/manifest.ts'
 import { ProvisionerError, setProvisioner } from '../src/provisioner.ts'
+import { reconcileOnce } from '../src/reconcile.ts'
 import { enqueueDailyBackups, msUntilNext } from '../src/schedule.ts'
 import { getSecrets } from '../src/secrets.ts'
 import { FakeProvisioner } from './fake-provisioner.ts'
@@ -172,6 +173,20 @@ describe('import', () => {
     const out = await (await postForm(owner.token, form({ ...importFields({ name: 'half' }), env_file: envBlob(v1Env().text) }))).json()
     workers()
     expect((await finished(out.job_id)).error).toMatch(/delete this project, then import again/)
+  })
+
+  test('a certificate later than the wait leaves the import COMING_UP; a later reconcile pass activates it', async () => {
+    cert = 'pending'
+    const out = await (await postForm(owner.token, form({ ...importFields({ name: 'slow-cert' }), env_file: envBlob(v1Env().text) }))).json()
+    workers()
+    const job = await finished(out.job_id)
+    expect(job.status).toBe('failed')
+    expect(job.error).toMatch(/certificate for .* is not issued yet/)
+    const p = (await pool.query('select * from control.projects where ref = $1', [out.project.ref])).rows[0]
+    expect(p.status).toBe('COMING_UP')
+    cert = 'ok'
+    await reconcileOnce({ db: pool, provisioner: fake, probe: async () => cert })
+    expect((await row(p.id)).status).toBe('ACTIVE_HEALTHY')
   })
 
   test('a restore that exits 10 fails the job with "the database was not changed"', async () => {

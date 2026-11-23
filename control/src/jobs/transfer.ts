@@ -8,7 +8,7 @@ import { ApiError } from '../errors.ts'
 import { ProvisionerError } from '../provisioner.ts'
 import { getSecrets } from '../secrets.ts'
 import { defineJob, type JobCtx } from './engine.ts'
-import { activate, certificate, createSteps, failTo, healthy, healthySteps, need, step } from './project.ts'
+import { activate, certificate, createSteps, failTo, healthy, healthySteps, need, setStatus, step } from './project.ts'
 
 // what an import stops for the restore; db keeps running (the restore job connects to it)
 export const RESTORE_STOPS = ['core', 'rest', 'fn', 'pooler']
@@ -127,8 +127,10 @@ defineJob('control.backup', 'heavy', [
   }, false),
 ])
 
-// The project comes up empty as a create would (status RESTORING throughout), then the backup replaces its database
-// and storage with core, rest, fn and pooler stopped; core applies the platform migrations when it starts again.
+// The project comes up empty as a create would (status RESTORING until the data is back), then the backup replaces its
+// database and storage with core, rest, fn and pooler stopped; core applies the platform migrations when it starts
+// again. COMING_UP before the certificate wait: a late certificate fails the job there, and reconcile activates a
+// COMING_UP project once the probe passes, as after a create (it never looks at a RESTORING one).
 defineJob('project.import', 'heavy', [
   ...createSteps,
   step('healthy', healthy, false),
@@ -146,6 +148,7 @@ defineJob('project.import', 'heavy', [
   step('start', (ctx) => ctx.provisioner.start(need(ctx).ref, RESTORE_STOPS)),
   step('started', healthy, false),
   healthySteps[1], // warm
+  step('coming_up', (ctx) => setStatus(ctx, 'COMING_UP')),
   step('certificate', certificate, false),
   activate,
 ], failTo('INIT_FAILED', ['certificate']))
