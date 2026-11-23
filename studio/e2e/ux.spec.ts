@@ -239,6 +239,33 @@ test('a keyboard delete puts focus on Geri al; Enter there keeps the row and not
   expect(api.count(`DELETE /projects/${REF}/admin/rows/public/notes`)).toBe(0)
 })
 
+test('a tap on the undo toast does not hold the delete; a mouse hover does, and says so to a screen reader', async ({ browser }) => {
+  const ctx = await browser.newContext({ hasTouch: true })
+  const page = await ctx.newPage()
+  const api = await mockApi(page, routes())
+  const DEL = `DELETE /projects/${REF}/admin/rows/public/notes`
+  await page.goto(`/project/${REF}/editor`)
+  await page.getByRole('row').filter({ hasText: 'ilk sürüm yayında' }).click()
+  await page.getByRole('dialog', { name: 'Satırı düzenle' }).getByRole('button', { name: 'Sil' }).click()
+  const toast = page.getByRole('status').filter({ hasText: 'Satır silindi' })
+  await expect(toast.getByText('Geri sayım durdu')).toHaveCount(1) // focus holds it: announced in the live region
+  await page.getByRole('heading', { level: 1 }).tap() // focus leaves: the count runs
+  await expect(toast.getByText('Geri sayım durdu')).toHaveCount(0)
+  // what a phone sends for a tap: a touch pointer, then compat mouse events (Playwright's CDP tap omits the latter)
+  const tx = toast.locator('.tx')
+  await tx.dispatchEvent('pointerover', { pointerType: 'touch' })
+  await tx.dispatchEvent('mouseover')
+  await page.waitForTimeout(300)
+  await expect(toast).not.toContainText('durdu')
+  await toast.locator('.tx').hover() // a real mouse does hold it
+  await expect(toast).toContainText('durdu')
+  await page.waitForTimeout(5600)
+  expect(api.count(DEL)).toBe(0)
+  await page.mouse.move(700, 40)
+  await expect.poll(() => api.count(DEL), { timeout: 6500 }).toBe(1)
+  await ctx.close()
+})
+
 test('key-value labels keep identifiers in their own case under lang="tr": id, not İD', async ({ page }) => {
   const r = routes()
   r[`POST /projects/${REF}/admin/sql`] = { body: { columns: ['id', 'is_admin'], rows: [[7, true]], rowCount: 1, durationMs: 2 } }

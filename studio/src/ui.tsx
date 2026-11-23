@@ -211,10 +211,13 @@ function UndoToast({ t, close }: { t: Extract<Toast, { kind: 'undo' }>; close: (
     <div className={`toast${paused ? ' paused' : ''}`} role="status" ref={box}
       onFocus={() => setHeld((h) => ({ ...h, focus: true }))}
       onBlur={(e) => !e.currentTarget.contains(e.relatedTarget) && setHeld((h) => ({ ...h, focus: false }))}
-      onMouseEnter={() => setHeld((h) => ({ ...h, hover: true }))} onMouseLeave={() => setHeld((h) => ({ ...h, hover: false }))}>
+      // a mouse only: a tap emulates mouseenter with no leave until the next tap, which would hold the delete
+      onPointerEnter={(e) => e.pointerType === 'mouse' && setHeld((h) => ({ ...h, hover: true }))}
+      onPointerLeave={(e) => e.pointerType === 'mouse' && setHeld((h) => ({ ...h, hover: false }))}>
       <span className="ti s-mute"><Icon name="trash" /></span>
       <span className="tx" id={id}><b>{t.text}</b><span>{t.body}</span></span>
       <span className="cd" aria-hidden="true">{paused ? 'durdu' : `${left} sn`}</span>
+      {paused && <span className="sr-only">Geri sayım durdu</span>}
       <button className="btn sm" ref={button} aria-describedby={id} onClick={() => { if (timer.current?.undo()) t.undo(); finish() }}>
         <Icon name="undo" />Geri al
       </button>
