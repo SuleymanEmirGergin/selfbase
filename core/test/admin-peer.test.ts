@@ -1,8 +1,9 @@
 // Security review (Task 8): core sits on the shared proxy network too, so its admin port must refuse any peer
 // outside the project's own /27 (PROJECT_SUBNET), before the token is even looked at.
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { Hono } from 'hono'
 import { checkProjectSubnet, peerAllowed, requireAdminToken } from '../src/admin/auth.ts'
+import { adminApp } from '../src/app.ts'
 
 const token = process.env.ADMIN_TOKEN!
 const SUBNET = '10.207.0.32/27'
@@ -59,6 +60,23 @@ describe('admin middleware with PROJECT_SUBNET set', () => {
       expect((await call('::ffff:10.207.0.34')).status).toBe(200)
       expect((await call('10.207.0.34', 'Bearer wrong')).status).toBe(401)
     } finally {
+      delete process.env.PROJECT_SUBNET
+    }
+  })
+
+  it('a refused peer writes no request log line; an accepted one does', async () => {
+    process.env.PROJECT_SUBNET = SUBNET
+    let out = ''
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: any) => ((out += String(chunk)), true))
+    try {
+      const req = (remoteAddress: string) =>
+        adminApp.request('/admin/no-such', { headers: { authorization: `Bearer ${token}` } }, { incoming: { socket: { remoteAddress } } })
+      for (let i = 0; i < 3; i++) expect((await req('10.0.1.5')).status).toBe(403)
+      expect(out).toBe('')
+      await req('10.207.0.34')
+      expect(out.split('\n').filter(Boolean)).toHaveLength(1)
+    } finally {
+      spy.mockRestore()
       delete process.env.PROJECT_SUBNET
     }
   })

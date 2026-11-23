@@ -70,6 +70,8 @@ export const config = {
   storageDir: env.STORAGE_DIR || '/data/storage',
   pgrstUrl: env.PGRST_URL || 'http://rest:3000',
   fnUrl: env.FN_URL || 'http://fn:8000',
+  // hosts (names or addresses) net.http_* may reach although they resolve to a private, loopback or link-local address
+  netAllowHosts: new Set(list(env.NETQUEUE_ALLOW_HOSTS).map((h) => h.toLowerCase().replace(/^\[|\]$/g, ''))),
 }
 
 if (config.jwtSecret.length < 32) throw new Error('JWT_SECRET must be at least 32 characters')

@@ -193,7 +193,7 @@ test('node settings that would reach HostConfig unchecked stop startup', () => {
     { CONTROL_NETWORK: 'bridge' }, { PROXY_NETWORK: 'host' }, { CONTROL_CONTAINER: 'a b' },
     { BACKUP_HOST_DIR: '/var/run' }, { BACKUP_HOST_DIR: '/' }, { BACKUP_HOST_DIR: '/opt/selfbase' },
     { BACKUP_HOST_DIR: '/opt/selfbase/../../var/run' }, { BACKUP_HOST_DIR: '/opt/selfbasex/b' },
-    { CGROUP_PARENT: '../../x' }, { CGROUP_PARENT: '/' }, { LOG_SYSLOG_ADDR: 'udp://x y' }, { LOG_SYSLOG_ADDR: 'file:///etc/x' },
+    { CGROUP_PARENT: '../../x' }, { CGROUP_PARENT: '/' }, { LOG_SYSLOG_ADDR: 'udp://x y' }, { LOG_SYSLOG_ADDR: 'file:///etc/x' }, { LOG_SYSLOG_ADDR: 'tcp://127.0.0.1:5514' },
     { PROXY_ENTRYPOINT_HTTPS: 'a,b' }, { PROXY_CERTRESOLVER: 'le`' },
   ]
   for (const b of bad) assert.throws(() => loadSettings({ ...base, ...b }), /settings:/, JSON.stringify(b))

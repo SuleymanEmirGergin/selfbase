@@ -36,6 +36,8 @@ Object.assign(process.env, {
   FUNCTIONS_DIR: './.test-functions',
   PGRST_URL: `http://localhost:${restPort}`,
   FN_URL: 'http://localhost:54331',
+  // the netqueue test's stand-in servers; every other private address stays refused
+  NETQUEUE_ALLOW_HOSTS: '127.0.0.1',
 })
 
 afterAll(async () => {

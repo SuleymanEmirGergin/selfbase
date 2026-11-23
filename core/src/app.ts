@@ -75,6 +75,7 @@ app.all('/functions/v1/*', async (c, next) => {
 
 // Admin API on its own listener (server.ts, ADMIN_PORT): the project network only, never the proxy (AC-5).
 export const adminApp = new Hono()
-adminApp.use('*', requestLog('core-admin'))
+// 403 is only admin_forbidden: a peer outside the /27; a line each would let a neighbour fill the log store
+adminApp.use('*', requestLog('core-admin', [403]))
 adminApp.use('/admin/*', async (c, next) => (/^\/admin\/files\//.test(c.req.path) ? next() : jsonLimit(c, next)))
 adminApp.route('/admin', adminRouter)

@@ -15,7 +15,8 @@ export const logLine = (level: Level, msg: string, fields: Record<string, unknow
   write({ ts: new Date().toISOString(), level, svc: 'core', project, msg, ...fields })
 
 /** Logs each request once it has an answer and echoes its request id in x-request-id. */
-export const requestLog = (svc: string) =>
+/** skip: statuses that get no line (the admin port's refusals of foreign peers). */
+export const requestLog = (svc: string, skip: number[] = []) =>
   createMiddleware(async (c, next) => {
     const started = performance.now()
     const incoming = c.req.header('x-request-id')
@@ -23,6 +24,7 @@ export const requestLog = (svc: string) =>
     await next()
     c.res.headers.set('x-request-id', id)
     const status = c.res.status
+    if (skip.includes(status)) return
     write({
       ts: new Date().toISOString(), level: status >= 500 ? 'error' : 'info', svc, project, request_id: id,
       method: c.req.method, path: c.req.path, status, latency_ms: Math.round(performance.now() - started),

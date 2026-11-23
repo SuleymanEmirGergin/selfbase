@@ -6,7 +6,7 @@
 import { createServer, type IncomingMessage } from 'node:http'
 import { readFileSync } from 'node:fs'
 import { createHash, timingSafeEqual } from 'node:crypto'
-import { ProvisionError } from './names.ts'
+import { assertRef, ProvisionError } from './names.ts'
 import { loadSettings } from './settings.ts'
 import { TemplateError, validateTemplate } from './template.ts'
 import { buildProject, dryRunEnv, type Sizes } from './spec.ts'
@@ -58,6 +58,12 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
   }
 }
 
+// the ref is validated before its lock: the lock map only ever gets real refs, never a caller-chosen key
+const locked = <T>(ref: string, fn: () => Promise<T>) => {
+  if (ref !== 'control') assertRef(ref)
+  return ops.serial(ref, fn)
+}
+
 type Route = [method: string, path: RegExp, run: (p: string[], q: URLSearchParams, body: unknown) => Promise<unknown>]
 const P = '([^/]+)'
 const routes: Route[] = [
@@ -65,16 +71,16 @@ const routes: Route[] = [
   ['GET', /^\/projects$/, () => ops.listProjects(ctx)],
   ['GET', /^\/proxy$/, () => ops.proxyAddresses(ctx)],
   ['GET', new RegExp(`^/projects/${P}$`), ([ref]) => ops.projectState(ctx, ref)],
-  ['POST', new RegExp(`^/projects/${P}/ensure$`), ([ref], _, b) => ops.serial(ref, () => ops.ensure(ctx, ref, b))],
-  ['POST', new RegExp(`^/projects/${P}/(start|stop)$`), ([ref, a], _, b) => ops.serial(ref, () => ops.startStop(ctx, ref, a as 'start' | 'stop', b))],
+  ['POST', new RegExp(`^/projects/${P}/ensure$`), ([ref], _, b) => locked(ref, () => ops.ensure(ctx, ref, b))],
+  ['POST', new RegExp(`^/projects/${P}/(start|stop)$`), ([ref, a], _, b) => locked(ref, () => ops.startStop(ctx, ref, a as 'start' | 'stop', b))],
   ['DELETE', new RegExp(`^/projects/${P}$`), ([ref], q) => {
     const v = q.get('volumes') ?? 'false'
     if (v !== 'true' && v !== 'false') throw new ProvisionError(400, 'invalid_volumes', 'volumes must be true or false')
-    return ops.serial(ref, () => ops.remove(ctx, ref, v === 'true'))
+    return locked(ref, () => ops.remove(ctx, ref, v === 'true'))
   }],
-  ['POST', new RegExp(`^/projects/${P}/attach-proxy$`), ([ref]) => ops.serial(ref, () => ops.attachProxy(ctx, ref))],
+  ['POST', new RegExp(`^/projects/${P}/attach-proxy$`), ([ref]) => locked(ref, () => ops.attachProxy(ctx, ref))],
   // a job create also holds its ref's lock, so it cannot interleave with that project's delete (always ref, then jobs)
-  ['POST', new RegExp(`^/projects/${P}/jobs$`), ([ref], _, b) => ops.serial(ref, () => ops.serial('jobs', () => ops.runJob(ctx, ref, b)))],
+  ['POST', new RegExp(`^/projects/${P}/jobs$`), ([ref], _, b) => locked(ref, () => ops.serial('jobs', () => ops.runJob(ctx, ref, b)))],
   ['GET', new RegExp(`^/projects/${P}/jobs/${P}$`), ([ref, type]) => ops.serial('jobs', () => ops.jobStatus(ref, type))],
   ['GET', new RegExp(`^/projects/${P}/services/${P}/logs$`), ([ref, s], q) => ops.serviceLogs(ctx, ref, s, q.get('tail'))],
   ['GET', new RegExp(`^/projects/${P}/services/${P}/stats$`), ([ref, s]) => ops.serviceStats(ctx, ref, s)],

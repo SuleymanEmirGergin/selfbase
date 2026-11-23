@@ -70,6 +70,14 @@ test('no panel settings and no Coolify labels are left', () => {
   assert.doesNotMatch(compose, /coolify\./)
 })
 
+test('control resolves its siblings on the selfbase network only (it is on the proxy network too)', () => {
+  const ctl = readFileSync(join(root, 'control', 'compose.yml'), 'utf8')
+  // Docker's DNS answers a bare name from the first network in name order, and coolify sorts before selfbase
+  assert.match(ctl, /^\s+PROVISIONER_URL: http:\/\/selfbase-provisioner\.selfbase:8090$/m)
+  assert.match(ctl, /^\s+CONTROL_DB_HOST: selfbase-control-db\.selfbase$/m)
+  assert.match(ctl, /^\s+LOGS_URL: http:\/\/selfbase-logs\.selfbase:9428$/m)
+})
+
 // The local stack (compose.yml + compose.build.yml), resolved by docker compose itself.
 // An empty env file keeps a real .env out of it; the values come from the environment.
 const REQUIRED = { REGISTRY: 'selfbase', TEMPLATE_VERSION: 'dev', POSTGRES_PASSWORD: 'x', AUTHENTICATOR_PASSWORD: 'x', JWT_SECRET: 'x',

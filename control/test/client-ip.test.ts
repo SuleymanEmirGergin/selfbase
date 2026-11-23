@@ -4,6 +4,7 @@
 // project networks, not only through Traefik.
 import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest'
 import { clientIp, trustProxies } from '../src/core.ts'
+import { ProvisionerError } from '../src/provisioner.ts'
 
 const ctx = (peer: string, xff?: string) =>
   ({ req: { header: (k: string) => (k === 'x-forwarded-for' ? xff : undefined) }, env: { incoming: { socket: { remoteAddress: peer } } } }) as any
@@ -35,6 +36,16 @@ it('a failed refresh keeps the trusted set; IP literals are trusted from the sta
   expect(clientIp(ctx('198.51.100.1', '203.0.113.9'))).toBe('203.0.113.9')
 })
 
+it('a stopped proxy (503 proxy_unavailable) leaves only the literals trusted: its old address may be reused', async () => {
+  const t = trustProxies(source, ['198.51.100.1'])
+  await t.refresh()
+  expect(clientIp(ctx(PROXY, '203.0.113.7'))).toBe('203.0.113.7')
+  answer = async () => { throw new ProvisionerError('proxy_unavailable', 'not running', 503) }
+  await t.refresh()
+  expect(clientIp(ctx(PROXY, '203.0.113.7'))).toBe(PROXY)
+  expect(clientIp(ctx('198.51.100.1', '203.0.113.9'))).toBe('203.0.113.9')
+})
+
 it('an unknown peer sending X-Forwarded-For re-asks at most every 5 s (a restarted proxy has a new address)', async () => {
   vi.useFakeTimers({ toFake: ['Date'] })
   await trustProxies(source).refresh()
@@ -47,7 +58,7 @@ it('an unknown peer sending X-Forwarded-For re-asks at most every 5 s (a restart
   await vi.waitFor(() => expect(clientIp(ctx('192.0.2.11', '203.0.113.7'))).toBe('203.0.113.7'))
 })
 
-it('without a source every peer is a proxy (core behind its own Traefik route)', () => {
+it('without a source every peer is a proxy (tests; core sets TRUSTED_PROXY_IPS)', () => {
   trustProxies(null)
   expect(clientIp(ctx('10.207.0.5', '6.6.6.6'))).toBe('6.6.6.6')
 })

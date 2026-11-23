@@ -4,8 +4,8 @@
 # networks and Traefik labels are the provisioner's. Check: node provisioner/src/template.ts --check template/compose.yml
 # Local run (adds build, restart, the published core port and the project name):
 #   docker compose -f template/compose.yml -f template/compose.build.yml --env-file .env up -d --build
-# REGISTRY, TEMPLATE_VERSION, PROJECT_SUBNET, DB_SHARED_BUFFERS, DB_MAX_CONNECTIONS and POOL_SIZE are set by
-# the provisioner; a project env value for any of them is ignored.
+# REGISTRY, TEMPLATE_VERSION, PROJECT_SUBNET, DB_SHARED_BUFFERS, DB_MAX_CONNECTIONS, POOL_SIZE, DB_HOST, PGRST_URL,
+# FN_URL and TRUSTED_PROXY_IPS are set by the provisioner; a project env value for any of them is ignored.
 services:
   db:
     image: ${REGISTRY}/selfbase-db:${TEMPLATE_VERSION}
@@ -45,7 +45,9 @@ services:
     image: ${REGISTRY}/selfbase-core:${TEMPLATE_VERSION}
     init: true
     environment:
-      DB_HOST: db
+      # core is also on the shared proxy network, where a bare name may resolve to a foreign container first: the
+      # provisioner sets these to <name>.sb-<ref> (resolved on the project network only); bare names for local compose
+      DB_HOST: ${DB_HOST:-db}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       AUTHENTICATOR_PASSWORD: ${AUTHENTICATOR_PASSWORD:?set AUTHENTICATOR_PASSWORD}
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
@@ -56,6 +58,8 @@ services:
       PROJECT_SUBNET: ${PROJECT_SUBNET:-}
       PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL (public https origin of core)}
       TRUST_PROXY: ${TRUST_PROXY:-true}
+      # X-Forwarded-For counts only from these peers (the proxy container's address); empty: from no peer
+      TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-}
       SITE_URL: ${SITE_URL:?set SITE_URL (the app origin)}
       AUTH_DISABLE_SIGNUP: ${AUTH_DISABLE_SIGNUP:-false}
       AUTH_REDIRECT_ALLOWLIST: ${AUTH_REDIRECT_ALLOWLIST:-}
@@ -84,8 +88,10 @@ services:
       GOOGLE_USERINFO_URL: ${GOOGLE_USERINFO_URL:-https://openidconnect.googleapis.com/v1/userinfo}
       STORAGE_DIR: /data/storage # fixed: the storage volume's mount point below
       STORAGE_MAX_UPLOAD_BYTES: ${STORAGE_MAX_UPLOAD_BYTES:-52428800}
-      PGRST_URL: http://rest:3000
-      FN_URL: http://fn:8000
+      PGRST_URL: ${PGRST_URL:-http://rest:3000}
+      FN_URL: ${FN_URL:-http://fn:8000}
+      # net.http_* may not reach private, loopback or link-local addresses except these hosts (comma-separated)
+      NETQUEUE_ALLOW_HOSTS: ${NETQUEUE_ALLOW_HOSTS:-}
     volumes:
       - storage:/data/storage
     # rest only started, not healthy: it can log in only after core has migrated (see rest)

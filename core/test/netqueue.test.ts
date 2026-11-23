@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { createServer } from 'node:http'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -35,13 +35,7 @@ const post = async (url: string, headers = {}) =>
 
 let fn: Awaited<ReturnType<typeof fake>>
 let core: Awaited<ReturnType<typeof fake>>
-const realFetch = globalThis.fetch
-// Guard: anything not aimed at a local stand-in fails instead of leaving the machine.
-const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
-  const u = new URL(String(input))
-  if (u.hostname !== '127.0.0.1') return Promise.reject(new Error(`outbound request blocked in test: ${u.href}`))
-  return realFetch(input, init)
-})
+// Every target here is a local stand-in on 127.0.0.1 or an address the worker refuses before connecting.
 
 beforeAll(async () => {
   // Rows left by other tests or earlier runs are not ours to send.
@@ -53,7 +47,6 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await stopNetQueue()
-  fetchSpy.mockRestore()
   await Promise.all([fn, core].map((f) => new Promise((r) => f.srv.close(r))))
 })
 
@@ -84,13 +77,11 @@ describe('netqueue', () => {
     expect(fn.hits).toHaveLength(1)
     expect(fn.hits[0]).toMatchObject({ method: 'POST', url: '/x', body: '{"a":1}' })
     expect(fn.hits[0].headers).toMatchObject({ authorization: 'Bearer stored-key', 'x-extra': 'y' })
-    expect(fetchSpy.mock.calls.every(([u]) => !String(u).includes('supabase.co'))).toBe(true)
   })
 
   it('blocks a supabase.co address it cannot rewrite', async () => {
     const id = await post('https://abc.supabase.co/başka')
     expect(await settled(id)).toMatchObject({ status: 'blocked', attempts: 0 })
-    expect(fetchSpy.mock.calls.every(([u]) => !String(u).includes('supabase.co'))).toBe(true)
   })
 
   it('does not follow redirects', async () => {
@@ -115,6 +106,24 @@ describe('netqueue', () => {
     const hits = fn.hits.slice(before)
     expect(hits.map((h) => h.url)).toContain('/good')
     expect(hits.find((h) => h.url === '/bad')?.headers.authorization).toBeUndefined()
+  })
+
+  it('refuses private, loopback and link-local destinations unless the host is allow-listed', async () => {
+    const local = await fake(200)
+    try {
+      const port = new URL(local.url).port
+      // localhost resolves to a loopback address; only 127.0.0.1 is in NETQUEUE_ALLOW_HOSTS (setup.ts)
+      for (const url of [`http://localhost:${port}/x`, 'http://169.254.169.254/latest/meta-data', 'http://10.1.2.3/hook',
+        'http://[::1]:1/x', 'http://[::ffff:127.0.0.1]:1/x', 'http://0.0.0.0:1/x', 'https://user:pw@example.com/x']) {
+        expect(await settled(await post(url)), url).toMatchObject({ status: 'blocked', attempts: 0, last_error: expect.stringMatching(/^blocked/) })
+      }
+      expect(local.hits).toEqual([])
+      // the allow-listed address is reached
+      expect(await settled(await post(`${local.url}/ok`))).toMatchObject({ status: 'done' })
+      expect(local.hits.map((h) => h.url)).toEqual(['/ok'])
+    } finally {
+      await new Promise((r) => local.srv.close(r))
+    }
   })
 
   it('marks a request failed after 3 attempts against a 500 target', async () => {

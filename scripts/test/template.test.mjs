@@ -71,6 +71,10 @@ test('renders for every size; only core joins the proxy, on 8080; the admin port
     const core = envOf('core')
     assert.deepEqual([core.ADMIN_PORT, core.ADMIN_TOKEN, core.PROJECT_REF, core.AUTH_DISABLE_SIGNUP], ['8081', 't', ENV.PROJECT_REF, 'false'])
     assert.ok(!Object.keys(core).some((k) => k.startsWith('PANEL_')))
+    // core is on the proxy network too: siblings only by names Docker resolves on the project network
+    const net = `sb-${ENV.PROJECT_REF}`
+    assert.deepEqual([core.DB_HOST, core.PGRST_URL, core.FN_URL], [`db.${net}`, `http://rest.${net}:3000`, `http://fn.${net}:8000`])
+    assert.equal(core.TRUSTED_PROXY_IPS, '')
     assert.ok(!('POSTGRES_PASSWORD' in envOf('fn')) && !('SUPABASE_DB_URL' in envOf('fn')))
     for (const c of p.containers) {
       assert.equal(c.body.Image, `${NODE.registry}/selfbase-${c.service}:2.0.0`)

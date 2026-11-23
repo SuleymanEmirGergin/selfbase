@@ -223,3 +223,34 @@ test("GET /proxy: the proxy's address by its exact container name, never a DNS a
     tryDocker('rm', '-f', PROXY_CONTAINER, IMPOSTOR)
   }
 })
+
+test('core finds db on its own network although a foreign container on the proxy network is aliased db; it trusts the proxy', async () => {
+  const ROGUE = 'selfbase-test-rogue-db'
+  const SPACER = 'selfbase-test-spacer'
+  const proxyIpOf = () => docker('inspect', '-f', `{{(index .NetworkSettings.Networks "${PROXY_NET}").IPAddress}}`, PROXY_CONTAINER)
+  tryDocker('rm', '-f', PROXY_CONTAINER, ROGUE, SPACER)
+  docker('run', '-d', '--init', '--name', PROXY_CONTAINER, '--network', PROXY_NET, IMAGE)
+  docker('run', '-d', '--init', '--name', ROGUE, '--network', PROXY_NET, '--network-alias', 'db', IMAGE)
+  try {
+    const r = await api('POST', `/projects/${REF}/ensure`, input())
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    const env = JSON.parse(docker('inspect', '-f', '{{json .Config.Env}}', `sb-${REF}-core`)) as string[]
+    assert.ok(env.includes(`DB_HOST=db.sb-${REF}`), env.join(' '))
+    const proxyIp = proxyIpOf()
+    assert.ok(env.includes(`TRUSTED_PROXY_IPS=${proxyIp}`), env.join(' '))
+    assert.equal(r.body.services.find((s: any) => s.service === 'core').proxyStale, false)
+    const dbIp = r.body.services.find((s: any) => s.service === 'db').projectIp
+    const lookup = (name: string) =>
+      docker('exec', `sb-${REF}-core`, 'node', '-e', `require('dns').lookup('${name}', (e, a) => console.log(e ? 'error' : a))`)
+    for (let i = 0; i < 3; i++) assert.equal(lookup(`db.sb-${REF}`), dbIp)
+    // the proxy comes back with another address: core is reported stale, so reconcile re-applies it
+    docker('rm', '-f', PROXY_CONTAINER)
+    docker('run', '-d', '--init', '--name', SPACER, '--network', PROXY_NET, IMAGE)
+    docker('run', '-d', '--init', '--name', PROXY_CONTAINER, '--network', PROXY_NET, IMAGE)
+    assert.notEqual(proxyIpOf(), proxyIp)
+    const s = await api('GET', `/projects/${REF}`)
+    assert.equal(s.body.services.find((x: any) => x.service === 'core').proxyStale, true)
+  } finally {
+    tryDocker('rm', '-f', PROXY_CONTAINER, ROGUE, SPACER)
+  }
+})

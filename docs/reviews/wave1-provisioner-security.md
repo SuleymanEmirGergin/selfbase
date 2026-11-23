@@ -99,7 +99,7 @@ proxy), C = `core/test/admin-peer.test.ts`.
 
 | # | Finding (source) | Verdict | Test |
 |---|---|---|---|
-| 1 | Settings reach HostConfig unvalidated: `CONTROL_NETWORK=host`, `BACKUP_HOST_DIR=/var/run` (T6) | Fixed: network/container names plain and not `host/none/bridge/default`; backup dir under `/opt/selfbase/`; `CGROUP_PARENT` a `.slice`; `LOG_SYSLOG_ADDR` `udp|tcp://host:port`; entrypoints and resolver plain names | P |
+| 1 | Settings reach HostConfig unvalidated: `CONTROL_NETWORK=host`, `BACKUP_HOST_DIR=/var/run` (T6) | Fixed: network/container names plain and not `host/none/bridge/default`; backup dir under `/opt/selfbase/`; `CGROUP_PARENT` a `.slice`; `LOG_SYSLOG_ADDR` `udp://host:port` (tcp refused since the final-review fix wave: D-5); entrypoints and resolver plain names | P |
 | 2 | Render errors surface as TemplateError (500) (T6) | Fixed: a render failure at request time is 400 `invalid_env` naming the variable; start-time checks stay `TemplateError` | P, O |
 | 3 | Template service `job-*` collides with job containers (T6) | Fixed: refused by `validateTemplate` | P |
 | 4 | Project env supplies `DB_SHARED_BUFFERS`/`DB_MAX_CONNECTIONS`/`POOL_SIZE` when a size omits them (T6) | Fixed: these and `REGISTRY`, `TEMPLATE_VERSION`, `PROJECT_SUBNET` are dropped from project env; the template's own default applies | P |

@@ -11,9 +11,11 @@
 // specHash = sha256 of the canonical JSON of body without the selfbase.spec label; it is also that label.
 //
 // Render variables = input.env without the RESERVED names, plus REGISTRY, TEMPLATE_VERSION, PROJECT_SUBNET
-// (node/input) and DB_SHARED_BUFFERS, DB_MAX_CONNECTIONS, POOL_SIZE (size table, when set). A container's Env
+// (node/input), DB_SHARED_BUFFERS, DB_MAX_CONNECTIONS, POOL_SIZE (size table, when set), the sibling addresses
+// DB_HOST, PGRST_URL, FN_URL (qualified by sb-<ref>) and TRUSTED_PROXY_IPS (the proxy's address, ops reads it). A container's Env
 // is only its template `environment`, rendered. Every refusal is a ProvisionError thrown before anything is returned.
 import { createHash } from 'node:crypto'
+import { isIP } from 'node:net'
 import { assertRef, containerName, networkName, ProvisionError, volumeName } from './names.ts'
 import { parseCidr, VERSION_RE, type NodeSettings } from './settings.ts'
 import { ENV_KEY_RE, isObj, MissingVarError, render, startOrder, type Template } from './template.ts'
@@ -34,7 +36,11 @@ const MAX_ENV_VALUE = 64 * 1024
 // default + legacy + custom domains of one project; each new one can cost a certificate (Task 11 caps new hosts)
 const MAX_HOSTS = 10
 // render variables only the provisioner sets; a project env value for one of them is dropped
-const RESERVED = ['REGISTRY', 'TEMPLATE_VERSION', 'PROJECT_SUBNET', 'DB_SHARED_BUFFERS', 'DB_MAX_CONNECTIONS', 'POOL_SIZE']
+const RESERVED = ['REGISTRY', 'TEMPLATE_VERSION', 'PROJECT_SUBNET', 'DB_SHARED_BUFFERS', 'DB_MAX_CONNECTIONS', 'POOL_SIZE',
+  'DB_HOST', 'PGRST_URL', 'FN_URL', 'TRUSTED_PROXY_IPS']
+// below every rule-length priority Traefik gives a foreign router (and above selfbase-paused's 1): a neighbour's
+// router for the same host always wins over ours, however many hosts our rule lists
+const ROUTER_PRIORITY = '10'
 
 /** Every variable the template reads, set to 'check', for the start-time and --check dry runs. */
 export const dryRunEnv = (tpl: Template) => Object.fromEntries([...JSON.stringify(tpl).matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)/g)]
@@ -77,8 +83,10 @@ function stringMap(v: unknown): Record<string, string> {
   return { ...(v as Record<string, string>) }
 }
 
-function hostConfig(node: NodeSettings, name: string, r: SizeEntry, restart: string, network: string) {
+function hostConfig(node: NodeSettings, name: string, r: SizeEntry, restart: string, network: string, capDrop: string[]) {
   return {
+    // on a shared bridge: the non-root services need no capability; db's entrypoint and jobs run as root (chown, gosu)
+    CapDrop: capDrop,
     Memory: r.mem_mb * MiB,
     MemorySwap: r.mem_mb * MiB,
     NanoCpus: Math.round(r.cpus * 1e9),
@@ -111,12 +119,14 @@ function traefikLabels(ref: string, hosts: string[], node: NodeSettings): Record
     'traefik.enable': 'true',
     'traefik.docker.network': node.proxyNetwork,
     [`traefik.http.routers.${r}.rule`]: rule,
+    [`traefik.http.routers.${r}.priority`]: ROUTER_PRIORITY,
     [`traefik.http.routers.${r}.entrypoints`]: node.entrypointHttps,
     [`traefik.http.routers.${r}.tls`]: 'true',
     ...(node.certResolver ? { [`traefik.http.routers.${r}.tls.certresolver`]: node.certResolver } : {}),
     [`traefik.http.routers.${r}.service`]: r,
     [`traefik.http.services.${r}.loadbalancer.server.port`]: '8080',
     [`traefik.http.routers.${r}-http.rule`]: rule,
+    [`traefik.http.routers.${r}-http.priority`]: ROUTER_PRIORITY,
     [`traefik.http.routers.${r}-http.entrypoints`]: node.entrypointHttp,
     [`traefik.http.routers.${r}-http.middlewares`]: `${r}-redirect`,
     [`traefik.http.routers.${r}-http.service`]: r,
@@ -125,7 +135,8 @@ function traefikLabels(ref: string, hosts: string[], node: NodeSettings): Record
   }
 }
 
-export function buildProject(input: EnsureInput, tpl: Template, sizes: Sizes, node: NodeSettings):
+/** proxyIps: the proxy container's addresses (ops reads them by exact name); core trusts X-Forwarded-For from these only. */
+export function buildProject(input: EnsureInput, tpl: Template, sizes: Sizes, node: NodeSettings, proxyIps: string[] = []):
   { network: { name: string; body: Record<string, unknown> }; volumes: string[]; containers: ContainerSpec[] } {
   const { ref, templateVersion, size, subnet, hosts } = input
   assertRef(ref)
@@ -163,7 +174,13 @@ export function buildProject(input: EnsureInput, tpl: Template, sizes: Sizes, no
   for (const k of dropped) delete env[k]
   // names only: the values are control's and may be secrets
   if (dropped.length) console.warn(`provisioner: ${ref}: ignored provisioner-set env names from the request: ${dropped.join(', ')}`)
+  const net = networkName(ref)
   Object.assign(env, {
+    // core is also on the proxy network, where Docker's DNS may answer a bare name first from a foreign container
+    DB_HOST: `db.${net}`,
+    PGRST_URL: `http://rest.${net}:3000`,
+    FN_URL: `http://fn.${net}:8000`,
+    TRUSTED_PROXY_IPS: proxyIps.filter((a) => isIP(a)).join(','),
     REGISTRY: node.registry,
     TEMPLATE_VERSION: templateVersion,
     PROJECT_SUBNET: subnet,
@@ -176,7 +193,6 @@ export function buildProject(input: EnsureInput, tpl: Template, sizes: Sizes, no
     try { return render(v, env) } catch (e) { throw e instanceof MissingVarError ? new ProvisionError(400, 'invalid_env', e.message) : e }
   }
 
-  const net = networkName(ref)
   const containers = startOrder(tpl.services).map((service) => {
     const s = tpl.services[service]
     const r = res(service)
@@ -196,7 +212,7 @@ export function buildProject(input: EnsureInput, tpl: Template, sizes: Sizes, no
         Timeout: hc.timeout && ns(hc.timeout), Retries: hc.retries, StartPeriod: hc.start_period && ns(hc.start_period) } } : {}),
       Labels: { ...baseLabels(ref, service, templateVersion), ...(service === 'core' ? traefikLabels(ref, hosts, node) : {}) },
       HostConfig: {
-        ...hostConfig(node, name, r, 'unless-stopped', net),
+        ...hostConfig(node, name, r, 'unless-stopped', net, service === 'db' ? ['NET_RAW'] : ['ALL']),
         Mounts: s.volumes.map((v) => ({ Type: 'volume', Source: volumeName(ref, v.name), Target: v.path, ReadOnly: v.readOnly })),
         ...(r.shm_mb ? { ShmSize: r.shm_mb * MiB } : {}),
         ...(s.init ? { Init: true } : {}),
@@ -250,7 +266,7 @@ export function buildJob(input: JobInput, node: NodeSettings): ContainerSpec {
     Cmd: cmd,
     Labels: baseLabels(ref, service, node.templateVersion),
     HostConfig: {
-      ...hostConfig(node, name, JOB_RES, 'no', net),
+      ...hostConfig(node, name, JOB_RES, 'no', net, ['NET_RAW']),
       Init: true,
       // the only bind mount the provisioner ever writes (AC-11)
       Mounts: [{ Type: 'bind', Source: node.backupHostDir, Target: '/backups' }, ...storage],

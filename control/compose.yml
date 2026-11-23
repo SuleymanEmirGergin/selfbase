@@ -38,6 +38,11 @@ services:
       CONTROL_DB_PASSWORD_FILE: /run/secrets/control_db_password
       CONTROL_JWT_SECRET_FILE: /run/secrets/control_jwt_secret
       PROVISIONER_TOKEN_FILE: /run/secrets/provisioner_token
+      # network-qualified: control is also on the proxy network, which Docker's DNS asks first (coolify < selfbase),
+      # so a foreign container aliased selfbase-provisioner there would otherwise receive every project secret
+      PROVISIONER_URL: http://selfbase-provisioner.selfbase:8090
+      CONTROL_DB_HOST: selfbase-control-db.selfbase
+      LOGS_URL: http://selfbase-logs.selfbase:9428
       BASE_DOMAIN: ${BASE_DOMAIN:?set BASE_DOMAIN}
       PUBLIC_URL: ${PUBLIC_URL:-}
       NODE_NAME: ${NODE_NAME:-}

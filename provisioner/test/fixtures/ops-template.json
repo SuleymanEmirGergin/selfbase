@@ -10,7 +10,7 @@
     "core": {
       "image": "${REGISTRY}/selfbase-core:${TEMPLATE_VERSION}",
       "init": true,
-      "environment": { "CORE_MARKER": "${CORE_MARKER:-fixed}" },
+      "environment": { "CORE_MARKER": "${CORE_MARKER:-fixed}", "DB_HOST": "${DB_HOST:-db}", "TRUSTED_PROXY_IPS": "${TRUSTED_PROXY_IPS:-}" },
       "volumes": ["storage:/data/storage"],
       "depends_on": ["db"],
       "stop_grace_period": "2s"

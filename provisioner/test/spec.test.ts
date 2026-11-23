@@ -55,6 +55,7 @@ test('per-service memory equals sizes for every size, swap equal', () => {
       assert.equal(hc.MemorySwap, hc.Memory)
       assert.ok(hc.NanoCpus > 0 && hc.PidsLimit > 0)
       assert.deepEqual(hc.SecurityOpt, ['no-new-privileges:true'])
+      assert.deepEqual(hc.CapDrop, c.service === 'db' ? ['NET_RAW'] : ['ALL'], c.service)
       assert.deepEqual(hc.RestartPolicy, { Name: 'unless-stopped' })
       assert.ok(hc.Mounts.every((m: any) => m.Type === 'volume' && m.Source.startsWith(`sb-${REF}-`)))
       assert.equal(hc.LogConfig.Type, 'syslog')
@@ -128,6 +129,9 @@ test('only core is on the proxy network and carries traefik labels, all named sb
       else assert.ok(['traefik.enable', 'traefik.docker.network'].includes(k), k)
     }
     assert.equal(l[`traefik.http.routers.sb-${REF}.rule`], `Host(\`${REF}.example.com\`) || Host(\`api.custom.org\`)`)
+    // explicit and low: a foreign router for the same host (rule-length priority) always wins over ours
+    assert.equal(l[`traefik.http.routers.sb-${REF}.priority`], '10')
+    assert.equal(l[`traefik.http.routers.sb-${REF}-http.priority`], '10')
     assert.equal(l[`traefik.http.routers.sb-${REF}.entrypoints`], 'https')
     assert.equal(l[`traefik.http.routers.sb-${REF}.tls`], 'true')
     assert.equal(l[`traefik.http.routers.sb-${REF}.tls.certresolver`], 'letsencrypt')
@@ -223,6 +227,10 @@ test('backup job: one bind, the backup host dir; storage volume; fixed command',
   assert.deepEqual(spec.networks, [`sb-${REF}`])
   scan(spec, 'job')
   assert.deepEqual(buildJob(job({ type: 'restore' }), NODE).body.Cmd, ['bash', '/scripts/restore.sh'])
+})
+
+test('jobs run as root (pg_dump, tar) but without NET_RAW', () => {
+  assert.deepEqual((buildJob(job(), NODE).body.HostConfig as any).CapDrop, ['NET_RAW'])
 })
 
 test('control job: control network, no volume', () => {

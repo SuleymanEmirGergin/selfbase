@@ -10,7 +10,9 @@ export type Ctx = { tpl: Template; sizes: Sizes; node: NodeSettings }
 export type ServiceState = { service: string; exists: boolean; state: string | null; health: string | null
   specHash: string | null; templateVersion: string | null; memLimitMb: number | null; proxyAttached: boolean
   /** the address on sb-<ref>: control connects to it, never to a name Docker's DNS may answer from another network */
-  projectIp: string | null }
+  projectIp: string | null
+  /** core only: its TRUSTED_PROXY_IPS is not the proxy's current address (a restarted proxy); ensure recreates it */
+  proxyStale: boolean }
 
 const MiB = 1024 * 1024
 const SERVICE_RE = /^[a-z][a-z0-9_-]*$/
@@ -53,13 +55,17 @@ export function serial<T>(key: string, fn: () => Promise<T>): Promise<T> {
   return next
 }
 
-function serviceState(service: string, c: any, node: NodeSettings, network: string): ServiceState {
-  if (!c) return { service, exists: false, state: null, health: null, specHash: null, templateVersion: null, memLimitMb: null, proxyAttached: false, projectIp: null }
+// the proxy's current addresses as core's TRUSTED_PROXY_IPS renders them; null while the proxy is down
+const proxyIps = (ctx: Ctx) => proxyAddresses(ctx).then((r) => r.addresses, () => null)
+
+function serviceState(service: string, c: any, node: NodeSettings, network: string, proxy: string[] | null): ServiceState {
+  if (!c) return { service, exists: false, state: null, health: null, specHash: null, templateVersion: null, memLimitMb: null, proxyAttached: false, projectIp: null, proxyStale: false }
   const l = c.Config?.Labels ?? {}
   return { service, exists: true, state: c.State.Status, health: c.State.Health?.Status ?? null, specHash: l['selfbase.spec'] ?? null,
     templateVersion: l['selfbase.template'] ?? null, memLimitMb: c.HostConfig.Memory / MiB,
     proxyAttached: Object.hasOwn(c.NetworkSettings?.Networks ?? {}, node.proxyNetwork),
-    projectIp: c.NetworkSettings?.Networks?.[network]?.IPAddress || null }
+    projectIp: c.NetworkSettings?.Networks?.[network]?.IPAddress || null,
+    proxyStale: service === 'core' && proxy !== null && !(c.Config?.Env ?? []).includes(`TRUSTED_PROXY_IPS=${proxy.join(',')}`) }
 }
 
 export async function projectState(ctx: Ctx, ref: string) {
@@ -68,8 +74,9 @@ export async function projectState(ctx: Ctx, ref: string) {
   const labelled = (await listContainers({ label: [`selfbase.project=${ref}`] })).map((c) => c.Labels?.['selfbase.service'])
     .filter((s): s is string => typeof s === 'string' && SERVICE_RE.test(s) && !s.startsWith('job-'))
   const services = [...new Set([...startOrder(ctx.tpl.services), ...labelled])]
+  const proxy = await proxyIps(ctx)
   return { ref, network: !!net, controlAttached: attached(net, ctx.node.controlContainer),
-    services: await Promise.all(services.map(async (s) => serviceState(s, await inspect(containerName(ref, s)), ctx.node, networkName(ref)))) }
+    services: await Promise.all(services.map(async (s) => serviceState(s, await inspect(containerName(ref, s)), ctx.node, networkName(ref), proxy))) }
 }
 
 export async function listProjects(ctx: Ctx) {
@@ -82,7 +89,7 @@ export async function ensure(ctx: Ctx, ref: string, body: unknown) {
   assertRef(ref)
   if (!isObj(body)) refuse(400, 'invalid_body', 'body must be a JSON object')
   const { recreate = [], ...input } = body as Record<string, unknown>
-  const spec = buildProject({ ...input, ref } as EnsureInput, ctx.tpl, ctx.sizes, ctx.node)
+  const spec = buildProject({ ...input, ref } as EnsureInput, ctx.tpl, ctx.sizes, ctx.node, (await proxyIps(ctx)) ?? [])
   if (!Array.isArray(recreate) || !recreate.every((s) => spec.containers.some((c) => c.service === s))) {
     refuse(400, 'invalid_recreate', 'recreate must list template services')
   }

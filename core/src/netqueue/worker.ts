@@ -1,3 +1,7 @@
+import { lookup, type LookupAddress } from 'node:dns'
+import { request as httpRequest, type OutgoingHttpHeaders } from 'node:http'
+import { request as httpsRequest } from 'node:https'
+import { BlockList, isIP, type LookupFunction } from 'node:net'
 import { config } from '../config.ts'
 import { pool } from '../db.ts'
 import { listen } from '../realtime/hub.ts'
@@ -8,6 +12,49 @@ export type NetQueueOptions = Partial<Bases> & { retryDelayMs?: number; scanMs?:
 
 const MAX_ATTEMPTS = 3
 const CORE_PATHS = /^\/(rest|auth|storage)\/v1(\/|$)/
+
+// core sits on the shared proxy network: a queued request must not reach other teams' containers, other projects,
+// control, the host or cloud metadata. Every address a host resolves to is checked at connect time (the lookup the
+// socket really uses, so a second DNS answer cannot differ), unless the host is in NETQUEUE_ALLOW_HOSTS.
+const PRIVATE = new BlockList()
+for (const [a, p] of [['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16],
+  ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15], ['224.0.0.0', 3]] as const) PRIVATE.addSubnet(a, p, 'ipv4')
+// ::/96 holds :: and ::1; IPv4-mapped, NAT64 and 6to4 can carry any IPv4 address
+for (const [a, p] of [['::', 96], ['::ffff:0:0', 96], ['64:ff9b::', 96], ['2002::', 16], ['fc00::', 7], ['fe80::', 10], ['ff00::', 8]] as const) {
+  PRIVATE.addSubnet(a, p, 'ipv6')
+}
+const isPrivate = (addr: string) => PRIVATE.check(addr, isIP(addr) === 6 ? 'ipv6' : 'ipv4')
+
+class Blocked extends Error {}
+
+const guardedLookup: LookupFunction = (hostname, options, callback) => {
+  lookup(hostname, { ...options, all: true }, (err, addrs: LookupAddress[]) => {
+    if (err) return callback(err, '', 0)
+    if (addrs.some((a) => isPrivate(a.address))) return callback(new Blocked(`blocked: ${hostname} resolves to a private address`), '', 0)
+    if (options.all) (callback as unknown as (e: null, a: LookupAddress[]) => void)(null, addrs)
+    else callback(null, addrs[0].address, addrs[0].family)
+  })
+}
+
+/** One request; resolves with the status. `guard`: refuse private destinations (not for the internal rewrites). */
+function sendOnce(target: string, method: string, headers: OutgoingHttpHeaders, body: string | undefined, guard: boolean): Promise<number> {
+  const u = new URL(target)
+  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.+$/, '')
+  const checked = guard && !config.netAllowHosts.has(host)
+  // a literal address is never looked up: check it here
+  if (checked && isIP(host) && isPrivate(host)) return Promise.reject(new Blocked(`blocked: ${host} is a private address`))
+  // fetch refused these too; http.request would send them as Basic credentials
+  if (u.username || u.password) return Promise.reject(new Blocked('blocked: credentials in the URL are not sent'))
+  return new Promise((resolve, reject) => {
+    const req = (u.protocol === 'https:' ? httpsRequest : httpRequest)(u, { method, headers, signal: AbortSignal.timeout(5000),
+      ...(checked ? { lookup: guardedLookup } : {}) }, (res) => {
+      res.resume()
+      resolve(res.statusCode ?? 0)
+    })
+    req.on('error', reject)
+    req.end(body)
+  })
+}
 
 /**
  * Points *.supabase.co origins at the internal services (functions → FN_URL, other APIs → core);
@@ -61,18 +108,12 @@ export function startWorker(opts: NetQueueOptions = {}) {
     // plus a claimed status if traffic grows or core is scaled out
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       try {
-        const res = await fetch(target, {
-          method: row.method,
-          headers,
-          body: hasBody ? JSON.stringify(row.body) : undefined,
-          signal: AbortSignal.timeout(5000),
-          // Redirects are not followed (they could lead to *.supabase.co); a 3xx fails the attempt.
-          redirect: 'manual',
-        })
-        await res.body?.cancel()
-        if (res.ok) return finish(row.id, 'done', attempt, null)
-        error = `HTTP ${res.status}`
+        // Redirects are not followed (they could lead to *.supabase.co or a private address); a 3xx fails the attempt.
+        const status = await sendOnce(target, row.method, headers, hasBody ? JSON.stringify(row.body) : undefined, target === row.url)
+        if (status >= 200 && status < 300) return finish(row.id, 'done', attempt, null)
+        error = `HTTP ${status}`
       } catch (err) {
+        if (err instanceof Blocked) return finish(row.id, 'blocked', 0, err.message)
         error = (err as Error).message
       }
       if (attempt < MAX_ATTEMPTS) {
