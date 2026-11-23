@@ -3,37 +3,85 @@ import type { FormEvent } from 'react'
 import { errMsg, platform } from '../api.ts'
 import type { ImportResult, Size } from '../api.ts'
 import { Link, navigate } from '../router.tsx'
-import { Empty, ErrorBox, Icon, Loading } from '../ui.tsx'
+import { Drawer, Empty, ErrorBox, Icon, Loading } from '../ui.tsx'
 import { JobSteps, Page, SIZES, StatusBadge, sizeMb, useLoad } from './common.tsx'
+import { ago, nf } from '../lib/format.ts'
+import { norm } from '../lib/palette.ts'
 import type { OrgProps } from './common.tsx'
+import { ROLES } from './admin.tsx'
+
+type Filter = 'all' | 'live' | 'paused'
+const isPaused = (status: string) => status === 'INACTIVE'
 
 export function Projects({ org, canManage }: OrgProps) {
   const { data, error, reload } = useLoad(() => platform.projects(org.slug), [org.slug])
+  const [filter, setFilter] = useState<Filter>('all')
+  const [q, setQ] = useState('')
+  const inFilter = (f: Filter, status: string) => f === 'all' || (f === 'paused') === isPaused(status)
+  const needle = norm(q.trim())
+  const shown = (data ?? []).filter((p) => inFilter(filter, p.status) && (!needle || norm(p.name).includes(needle) || p.ref.includes(needle)))
+  const live = (data ?? []).filter((p) => p.status === 'ACTIVE_HEALTHY').length
   return (
-    <Page title="Projeler" actions={<>
-      {canManage && <Link className="btn" to={`/import/${org.slug}`}><Icon name="upload" />İçe aktar</Link>}
-      {canManage && <Link className="btn primary" to={`/new/${org.slug}`}><Icon name="plus" />Yeni proje</Link>}
-      <button className="icon-btn" onClick={reload} aria-label="Yenile" title="Yenile"><Icon name="refresh" /></button>
-    </>}>
+    <Page title="Projeler" aside={org.name}
+      meta={data && <><span>{data.length} proje</span><i>·</i><span>{live} çalışıyor</span><i>·</i><span>rolünüz: {org.role ? ROLES[org.role].toLocaleLowerCase('tr') : 'proje üyesi'}</span></>}
+      actions={<>
+        <button className="icon-btn" onClick={reload} aria-label="Yenile" title="Yenile"><Icon name="refresh" /></button>
+        {canManage && <Link className="btn" to={`/import/${org.slug}`}><Icon name="download" />İçe aktar</Link>}
+        {canManage && <Link className="btn primary" to={`/new/${org.slug}`}>Yeni proje<span className="ic"><Icon name="arrow-up-right" size={14} weight="bold" /></span></Link>}
+      </>}>
       {error ? <ErrorBox message={error} onRetry={reload} />
         : !data ? <Loading />
-        : !data.length ? <Empty>Bu organizasyonda henüz proje yok.</Empty>
-        : (
-          <ul className="cards" aria-label="Projeler">
-            {data.map((p) => (
-              <li key={p.ref} className="project-card">
-                <Link to={`/project/${p.ref}`} className="project-link">
-                  <span className="cell-main">{p.name}</span>
-                  <span className="mono small muted">{p.ref}</span>
-                </Link>
-                <div className="badges">
-                  <StatusBadge status={p.status} />
-                  {p.certificate === 'pending' && <span className="badge warn">sertifika bekleniyor</span>}
-                  {p.size && <span className="badge">{p.size}</span>}
-                </div>
-              </li>
-            ))}
-          </ul>
+        : !data.length ? (
+          <div className="card"><Empty icon="projects">
+            <b>Henüz proje yok</b>
+            <p>{canManage ? 'İlk projenizi oluşturun ya da bir yedekten içe aktarın.' : 'Bu organizasyonda henüz proje yok.'}</p>
+          </Empty></div>
+        ) : (
+          <>
+            <div className="ptoolbar">
+              <div className="seg" role="group" aria-label="Duruma göre süz">
+                {([['all', 'Tümü'], ['live', 'Çalışan'], ['paused', 'Duraklatılmış']] as const).map(([f, label]) => (
+                  <button key={f} aria-pressed={filter === f} onClick={() => setFilter(f)}>
+                    {label}<span className="n">{data.filter((p) => inFilter(f, p.status)).length}</span>
+                  </button>
+                ))}
+              </div>
+              <label className="search wide"><Icon name="search" />
+                <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Ad ya da ref ile ara" aria-label="Projelerde ara" />
+              </label>
+            </div>
+            <ul className="cards" aria-label="Projeler">
+              {shown.map((p, i) => (
+                <li key={p.ref} className="project-card">
+                  <Link to={`/project/${p.ref}`} className="project-link" style={{ animationDelay: `${i * 50}ms` }}>
+                    <div className="pc-head">
+                      <span className="pc-icon"><Icon name="database" size={18} /></span>
+                      <div className="t"><h3>{p.name}</h3><div className="mono small muted">{p.ref}</div></div>
+                      <StatusBadge status={p.status} />
+                    </div>
+                    <div className="pc-stats">
+                      <div><span>Boyut</span><b>{p.size ?? '—'}</b></div>
+                      <div><span>Bellek</span><b>{p.size ? `${nf(sizeMb(p.size))} MiB` : '—'}</b></div>
+                      <div><span>Postgres</span><b>{p.database.version}</b></div>
+                    </div>
+                    <div className="pc-foot">
+                      <span>{ago(p.created_at)} oluşturuldu</span>
+                      {p.certificate === 'pending' ? <span className="badge warn">sertifika bekleniyor</span> : <Icon name="arrow-right" />}
+                    </div>
+                  </Link>
+                </li>
+              ))}
+              {canManage && filter === 'all' && !needle && (
+                <li role="none">
+                  <Link to={`/new/${org.slug}`} className="newcard" aria-label="Boş bir proje başlat">
+                    <span><span className="plus"><Icon name="plus" size={20} /></span><b>Boş bir proje başlatın</b>
+                      <span className="small">Postgres, kimlik doğrulama, depolama ve fonksiyonlar</span></span>
+                  </Link>
+                </li>
+              )}
+            </ul>
+            {!shown.length && <Empty icon="funnel"><b>Eşleşen proje yok</b><p>Süzgeci ya da aramayı değiştirin.</p></Empty>}
+          </>
         )}
     </Page>
   )
@@ -87,8 +135,8 @@ export function NewProject({ org, canManage }: OrgProps) {
   }
 
   return (
-    <Page title="Yeni proje">
-      <div className="form-card">
+    <Drawer title="Yeni proje" subtitle={org.name} onClose={() => navigate(`/org/${org.slug}`)}>
+      <div>
         {!canManage ? <div className="note">Bu organizasyonda proje oluşturma yetkiniz yok.</div>
           : created ? (
             <>
@@ -110,7 +158,7 @@ export function NewProject({ org, canManage }: OrgProps) {
             </form>
           )}
       </div>
-    </Page>
+    </Drawer>
   )
 }
 
@@ -136,7 +184,7 @@ export function ImportProject({ org, canManage }: OrgProps) {
     if (!form.get('passphrase')) form.delete('passphrase')
     if (!(form.get('env_file') as File | null)?.size) form.delete('env_file')
     if (form.has('passphrase') === form.has('env_file')) {
-      setError('Dışa aktarılan yedek için parolayı, v1 yedeği için env dosyasını verin: yalnızca birini.')
+      setError('Dışa aktarılan yedek için şifresini, v1 yedeği için env dosyasını verin: yalnızca birini.')
       return
     }
     setBusy(true)
@@ -151,8 +199,8 @@ export function ImportProject({ org, canManage }: OrgProps) {
   }
 
   return (
-    <Page title="Projeyi içe aktar">
-      <div className="form-card">
+    <Drawer title="Projeyi içe aktar" subtitle={`${org.name} · yedekten`} onClose={() => navigate(`/org/${org.slug}`)}>
+      <div>
         {!canManage ? <div className="note">Bu organizasyonda proje içe aktarma yetkiniz yok.</div>
           : result ? (
             <div className="form">
@@ -165,21 +213,27 @@ export function ImportProject({ org, canManage }: OrgProps) {
           ) : (
             <form className="form" onSubmit={submit}>
               <CapacityNote />
-              <label className="field"><span>Proje adı</span><input name="name" required maxLength={64} autoFocus /></label>
-              <SizePicker size={size} setSize={setSize} />
+              <section className="stp"><div className="sh"><span className="num">1</span><b>Proje</b></div><div className="in">
+                <label className="field"><span>Proje adı</span><input name="name" required maxLength={64} autoFocus /></label>
+                <SizePicker size={size} setSize={setSize} />
+              </div></section>
+              <section className="stp"><div className="sh"><span className="num">2</span><b>Yedek</b></div><div className="in">
               <label className="field"><span>Yedek dizini</span>
                 <input name="backup_dir" required placeholder="<subdir>/YYYYMMDD-HHMMSS" className="mono" />
               </label>
               <p className="muted small">Bu organizasyonun bir yedeği (<code>&lt;ref&gt;/…</code>, <code>export-&lt;ref&gt;/…</code>) ya da
                 {' '}<code>import/{org.slug}/&lt;ad&gt;</code>.</p>
-              <label className="field"><span>Dışa aktarma parolası</span>
+              </div></section>
+              <section className="stp"><div className="sh"><span className="num">3</span><b>Anahtarlar</b></div><div className="in">
+              <label className="field"><span>Dışa aktarma şifresi</span>
                 <input name="passphrase" type="password" autoComplete="off" />
               </label>
               <label className="field"><span>Env dosyası</span>
                 <input name="env_file" type="file" />
               </label>
-              <p className="muted small">Dışa aktarılan bir yedek için parolası, v1 yedeği için kurulumun env dosyası: yalnızca biri.
+              <p className="muted small">Dışa aktarılan bir yedek için şifresi, v1 yedeği için kurulumun env dosyası: yalnızca biri.
                 Değerler sunucuda şifrelenir; dosya saklanmaz.</p>
+              </div></section>
               {error && <ErrorBox message={error} />}
               <div className="row-actions end">
                 <Link className="btn" to={`/org/${org.slug}`}>Vazgeç</Link>
@@ -188,6 +242,6 @@ export function ImportProject({ org, canManage }: OrgProps) {
             </form>
           )}
       </div>
-    </Page>
+    </Drawer>
   )
 }

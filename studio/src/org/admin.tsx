@@ -2,7 +2,8 @@ import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { errMsg, platform } from '../api.ts'
 import type { AuditRow, Member, Role } from '../api.ts'
-import { Empty, ErrorBox, Icon, Loading, confirmDanger, fmtDate, toast } from '../ui.tsx'
+import { Dots, Empty, ErrorBox, Icon, Loading, confirmDanger, fmtDate, toast } from '../ui.tsx'
+import { ago, nf } from '../lib/format.ts'
 import { CopyButton, Page, StatusBadge, useLoad } from './common.tsx'
 import type { OrgProps } from './common.tsx'
 
@@ -39,7 +40,7 @@ function InviteForm({ slug }: { slug: string }) {
 
   return (
     <form className="card form inline-form" onSubmit={submit}>
-      <div className="card-head"><h2>Üye davet et</h2></div>
+      <div className="card-head"><Icon name="mail" /><h2>Üye davet et</h2></div>
       <div className="form-row">
         <label className="field grow"><span>E-posta</span>
           <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
@@ -88,7 +89,8 @@ export function Members({ org, canManage }: OrgProps) {
   }
 
   return (
-    <Page title="Üyeler" actions={<button className="icon-btn" onClick={reload} aria-label="Yenile" title="Yenile"><Icon name="refresh" /></button>}>
+    <Page title="Üyeler" aside={org.name} meta={data && <span>{new Set(data.map((m) => m.user_id)).size} kişi</span>}
+      actions={<button className="icon-btn" onClick={reload} aria-label="Yenile" title="Yenile"><Icon name="refresh" /></button>}>
       {canManage && <InviteForm slug={org.slug} />}
       {error ? <ErrorBox message={error} onRetry={reload} /> : !data ? <Loading /> : (
         <div className="grid-wrap card">
@@ -97,14 +99,14 @@ export function Members({ org, canManage }: OrgProps) {
             <tbody>
               {data.map((m) => (
                 <tr key={`${m.user_id}:${m.project_ref ?? ''}`}>
-                  <td className="cell-main">{m.email}</td>
+                  <td><span className="file-name"><span className="avatar v" aria-hidden="true">{m.email.slice(0, 1).toUpperCase()}</span><span className="cell-main">{m.email}</span></span></td>
                   <td>
                     {canManage
                       ? <select aria-label={`Rol: ${m.email}`} value={m.role} disabled={busy === m.user_id}
                           onChange={(e) => act(m, () => platform.setRole(org.slug, m.user_id, e.target.value as Role, m.id), 'Rol değişti')}>{roleOptions}</select>
                       : ROLES[m.role] ?? m.role}
                   </td>
-                  <td className="mono small">{m.project_ref ?? 'Tüm projeler'}</td>
+                  <td>{m.project_ref ? <span className="chip">{m.project_ref}</span> : <span className="muted small">Tüm projeler</span>}</td>
                   <td>
                     {canManage && (
                       <div className="row-actions end">
@@ -156,9 +158,9 @@ export function Tokens() {
   }
 
   return (
-    <Page title="Erişim belirteçleri">
-      <p className="muted">Belirteçler yönetim API'sini (<code>/v1</code>) ve CLI'yi sizin rollerinizle kullanır.</p>
+    <Page title="Erişim belirteçleri" meta={<span>Belirteçler yönetim API'sini (<code>/v1</code>) ve CLI'yi sizin rollerinizle kullanır.</span>}>
       <form className="card form inline-form" onSubmit={create}>
+        <div className="card-head"><Icon name="key" /><h2>Yeni belirteç</h2></div>
         <div className="form-row">
           <label className="field grow"><span>Ad</span>
             <input required maxLength={64} value={name} onChange={(e) => setName(e.target.value)} placeholder="ör. dizüstü" />
@@ -177,7 +179,7 @@ export function Tokens() {
           </div>
         </div>
       )}
-      {error ? <ErrorBox message={error} onRetry={reload} /> : !data ? <Loading /> : !data.length ? <Empty>Henüz belirteç yok.</Empty> : (
+      {error ? <ErrorBox message={error} onRetry={reload} /> : !data ? <Loading /> : !data.length ? <div className="card"><Empty icon="key"><b>Henüz belirteç yok</b><p>CLI ya da bir betik için yukarıdan bir belirteç oluşturun.</p></Empty></div> : (
         <div className="grid-wrap card">
           <table className="grid list-table">
             <thead><tr><th>Ad</th><th>Oluşturma</th><th>Son kullanım</th><th>Bitiş</th><th><span className="sr-only">İşlemler</span></th></tr></thead>
@@ -186,7 +188,7 @@ export function Tokens() {
                 <tr key={t.id}>
                   <td className="cell-main">{t.name}</td>
                   <td className="small">{fmtDate(t.created_at)}</td>
-                  <td className="small">{fmtDate(t.last_used_at)}</td>
+                  <td className="small" title={t.last_used_at ? fmtDate(t.last_used_at) : undefined}>{t.last_used_at ? ago(t.last_used_at) : 'Hiç'}</td>
                   <td className="small">{t.expires_at ? fmtDate(t.expires_at) : 'Süresiz'}</td>
                   <td><div className="row-actions end">
                     <button className="icon-btn danger" onClick={() => remove(t.id, t.name)} aria-label={`Sil: ${t.name}`} title="Sil"><Icon name="trash" /></button>
@@ -220,8 +222,8 @@ export function Audit({ org }: OrgProps) {
   const refresh = () => { setOlder([]); setOlderFull(true); reload() }
 
   return (
-    <Page title="Denetim kaydı" actions={<button className="icon-btn" onClick={refresh} aria-label="Yenile" title="Yenile"><Icon name="refresh" /></button>}>
-      {error ? <ErrorBox message={error} onRetry={reload} /> : !data ? <Loading /> : !rows.length ? <Empty>Kayıt yok.</Empty> : (
+    <Page title="Denetim kaydı" aside={org.name} meta={<span>Değişiklik yapan her istek kaydedilir</span>} actions={<button className="icon-btn" onClick={refresh} aria-label="Yenile" title="Yenile"><Icon name="refresh" /></button>}>
+      {error ? <ErrorBox message={error} onRetry={reload} /> : !data ? <Loading /> : !rows.length ? <div className="card"><Empty icon="scroll"><b>Kayıt yok</b><p>Bu organizasyonda henüz değişiklik yapılmadı.</p></Empty></div> : (
         <>
           <div className="grid-wrap card">
             <table className="grid list-table">
@@ -229,12 +231,13 @@ export function Audit({ org }: OrgProps) {
               <tbody>
                 {rows.map((r) => (
                   <tr key={r.id}>
-                    <td className="small">{fmtDate(r.at)}</td>
+                    <td className="small" title={fmtDate(r.at)}>{ago(r.at)}</td>
                     <td>{r.actor}</td>
                     <td className="mono">{r.action}</td>
                     <td className="mono small">{r.target ?? '—'}</td>
                     <td className="mono small">{r.ip ?? '—'}</td>
-                    <td className="mono small" title={r.details?.body_keys?.length ? `alanlar: ${r.details.body_keys.join(', ')}` : undefined}>{r.details?.status ?? '—'}</td>
+                    <td title={r.details?.body_keys?.length ? `alanlar: ${r.details.body_keys.join(', ')}` : undefined}>
+                      {r.details?.status == null ? '—' : <span className={`badge ${r.details.status < 400 ? 'ok' : 'danger'}`}>{r.details.status}</span>}</td>
                   </tr>
                 ))}
               </tbody>
@@ -249,7 +252,8 @@ export function Audit({ org }: OrgProps) {
 
 export function Capacity() {
   const { data, error, reload } = useLoad(platform.capacity, [])
-  if (error) return <Page title="Kapasite"><ErrorBox message={error} onRetry={reload} /></Page>
+  const refresh = <button className="icon-btn" onClick={reload} aria-label="Yenile" title="Yenile"><Icon name="refresh" /></button>
+  if (error) return <Page title="Kapasite" actions={refresh}><ErrorBox message={error} onRetry={reload} /></Page>
   if (!data) return <Page title="Kapasite"><Loading /></Page>
   const parts = [
     { label: 'Paylaşılan servisler', mb: data.reserved_mb, cls: 'reserved' },
@@ -258,36 +262,49 @@ export function Capacity() {
     { label: 'Boş', mb: data.free_mb, cls: 'free' },
   ]
   const pct = (mb: number) => `${(100 * mb) / data.budget_mb}%`
+  const hostsLeft = Math.max(0, data.max_new_hosts_per_week - data.new_hosts_this_week)
   return (
-    <Page title="Kapasite" actions={<button className="icon-btn" onClick={reload} aria-label="Yenile" title="Yenile"><Icon name="refresh" /></button>}>
-      <div className="card capacity">
-        <div className="card-head"><h2>Bellek bütçesi</h2><span className="muted small">{data.budget_mb} MiB</span></div>
-        <div className="meter" role="meter" aria-label="Bellek bütçesi" aria-valuemin={0} aria-valuemax={data.budget_mb}
-          aria-valuenow={data.budget_mb - data.free_mb} aria-valuetext={`${data.free_mb} MiB boş`}>
-          {parts.map((p) => <span key={p.cls} className={`meter-part ${p.cls}`} style={{ width: pct(p.mb) }} />)}
+    <Page title="Kapasite" aside="bu sunucu" meta={<><span>{nf(data.budget_mb)} MiB bütçe</span><i>·</i><span>{data.projects.length} proje</span></>} actions={refresh}>
+      <div className="bento">
+        <div className="card span8 kpi">
+          <div className="micro">Bellek bütçesi</div>
+          <div className="big"><b>{nf(data.free_mb)}</b><span className="tail">MiB boş</span></div>
+          <div className="meter" role="meter" aria-label="Bellek bütçesi" aria-valuemin={0} aria-valuemax={data.budget_mb}
+            aria-valuenow={data.budget_mb - data.free_mb} aria-valuetext={`${data.free_mb} MiB boş`}>
+            {parts.map((p) => <span key={p.cls} className={`meter-part ${p.cls}`} style={{ width: pct(p.mb) }} />)}
+          </div>
+          <ul className="legend">
+            {parts.map((p) => <li key={p.cls}><span className={`swatch ${p.cls}`} aria-hidden="true" />{p.label}: {nf(p.mb)} MiB</li>)}
+          </ul>
         </div>
-        <ul className="legend">
-          {parts.map((p) => <li key={p.cls}><span className={`swatch ${p.cls}`} aria-hidden="true" />{p.label}: {p.mb} MiB</li>)}
-        </ul>
-        <p className="small muted capacity-hosts">
-          Bu hafta alınan yeni adres: {data.new_hosts_this_week} / {data.max_new_hosts_per_week}
-        </p>
-      </div>
-      <div className="grid-wrap card">
-        <table className="grid list-table">
-          <thead><tr><th>Proje</th><th>Boyut</th><th>Sınır</th><th>Kullanım</th><th>Durum</th></tr></thead>
-          <tbody>
-            {data.projects.map((p) => (
-              <tr key={p.ref}>
-                <td><div className="cell-main">{p.name}</div><div className="mono small muted">{p.ref}</div></td>
-                <td className="mono">{p.size}</td>
-                <td className="mono">{p.cap_mb} MiB</td>
-                <td className="mono">{p.mem_usage_mb == null ? '—' : `${p.mem_usage_mb} MiB`}</td>
-                <td><StatusBadge status={p.status} /></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div className="card span4 kpi">
+          <div className="micro">Yeni adresler · bu hafta</div>
+          <div className="big"><b>{data.new_hosts_this_week}</b><span className="tail">/ {data.max_new_hosts_per_week}</span></div>
+          <Dots fill={data.max_new_hosts_per_week ? data.new_hosts_this_week / data.max_new_hosts_per_week : 0} n={data.max_new_hosts_per_week || 1} />
+          <div className="foot"><span>Kalan: {hostsLeft}</span><span>Her yeni adres bir sertifika ister</span></div>
+        </div>
+        <div className="card span12">
+          <div className="card-head"><h2>Projeler</h2><span className="muted small">bellek sınırı ve kullanım</span></div>
+          <div className="card-body">
+            <div className="grid-wrap">
+              <table className="grid list-table">
+                <thead><tr><th>Proje</th><th>Boyut</th><th>Sınır</th><th>Kullanım</th><th className="hide-sm"><span className="sr-only">Oran</span></th><th>Durum</th></tr></thead>
+                <tbody>
+                  {data.projects.map((p) => (
+                    <tr key={p.ref}>
+                      <td><div className="cell-main">{p.name}</div><div className="mono small muted">{p.ref}</div></td>
+                      <td className="mono">{p.size}</td>
+                      <td className="mono">{p.cap_mb} MiB</td>
+                      <td className="mono">{p.mem_usage_mb == null ? '—' : `${p.mem_usage_mb} MiB`}</td>
+                      <td className="hide-sm">{p.mem_usage_mb != null && <span className="bar"><i style={{ width: `${Math.min(100, (100 * p.mem_usage_mb) / p.cap_mb)}%` }} /></span>}</td>
+                      <td><StatusBadge status={p.status} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
       </div>
     </Page>
   )
