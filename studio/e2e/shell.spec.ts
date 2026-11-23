@@ -157,9 +157,9 @@ test('an owner can invite, change a role and remove a member', async ({ page }) 
   await expect(page.getByText(fx('invitation-created').link)).toBeVisible()
   expect(api.calls.find((c) => c.key === 'POST /organizations/acme/invitations')!.body).toEqual({ email: 'new@example.test', role: 'developer' })
 
-  await page.getByRole('combobox', { name: 'Rol: dev@example.test' }).selectOption('administrator')
+  await page.getByRole('combobox', { name: 'dev@example.test için rol' }).selectOption('administrator')
   await expect.poll(() => api.count('PATCH /organizations/acme/members/4f1c2a9e-0000-4000-8000-000000000002')).toBe(1)
-  await page.getByRole('button', { name: 'Çıkar: dev@example.test' }).click()
+  await page.getByRole('button', { name: 'dev@example.test üyesini çıkar' }).click()
   await page.getByRole('dialog').getByRole('button', { name: 'Çıkar' }).click()
   await expect.poll(() => api.count('DELETE /organizations/acme/members/4f1c2a9e-0000-4000-8000-000000000002')).toBe(1)
   // both address the membership row, not only the user

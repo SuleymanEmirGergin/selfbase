@@ -385,7 +385,7 @@ export const en = {
   'tables.inserted': 'Row added',
   'tables.viewOnly': 'This table has no primary key, so you can only view the row.',
   'tables.default': 'default: {v}',
-  'tables.blankDefault': 'leave empty for the default',
+  'tables.blankDefault': 'Leave empty to use the default',
   'tables.required': ' · required',
   'grid.pk': 'Primary key',
   'sql.rows': '{n} row|{n} rows',
@@ -530,9 +530,9 @@ export const en = {
   'logs.none': 'No log lines for this service.',
   'logs.of': '{service} log',
   'logs.limit': 'The last {n} lines, newest first.',
-  'sites.chip': 'WAVE 6 · PREVIEW',
+  'sites.chip': 'COMING SOON',
   'sites.off': 'Sites are not available yet',
-  'sites.text': 'Wave 6 lets you publish static and SSR sites next to this project: production and staging environments, a preview address per branch, and instant rollback.',
+  'sites.text': 'Coming soon: publish static and SSR sites next to this project, with production and staging environments, a preview address per branch, and instant rollback.',
 }
 
 export type Key = keyof typeof en
