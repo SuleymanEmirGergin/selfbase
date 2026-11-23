@@ -333,3 +333,22 @@ test('two quick theme switches land back on the first theme', async ({ page }) =
   expect(await theme(page)).toBe('dark')
   expect(await page.evaluate(() => localStorage.getItem('studio-theme'))).toBe('dark')
 })
+
+test('global shortcuts leave an open sheet and the editor alone', async ({ page }) => {
+  await mockApi(page, routes())
+  await page.goto(`/project/${REF}/editor`)
+  await page.getByRole('row').filter({ hasText: 'ilk sürüm yayında' }).click()
+  await expect(page.getByRole('dialog', { name: 'Satırı düzenle' })).toBeVisible()
+  await page.keyboard.press('Control+K')
+  await expect(page.getByRole('combobox', { name: 'Komut ara' })).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('dialog', { name: 'Satırı düzenle' })).toHaveCount(0)
+
+  // in the SQL editor Ctrl+Shift+L is CodeMirror's "select all matches", not the theme switch
+  await page.goto(`/project/${REF}/sql`)
+  const before = await theme(page)
+  await page.getByRole('textbox', { name: 'SQL sorgusu' }).click()
+  await page.keyboard.press('Control+Shift+L')
+  await page.waitForTimeout(900) // longer than the reveal
+  expect(await theme(page)).toBe(before)
+})

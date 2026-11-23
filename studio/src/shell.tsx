@@ -124,9 +124,15 @@ export function Shell({ switcher, nav, crumbs, commands, loadCommands, email, on
   }
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // an open sheet or confirm dialog owns the keyboard (its Esc would close both); an editor's own binding wins
+      if (e.defaultPrevented || document.querySelector('dialog[open], .drawer')) return
       const mod = e.ctrlKey || e.metaKey
       if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); palette ? close() : open() }
-      else if (mod && e.shiftKey && e.key.toLowerCase() === 'l') { e.preventDefault(); toggleTheme(themeBtn.current) }
+      // in the SQL editor Ctrl+Shift+L is CodeMirror's "select all matches", even when it has nothing to select
+      else if (mod && e.shiftKey && e.key.toLowerCase() === 'l' && !(e.target as Element | null)?.closest?.('.cm-editor')) {
+        e.preventDefault()
+        toggleTheme(themeBtn.current)
+      }
     }
     addEventListener('keydown', onKey)
     return () => removeEventListener('keydown', onKey)
