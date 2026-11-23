@@ -410,3 +410,13 @@ test('the undo toast sits above the table pager, so Previous and Next stay usabl
   const pager = await page.locator('.pager').boundingBox()
   expect(toast!.y + toast!.height).toBeLessThanOrEqual(pager!.y)
 })
+
+test('the keyboard focus ring survives Windows forced colors (an outline, not only a shadow)', async ({ page }) => {
+  await page.emulateMedia({ forcedColors: 'active' })
+  await mockApi(page, routes())
+  await page.goto(`/project/${REF}/editor`)
+  await page.getByRole('heading', { level: 1 }).click()
+  await page.keyboard.press('Tab')
+  const ring = await page.evaluate(() => { const s = getComputedStyle(document.activeElement!); return `${s.outlineStyle} ${s.outlineWidth}` })
+  expect(ring).toBe('solid 2px')
+})
