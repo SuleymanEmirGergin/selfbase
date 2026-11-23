@@ -386,3 +386,17 @@ test('signing out inside the undo window sends the delete first, while the sessi
   await page.getByRole('button', { name: 'Çıkış' }).click()
   await expect.poll(() => order).toEqual(['delete', 'logout'])
 })
+
+test('the undo drain bar follows the count: held, it stops at the second shown; running, it drains toward the next', async ({ page }) => {
+  await page.clock.install()
+  await mockApi(page, routes())
+  await page.goto(`/project/${REF}/editor`)
+  await page.getByRole('row').filter({ hasText: 'ilk sürüm yayında' }).click()
+  await page.getByRole('dialog', { name: 'Satırı düzenle' }).getByRole('button', { name: 'Sil' }).click()
+  const drain = page.locator('.toast .drain')
+  await expect(drain).toHaveAttribute('style', /scaleX\(1\)/) // focus on Undo holds it at 5 of 5
+  await page.getByRole('heading', { level: 1 }).click()
+  await expect(drain).toHaveAttribute('style', /scaleX\(0\.8\)/) // running: toward 4 of 5 over the next second
+  await page.clock.runFor(1000)
+  await expect(drain).toHaveAttribute('style', /scaleX\(0\.6\)/)
+})

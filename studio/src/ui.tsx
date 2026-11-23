@@ -228,7 +228,9 @@ function UndoToast({ item, close }: { item: Extract<Toast, { kind: 'undo' }>; cl
       <button className="btn sm" ref={button} aria-describedby={id} onClick={() => { if (timer.current?.undo()) item.undo(); finish() }}>
         <Icon name="undo" />{t('undo.undo')}
       </button>
-      <span className="drain" style={{ animationDuration: `${UNDO_MS}ms` }} aria-hidden="true" />
+      {/* driven by the count, not a CSS clock, so a pause or a slow tick never lets the bar run ahead of the time left */}
+      <span className="drain" aria-hidden="true"
+        style={{ transform: `scaleX(${(paused ? left : left - 1) / (UNDO_MS / 1000)})`, transition: paused ? 'none' : 'transform 1s linear' }} />
     </div>
   )
 }
