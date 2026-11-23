@@ -30,7 +30,7 @@ export default function Home() {
         <dl className="kv">
           <div>
             <dt>API adresi</dt>
-            <dd className="secret-row">{p.urls.api ? <><code>{p.urls.api}</code><CopyButton text={p.urls.api} /></> : 'â€”'}</dd>
+            <dd className="secret-row">{p.urls.api ? <><code>{p.urls.api}</code><CopyButton text={p.urls.api} /></> : '—'}</dd>
           </div>
           {p.urls.legacy.length > 0 && (
             <div>

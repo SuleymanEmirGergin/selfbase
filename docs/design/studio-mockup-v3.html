@@ -1,0 +1,1838 @@
+<!doctype html>
+<html lang="tr" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Studio mockup v3</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%230A0B0E'/%3E%3Crect x='6' y='8' width='20' height='7' rx='3.5' fill='%23C9F65E' opacity='.4'/%3E%3Crect x='6' y='17' width='20' height='7' rx='3.5' fill='%23C9F65E'/%3E%3Ccircle cx='21.5' cy='20.5' r='1.9' fill='%230A0B0E'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css">
+<link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/duotone/style.css">
+<link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/bold/style.css">
+<style>
+/* ================= Tokens =================
+   WCAG AA text contrast (measured, see report):
+   dark  text 16.1:1, muted 7.5:1, dim 5.7:1 on --surface; dim 4.8:1 on --surface-3
+   light text 19.0:1, muted 6.9:1, dim 5.9:1 on --surface; dim 4.8:1 on --surface-3 */
+@property --ang { syntax: '<angle>'; initial-value: 0deg; inherits: false; }
+:root {
+  --sans: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --mono: "Geist Mono", ui-monospace, "Cascadia Mono", monospace;
+  --serif: "Instrument Serif", Georgia, serif;
+  --ease-out: cubic-bezier(.22,1,.36,1);
+  --ease-emph: cubic-bezier(.32,.72,0,1);
+  --ease-spring: cubic-bezier(.34,1.4,.64,1);
+  --r-shell: 24px; --r-core: 19px;
+}
+:root, [data-theme="dark"] {
+  --bg: #050608; --panel: #0D0E12; --surface: #121318; --surface-2: #191B21; --surface-3: #21232B;
+  --line: rgba(255,255,255,.065); --line-2: rgba(255,255,255,.11); --line-3: rgba(255,255,255,.18); --hi: rgba(255,255,255,.07);
+  --text: #EEEFF3; --muted: #A1A4AF; --dim: #8A8E9A;
+  --accent: #C9F65E; --accent-2: #A6E22E; --accent-ink: #0A0D03; --accent-text: #CFF77A; --accent-soft: rgba(201,246,94,.12);
+  --chart-1: #C9F65E; --violet: #A497FF; --violet-soft: rgba(150,134,255,.14);
+  --ok: #5BE38F; --ok-soft: rgba(91,227,143,.12);
+  --warn: #F7BE55; --warn-soft: rgba(247,190,85,.13);
+  --err: #FF7272; --err-soft: rgba(255,114,114,.13);
+  --info: #6CB8FF; --info-soft: rgba(108,184,255,.13);
+  --hatch: rgba(255,255,255,.045);
+  --shadow-lg: 0 30px 80px -20px rgba(0,0,0,.7), 0 10px 30px -10px rgba(0,0,0,.5);
+  --glow-a: rgba(201,246,94,.16); --glow-b: rgba(150,134,255,.18);
+  color-scheme: dark;
+}
+[data-theme="light"] {
+  --bg: #E4E5EA; --panel: #F7F7F9; --surface: #FFFFFF; --surface-2: #F1F2F5; --surface-3: #E7E8EC;
+  --line: rgba(12,14,22,.075); --line-2: rgba(12,14,22,.12); --line-3: rgba(12,14,22,.2); --hi: rgba(255,255,255,.9);
+  --text: #0E1016; --muted: #555A66; --dim: #5F6470;
+  --accent: #C2F24F; --accent-2: #9FDA22; --accent-ink: #0A0D03; --accent-text: #3F6B00; --accent-soft: rgba(120,180,0,.13);
+  --chart-1: #6FAE00; --violet: #5B47E0; --violet-soft: rgba(91,71,224,.1);
+  --ok: #0F7A3E; --ok-soft: rgba(15,122,62,.1);
+  --warn: #935800; --warn-soft: rgba(196,120,0,.12);
+  --err: #B42A26; --err-soft: rgba(180,42,38,.09);
+  --info: #1A64BF; --info-soft: rgba(26,100,191,.09);
+  --hatch: rgba(12,14,22,.05);
+  --shadow-lg: 0 30px 70px -24px rgba(20,24,40,.28), 0 8px 24px -12px rgba(20,24,40,.18);
+  --glow-a: rgba(170,230,40,.28); --glow-b: rgba(120,100,255,.18);
+  color-scheme: light;
+}
+
+/* ================= Base ================= */
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--text); font: 400 13px/20px var(--sans); -webkit-font-smoothing: antialiased; overflow: hidden; }
+::selection { background: color-mix(in oklab, var(--accent) 38%, transparent); color: var(--text); }
+* { scrollbar-width: thin; scrollbar-color: var(--surface-3) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 999px; border: 3px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background-color: var(--line-3); }
+button { font: inherit; color: inherit; border: 0; background: none; cursor: pointer; padding: 0; }
+input, textarea { font: inherit; color: inherit; }
+:focus { outline: none; }
+:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--accent) !important; border-radius: 999px; }
+.mono { font-family: var(--mono); font-feature-settings: "zero"; }
+.input input:focus-visible, .pal .q input:focus-visible { box-shadow: none !important; }
+.tnum { font-variant-numeric: tabular-nums; }
+.serif { font-family: var(--serif); font-style: italic; font-weight: 400; letter-spacing: 0; }
+.micro { font: 500 10.5px/14px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
+.tail { color: var(--dim); font-weight: 300; }
+.metaline { font: 12px/18px var(--mono); color: var(--dim); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.metaline i { font-style: normal; opacity: .5; }
+
+/* Icons: Phosphor (Regular in UI, Duotone for active nav + empty states, Bold only at 12px)
+   + 7 custom service glyphs drawn on a 24 grid at 1.5 stroke, round caps: the same weight as Phosphor Regular */
+i.ph-i { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; font-size: 16px; line-height: 1; flex: none; vertical-align: -3px; }
+svg.glyph { width: 16px; height: 16px; flex: none; stroke-width: 1.5; vertical-align: -3px; }
+i.ph-i.s20, svg.glyph.s20 { width: 20px; height: 20px; font-size: 20px; }
+i.ph-i.s14, svg.glyph.s14 { width: 14px; height: 14px; font-size: 14px; }
+i.ph-i.s13, svg.glyph.s13 { width: 13px; height: 13px; font-size: 13px; }
+.grain { position: fixed; inset: 0; pointer-events: none; z-index: 90; opacity: .035; mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
+
+/* Theme reveal */
+::view-transition-old(root), ::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
+::view-transition-new(root) { z-index: 9999; }
+.reveal { position: fixed; inset: 0; z-index: 95; pointer-events: none; }
+
+/* ================= Buttons ================= */
+.btn { --h: 36px; position: relative; display: inline-flex; align-items: center; gap: 8px; height: var(--h); padding: 0 16px; border-radius: 999px;
+  font-weight: 500; font-size: 13px; letter-spacing: -.005em; white-space: nowrap; isolation: isolate; overflow: hidden;
+  transition: transform .35s var(--ease-spring), background .3s var(--ease-out), box-shadow .3s var(--ease-out), color .3s, opacity .3s; }
+.btn:active, .btn.is-press { transform: scale(.965); transition-duration: .12s; }
+.btn .ic { width: 26px; height: 26px; margin-right: -11px; border-radius: 999px; display: grid; place-items: center; transition: transform .45s var(--ease-spring); }
+.btn:hover .ic, .btn.is-hover .ic { transform: translate(2px,-1px) scale(1.06); }
+.btn .ic svg, .btn .ic i.ph-i { width: 14px; height: 14px; font-size: 14px; }
+.btn-primary { color: var(--accent-ink); background: linear-gradient(180deg, #DAFF86 0%, var(--accent) 45%, var(--accent-2) 100%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.55), inset 0 -1px 0 rgba(0,0,0,.12), 0 0 0 1px rgba(160,220,40,.55), 0 8px 22px -8px rgba(190,240,70,.55); }
+.btn-primary .ic { background: rgba(10,13,3,.88); color: var(--accent); }
+.btn-primary::after { content: ""; position: absolute; inset: 0; z-index: -1; background: linear-gradient(100deg, transparent 30%, rgba(255,255,255,.55) 50%, transparent 70%);
+  transform: translateX(-120%); transition: transform .9s var(--ease-out); }
+.btn-primary:hover::after, .btn-primary.is-hover::after { transform: translateX(120%); }
+.btn-primary.is-hover::after { transform: translateX(10%); }
+.btn-primary:hover, .btn-primary.is-hover { box-shadow: inset 0 1px 0 rgba(255,255,255,.6), inset 0 -1px 0 rgba(0,0,0,.12), 0 0 0 1px rgba(160,220,40,.7), 0 12px 32px -8px rgba(190,240,70,.7); }
+.btn-glass { background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line-2), inset 0 1px 0 var(--hi); color: var(--text); }
+.btn-glass:hover, .btn-glass.is-hover { background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-3), inset 0 1px 0 var(--hi); }
+.btn-glass .ic { background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-2); }
+.btn-ghost { color: var(--muted); }
+.btn-ghost:hover, .btn-ghost.is-hover { color: var(--text); background: var(--surface-2); }
+.btn-danger { color: var(--err); background: var(--err-soft); }
+.btn-danger:hover, .btn-danger.is-hover { background: color-mix(in oklab, var(--err) 22%, transparent); }
+.btn:disabled, .btn.is-disabled { opacity: .42; cursor: not-allowed; transform: none; box-shadow: none; }
+.btn:disabled::after { display: none; }
+.btn.is-loading { cursor: progress; }
+.btn.is-loading svg.spin { animation: spin360 .9s linear infinite; }
+@keyframes spin360 { to { transform: rotate(360deg); } }
+.btn-sm { --h: 30px; padding: 0 13px; font-size: 12.5px; }
+.btn-sm .ic { width: 22px; height: 22px; margin-right: -9px; }
+.btn-lg { --h: 46px; padding: 0 22px; font-size: 14px; }
+.btn-lg .ic { width: 34px; height: 34px; margin-right: -16px; }
+.btn-lg .ic svg, .btn-lg .ic i.ph-i { width: 16px; height: 16px; font-size: 16px; }
+.btn-block { width: 100%; justify-content: center; }
+.btn-block .ic { position: absolute; right: 6px; margin: 0; }
+.icon-btn { width: 34px; height: 34px; border-radius: 999px; display: grid; place-items: center; color: var(--muted); position: relative;
+  transition: background .25s var(--ease-out), color .25s, transform .3s var(--ease-spring); }
+.icon-btn:hover, .icon-btn.is-hover { background: var(--surface-2); color: var(--text); }
+.icon-btn:active { transform: scale(.9); }
+.kbd { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 6px; font: 500 11px/1 var(--mono); color: var(--muted);
+  background: var(--surface-3); box-shadow: inset 0 -1px 0 var(--line-2), inset 0 0 0 1px var(--line); }
+
+/* Copy micro-feedback: icon morphs to a check */
+.copy { position: relative; width: 22px; height: 22px; border-radius: 999px; display: inline-grid; place-items: center; color: var(--dim); transition: background .2s, color .2s; vertical-align: middle; }
+.copy:hover { background: var(--surface-3); color: var(--text); }
+.copy svg, .copy i.ph-i { position: absolute; width: 13px; height: 13px; transition: transform .4s var(--ease-spring), opacity .25s; font-size: 13px; }
+.copy svg:last-child, .copy i.ph-i:last-child { opacity: 0; transform: scale(.4) rotate(-45deg); color: var(--ok); }
+.copy.ok svg:first-child, .copy.ok i.ph-i:first-child { opacity: 0; transform: scale(.4) rotate(45deg); }
+.copy.ok svg:last-child, .copy.ok i.ph-i:last-child { opacity: 1; transform: none; stroke-width: 2; }
+
+/* Status: colour AND shape (circle ok, diamond warn, square err, triangle info, ring paused, half violet) */
+.status { display: inline-flex; align-items: center; gap: 7px; height: 24px; padding: 0 10px 0 8px; border-radius: 999px; font-size: 12px; font-weight: 500; white-space: nowrap; }
+.dot { position: relative; width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
+.s-warn .dot { border-radius: 1px; transform: rotate(45deg) scale(.9); }
+.s-err .dot { border-radius: 1.5px; }
+.s-info .dot { border-radius: 0; clip-path: polygon(50% 0, 100% 100%, 0 100%); width: 8px; height: 8px; }
+.s-mute .dot { background: none; box-shadow: inset 0 0 0 1.5px currentColor; }
+.s-violet .dot { background: linear-gradient(90deg, currentColor 50%, transparent 50%); box-shadow: inset 0 0 0 1.5px currentColor; }
+.status.live .dot::after { content: ""; position: absolute; inset: -1px; border-radius: 50%; border: 1.5px solid currentColor; animation: ping 2s var(--ease-out) infinite; }
+.s-warn.live .dot { animation: breathe 1.6s ease-in-out infinite; }
+.s-warn.live .dot::after { display: none; }
+@keyframes ping { 0% { transform: scale(1); opacity: .9; } 80%,100% { transform: scale(3.2); opacity: 0; } }
+@keyframes breathe { 50% { opacity: .35; } }
+.s-ok { color: var(--ok); background: var(--ok-soft); } .s-warn { color: var(--warn); background: var(--warn-soft); }
+.s-err { color: var(--err); background: var(--err-soft); } .s-info { color: var(--info); background: var(--info-soft); }
+.s-mute { color: var(--muted); background: var(--surface-3); } .s-violet { color: var(--violet); background: var(--violet-soft); }
+.delta { display: inline-flex; align-items: center; gap: 2px; font: 500 11.5px var(--mono); padding: 2px 7px 2px 5px; border-radius: 999px; }
+.delta svg, .delta i.ph-i { width: 12px; height: 12px; font-size: 12px; }
+.delta.up { color: var(--ok); background: var(--ok-soft); } .delta.dn { color: var(--err); background: var(--err-soft); }
+
+.chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 11px; border-radius: 999px; font-size: 12px; color: var(--muted);
+  background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); white-space: nowrap; transition: background .25s, color .25s; }
+.chip:hover { color: var(--text); background: var(--surface-3); }
+.chip b { color: var(--text); font-weight: 500; }
+.chip.on { color: var(--accent-text); background: var(--accent-soft); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent) 35%, transparent); }
+.chip svg, .chip i.ph-i { width: 13px; height: 13px; font-size: 13px; }
+.chip.mono, .hash { font-family: var(--mono); }
+.hash { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 3px 0 8px; border-radius: 999px; font-size: 11.5px; color: var(--text);
+  background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line-2); }
+.hash svg, .hash i.ph-i { width: 12px; height: 12px; color: var(--dim); font-size: 12px; }
+.branch { display: inline-flex; align-items: center; gap: 5px; font: 12px var(--mono); color: var(--violet); }
+.branch svg, .branch i.ph-i { width: 13px; height: 13px; font-size: 13px; }
+
+.avatar { width: 28px; height: 28px; border-radius: 999px; display: grid; place-items: center; font-weight: 600; font-size: 12px; color: #0A0D03; flex: none; background: linear-gradient(135deg, #DAFF86, #8BE0B8); }
+.avatar.v { background: linear-gradient(135deg, #B9AEFF, #FF9CCB); } .avatar.b { background: linear-gradient(135deg, #9FD3FF, #B9AEFF); } .avatar.o { background: linear-gradient(135deg, #FFD08A, #FF9C9C); }
+.stack { display: inline-flex; align-items: center; }
+.stack .avatar { width: 22px; height: 22px; font-size: 10px; box-shadow: 0 0 0 2px var(--surface); margin-left: -6px; }
+.stack .avatar:first-child { margin-left: 0; }
+.stack .more { margin-left: -6px; height: 22px; padding: 0 7px; border-radius: 999px; font: 500 10.5px/22px var(--mono); color: var(--muted); background: var(--surface-3); box-shadow: 0 0 0 2px var(--surface); }
+
+/* Double-bezel card */
+.bz { padding: 5px; border-radius: var(--r-shell); background: color-mix(in oklab, var(--text) 2.5%, transparent); box-shadow: inset 0 0 0 1px var(--line); min-width: 0; }
+.bz > .core { height: 100%; border-radius: var(--r-core); background: var(--surface); box-shadow: inset 0 1px 0 var(--hi), 0 0 0 1px var(--line), 0 1px 2px rgba(0,0,0,.12); position: relative; overflow: hidden; }
+.card-h { display: flex; align-items: center; gap: 10px; padding: 16px 18px 0; }
+.card-h h3 { margin: 0; font-size: 14px; font-weight: 500; letter-spacing: -.01em; }
+.card-h .sp { flex: 1; }
+.secno { font: 500 10.5px var(--mono); color: var(--dim); padding: 2px 6px; border-radius: 6px; box-shadow: inset 0 0 0 1px var(--line-2); }
+
+/* Segmented tabs */
+.seg { position: relative; display: inline-flex; padding: 3px; border-radius: 999px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); flex: none; }
+.seg button { position: relative; z-index: 1; height: 28px; padding: 0 13px; border-radius: 999px; font-size: 12.5px; font-weight: 500; color: var(--muted);
+  transition: color .3s var(--ease-out); display: inline-flex; align-items: center; gap: 6px; }
+.seg button.on { color: var(--text); }
+.seg button .n { font: 500 11px var(--mono); color: var(--dim); }
+.seg .ind { position: absolute; top: 3px; left: 0; height: 28px; border-radius: 999px; background: var(--surface);
+  box-shadow: inset 0 1px 0 var(--hi), 0 0 0 1px var(--line-2), 0 2px 8px -2px rgba(0,0,0,.35); transition: transform .5s var(--ease-emph), width .5s var(--ease-emph); }
+.seg.sm button { height: 24px; padding: 0 10px; font-size: 12px; } .seg.sm .ind { height: 24px; }
+
+/* Skeleton */
+.sk { display: block; height: 10px; border-radius: 999px; background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 50%, var(--surface-2) 75%); background-size: 300% 100%; animation: sk 1.4s ease-in-out infinite; }
+@keyframes sk { from { background-position: 100% 0; } to { background-position: 0 0; } }
+
+/* Tooltip */
+.tt { position: fixed; z-index: 85; display: flex; align-items: center; gap: 8px; padding: 6px 7px 6px 11px; border-radius: 999px; font-size: 12px; color: var(--text);
+  background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-2), inset 0 1px 0 var(--hi), var(--shadow-lg); pointer-events: none; white-space: nowrap;
+  opacity: 0; transform: translateY(-4px) scale(.96); transition: opacity .18s var(--ease-out), transform .3s var(--ease-spring); }
+.tt.on { opacity: 1; transform: none; }
+.tt .k { display: inline-flex; gap: 3px; }
+.tt:not(:has(.k)) { padding-right: 11px; }
+.tt.static { position: relative; opacity: 1; transform: none; display: inline-flex; }
+.tt.static::after { content: ""; position: absolute; left: 50%; top: -4px; width: 8px; height: 8px; margin-left: -4px; transform: rotate(45deg); background: var(--surface-3); box-shadow: -1px -1px 0 var(--line-2); }
+
+/* Toasts */
+.toasts { position: fixed; right: 22px; bottom: 22px; z-index: 70; display: grid; gap: 8px; justify-items: end; }
+.toast { position: relative; display: flex; align-items: center; gap: 12px; min-width: 330px; padding: 8px 8px 8px 10px; border-radius: 999px; overflow: hidden;
+  background: color-mix(in oklab, var(--surface-3) 92%, transparent); backdrop-filter: blur(14px);
+  box-shadow: inset 0 0 0 1px var(--line-2), inset 0 1px 0 var(--hi), var(--shadow-lg); animation: toastIn .6s var(--ease-spring) both; }
+.toast.out { animation: toastOut .35s var(--ease-out) forwards; }
+@keyframes toastIn { from { opacity: 0; transform: translateY(16px) scale(.94); } }
+@keyframes toastOut { to { opacity: 0; transform: translateX(24px) scale(.96); } }
+.toast .ti { width: 30px; height: 30px; border-radius: 999px; display: grid; place-items: center; flex: none; }
+.toast .tx { flex: 1; line-height: 16px; }
+.toast .tx b { font-weight: 500; display: block; }
+.toast .tx span { color: var(--muted); font-size: 12px; }
+.toast .cd { font: 500 11px var(--mono); color: var(--dim); }
+.toast .drain { position: absolute; left: 18px; right: 18px; bottom: 0; height: 2px; border-radius: 2px; background: var(--accent); transform-origin: left; animation: drain 5s linear forwards; }
+.toast.static .drain { animation: none; transform: scaleX(.58); }
+@keyframes drain { to { transform: scaleX(0); } }
+.toast.static { animation: none; }
+
+/* Entrance choreography */
+.view [data-s], #signin [data-s] { opacity: 0; }
+.view.active [data-s], #signin.active [data-s] { animation: rise .8s var(--ease-out) both; animation-delay: calc(var(--i, 0) * 50ms + 90ms); }
+@keyframes rise { from { opacity: 0; transform: translateY(18px) scale(.985); filter: blur(6px); } to { opacity: 1; transform: none; filter: blur(0); } }
+
+/* ================= Sign-in ================= */
+.screen { position: fixed; inset: 0; visibility: hidden; opacity: 0; }
+.screen.active { visibility: visible; opacity: 1; animation: screenIn .7s var(--ease-out) both; }
+.screen.leaving { visibility: visible; animation: screenOut .38s var(--ease-out) forwards; }
+@keyframes screenIn { from { opacity: 0; transform: scale(1.015); filter: blur(8px); } to { opacity: 1; transform: none; filter: none; } }
+@keyframes screenOut { to { opacity: 0; transform: scale(.985); filter: blur(8px); } }
+/* Sign-in: split. Left = rounded light-ribbon panel (always dark), right = bare form on the page */
+#signin { display: grid; grid-template-columns: 1.18fr 1fr; overflow: hidden; }
+body:has(#signin.active) .grain { display: none; }
+.si-left { position: relative; padding: 16px; display: grid; }
+.si-panel { position: relative; overflow: hidden; border-radius: 24px; padding: 40px 44px 44px; display: flex; flex-direction: column; justify-content: space-between; isolation: isolate;
+  --text: #F4F5F7; --muted: #A9ADB8; --dim: #8A8E9A; --accent: #C9F65E; --accent-text: #C9F65E; --accent-ink: #0A0D03; --surface-2: rgba(255,255,255,.06); --line: rgba(255,255,255,.10);
+  color: var(--text); background: radial-gradient(120% 80% at 50% 110%, #15122A 0%, #08090C 60%), #08090C; box-shadow: inset 0 0 0 1px rgba(255,255,255,.06); }
+.si-panel::after { content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background: linear-gradient(180deg, rgba(8,9,12,.55) 0%, rgba(8,9,12,0) 22%, rgba(8,9,12,0) 46%, rgba(8,9,12,.78) 78%, rgba(8,9,12,.94) 100%); }
+.ribbons { position: absolute; inset: 0; z-index: -2; pointer-events: none; }
+.ribbons i { position: absolute; top: -18%; height: 136%; left: var(--x); width: var(--w); border-radius: 999px; opacity: var(--o); filter: blur(var(--b)); mix-blend-mode: screen;
+  background: linear-gradient(180deg, transparent 0%, #C9F65E var(--s1, 28%), #9686FF var(--s2, 72%), transparent 100%);
+  animation: ribbon var(--d) ease-in-out var(--dl) infinite alternate; will-change: transform, opacity; }
+@keyframes ribbon {
+  0% { transform: translate3d(0, 0, 0) scaleX(1); opacity: var(--o); }
+  50% { transform: translate3d(calc(var(--dx) * .5), -3%, 0) scaleX(1.25); opacity: calc(var(--o) * .6); }
+  100% { transform: translate3d(var(--dx), 2%, 0) scaleX(.85); opacity: calc(var(--o) * .9); } }
+.si-hero h1 { margin: 0 0 34px; font-size: 76px; line-height: .98; letter-spacing: -.045em; font-weight: 500; max-width: 640px; }
+.si-hero h1 .serif { font-size: 84px; color: var(--accent-text); letter-spacing: -.01em; }
+.si-stats { display: flex; gap: 40px; }
+.si-stats div { display: grid; gap: 4px; padding-left: 12px; border-left: 1.5px solid var(--accent); }
+.si-stats b { font-weight: 300; font-size: 30px; line-height: 32px; letter-spacing: -.03em; }
+/* Product glimpse: glass card straddling the panel edge */
+.glimpse { position: absolute; z-index: 2; right: -64px; top: 27%; }
+.glimpse .gl { width: max-content; padding: 16px; border-radius: 22px; animation: bob 9s ease-in-out infinite alternate;
+  background: color-mix(in oklab, var(--panel) 62%, transparent); backdrop-filter: blur(22px) saturate(150%); -webkit-backdrop-filter: blur(22px) saturate(150%);
+  box-shadow: inset 0 0 0 1px var(--line-2), inset 0 1px 0 rgba(255,255,255,.06), 0 24px 60px -20px rgba(0,0,0,.6); }
+@keyframes bob { to { transform: translateY(-8px); } }
+.gl-h { display: flex; align-items: center; gap: 10px; }
+.gl-h .avatar { width: 30px; height: 30px; border-radius: 10px; }
+.gl-h b { display: block; font-weight: 500; font-size: 13.5px; line-height: 17px; }
+.gl-h small { font: 11px var(--mono); color: var(--dim); }
+.gl-h .status { margin-left: auto; }
+.gl-m { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 14px; }
+.gl-m div { display: grid; gap: 2px; padding: 8px 10px; border-radius: 12px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
+.gl-m b { font: 500 13px/16px var(--mono); }
+.gl-p { display: flex; align-items: center; gap: 3px; margin-top: 12px; }
+.gl-p > i.ph-i { width: 12px; height: 12px; font-size: 12px; color: var(--dim); }
+.gl-c { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px 0 4px; border-radius: 999px; font: 500 10.5px var(--mono); color: var(--dim);
+  background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line-2); transition: color .4s, box-shadow .4s, background .4s; }
+.gl-c i.ph-i { display: none; width: 16px; height: 16px; font-size: 12px; border-radius: 50%; }
+.gl-c[data-st="pending"] .p, .gl-c[data-st="running"] .r, .gl-c[data-st="done"] .d { display: inline-flex; }
+.gl-c[data-st="running"] { color: var(--text); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--warn) 60%, transparent), 0 0 0 3px var(--warn-soft); }
+.gl-c[data-st="running"] .r { color: var(--warn); animation: spin360 .9s linear infinite; }
+.gl-c[data-st="done"] { color: var(--text); }
+.gl-c[data-st="done"] .d { color: var(--accent-ink); background: var(--accent); }
+.gl-f { display: flex; justify-content: space-between; margin-top: 12px; font: 11px var(--mono); color: var(--dim); }
+.gl-f b { font-weight: 500; color: var(--muted); }
+.brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 600; font-size: 15px; letter-spacing: -.02em; }
+.brand .mark { width: 28px; height: 28px; color: var(--accent); }
+.brand .tag { font: 500 10.5px var(--mono); color: var(--muted); padding: 3px 8px; border-radius: 999px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); letter-spacing: .02em; }
+/* Right: the form sits straight on the page */
+.si-right { position: relative; display: grid; place-items: center; padding: 40px 56px 40px 88px; }
+.si-form { width: 400px; }
+.si-form h2 { margin: 0; font-size: 30px; line-height: 36px; font-weight: 500; letter-spacing: -.03em; }
+.si-form .sub { color: var(--muted); margin: 6px 0 30px; }
+.field { display: grid; gap: 7px; margin-bottom: 14px; }
+.field label, .lbl { font-size: 12px; font-weight: 500; color: var(--muted); display: flex; justify-content: space-between; align-items: center; }
+.field label a { color: var(--accent-text); text-decoration: none; font-weight: 500; }
+.field .help { font-size: 11.5px; color: var(--dim); padding-left: 16px; }
+.field .help.err { color: var(--err); display: flex; gap: 6px; align-items: center; }
+.input { height: 44px; border-radius: 999px; padding: 0 18px; display: flex; align-items: center; gap: 10px; color: var(--dim); background: var(--surface-2);
+  box-shadow: inset 0 0 0 1px var(--line-2), inset 0 2px 4px rgba(0,0,0,.12); transition: box-shadow .3s var(--ease-out), background .3s; }
+.input input { flex: 1; min-width: 0; border: 0; outline: 0; background: none; color: var(--text); font-size: 14px; }
+.input input::placeholder { color: var(--dim); }
+.input.focus, .input:focus-within { box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent) 70%, transparent), 0 0 0 4px var(--accent-soft); background: var(--surface); }
+.input.focus svg, .input:focus-within svg, .input.focus i.ph-i, .input:focus-within i.ph-i { color: var(--accent-text); }
+.input.error { box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--err) 70%, transparent), 0 0 0 4px var(--err-soft); }
+.input.error svg, .input.error i.ph-i { color: var(--err); }
+.input.disabled { opacity: .5; }
+.input.sm { height: 36px; padding: 0 14px; font-size: 13px; } .input.sm input { font-size: 13px; }
+.input .pre { font: 12.5px var(--mono); color: var(--dim); }
+.or { display: flex; align-items: center; gap: 12px; margin: 18px 0; color: var(--dim); font-size: 12px; }
+.or::before, .or::after { content: ""; flex: 1; height: 1px; background: var(--line-2); }
+.si-foot { display: flex; justify-content: space-between; margin-top: 28px; color: var(--dim); font-size: 12px; }
+.check { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12.5px; margin: 4px 0 20px; }
+.toggle { width: 30px; height: 18px; border-radius: 999px; background: var(--accent); position: relative; flex: none; box-shadow: inset 0 0 0 1px rgba(0,0,0,.1); }
+.toggle::after { content: ""; position: absolute; top: 2px; left: 14px; width: 14px; height: 14px; border-radius: 50%; background: var(--accent-ink); transition: left .4s var(--ease-spring); }
+.toggle.off { background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-2); } .toggle.off::after { left: 2px; background: var(--muted); }
+.cb { width: 15px; height: 15px; border-radius: 5px; box-shadow: inset 0 0 0 1.5px var(--line-3); display: inline-grid; place-items: center; flex: none; }
+.cb.on { background: var(--accent); box-shadow: none; color: var(--accent-ink); }
+.cb svg, .cb i.ph-i { width: 11px; height: 11px; stroke-width: 2.2; font-size: 11px; }
+.cb.mixed { background: var(--accent); box-shadow: none; } .cb.mixed::after { content: ""; width: 7px; height: 1.6px; border-radius: 2px; background: var(--accent-ink); }
+
+/* ================= App shell ================= */
+#app { display: grid; grid-template-columns: 244px 1fr; }
+#app::before { content: ""; position: absolute; inset: -20% 40% auto -10%; height: 70%; background: radial-gradient(closest-side, var(--glow-b), transparent); opacity: .55; pointer-events: none; filter: blur(40px); }
+.side { position: relative; display: flex; flex-direction: column; padding: 18px 12px 14px 14px; min-height: 0; }
+.side .brand { padding: 4px 8px 18px; }
+.switcher { display: flex; align-items: center; gap: 10px; width: 100%; padding: 6px 10px 6px 6px; border-radius: 999px; text-align: left;
+  background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line), inset 0 1px 0 var(--hi); transition: background .25s; }
+.switcher:hover { background: var(--surface-3); }
+.switcher .t { flex: 1; min-width: 0; line-height: 15px; }
+.switcher .t b { display: block; font-weight: 500; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.switcher .t span { display: block; font: 11px var(--mono); color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.navwrap { position: relative; flex: 1; margin-top: 16px; }
+.nav { position: absolute; inset: 0; transition: opacity .35s var(--ease-out), transform .45s var(--ease-emph); }
+.nav.off { opacity: 0; transform: translateX(-10px); pointer-events: none; }
+.nav .grp { font-size: 11px; color: var(--dim); padding: 12px 12px 5px; font-weight: 500; }
+.nav a { position: relative; z-index: 1; display: flex; align-items: center; gap: 11px; height: 33px; padding: 0 12px; border-radius: 999px; color: var(--muted); text-decoration: none; cursor: pointer; transition: color .3s var(--ease-out); }
+.nav a:hover, .nav a.on { color: var(--text); }
+.nav a.on svg, .nav a.on i.ph-i { color: var(--accent-text); fill: currentColor; fill-opacity: .18; }
+.nav a .badge { margin-left: auto; font: 500 10.5px var(--mono); color: var(--dim); }
+.nav a .pv { margin-left: auto; font: 500 9.5px var(--mono); letter-spacing: .08em; color: var(--violet); padding: 1px 6px; border-radius: 999px; background: var(--violet-soft); }
+.nav .ind { position: absolute; left: 0; right: 0; top: 0; height: 33px; border-radius: 999px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line-2), inset 0 1px 0 var(--hi); transition: transform .55s var(--ease-emph); }
+.nav .ind::before { content: ""; position: absolute; left: -9px; top: 10.5px; width: 3px; height: 12px; border-radius: 3px; background: var(--accent); box-shadow: 0 0 10px var(--accent); }
+.side-foot { display: grid; gap: 10px; }
+.meter { padding: 12px 14px; border-radius: 18px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line), inset 0 1px 0 var(--hi); }
+.meter .row { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+.meter .row b { color: var(--text); font-weight: 500; }
+.user { display: flex; align-items: center; gap: 10px; padding: 6px; border-radius: 999px; }
+.user .t { flex: 1; min-width: 0; font-size: 12.5px; line-height: 15px; }
+.user .t span { color: var(--dim); font-size: 11.5px; }
+
+.main { position: relative; margin: 10px 10px 10px 0; border-radius: 22px; background: var(--panel); min-width: 0; min-height: 0;
+  box-shadow: inset 0 0 0 1px var(--line), inset 0 1px 0 var(--hi), var(--shadow-lg); display: flex; flex-direction: column; overflow: hidden; }
+.top { display: flex; align-items: center; gap: 8px; height: 60px; padding: 0 14px 0 22px; flex: none; border-bottom: 1px solid var(--line); }
+.crumbs { display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--muted); min-width: 0; }
+.crumbs a { padding: 4px 9px; border-radius: 999px; cursor: pointer; transition: background .2s, color .2s; white-space: nowrap; }
+.crumbs a:hover { background: var(--surface-2); color: var(--text); }
+.crumbs .sep { color: var(--dim); opacity: .6; }
+.crumbs .cur { color: var(--text); font-weight: 500; }
+.top .sp { flex: 1; }
+.search { display: flex; align-items: center; gap: 10px; height: 36px; width: 300px; padding: 0 6px 0 14px; border-radius: 999px; color: var(--dim); margin-right: 4px;
+  background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2), inset 0 1px 0 var(--hi); transition: box-shadow .3s, transform .3s var(--ease-spring); }
+.search:hover { box-shadow: inset 0 0 0 1px var(--line-3); }
+.search:active { transform: scale(.98); }
+.search .lab { flex: 1; text-align: left; white-space: nowrap; }
+.theme-sw { position: relative; width: 62px; height: 34px; border-radius: 999px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); display: flex; align-items: center; justify-content: space-around; color: var(--dim); }
+.theme-sw svg, .theme-sw i.ph-i { position: relative; z-index: 1; width: 14px; height: 14px; transition: color .4s; font-size: 14px; }
+.theme-sw::before { content: ""; position: absolute; top: 3px; left: 3px; width: 28px; height: 28px; border-radius: 999px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2), 0 2px 6px rgba(0,0,0,.25); transition: transform .5s var(--ease-spring); }
+[data-theme="dark"] .theme-sw::before { transform: translateX(28px); }
+[data-theme="dark"] .theme-sw .moon, [data-theme="light"] .theme-sw .sun { color: var(--text); }
+.notif::after { content: ""; position: absolute; top: 8px; right: 8px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--panel); }
+
+.stage { position: relative; flex: 1; min-height: 0; }
+.view { position: absolute; inset: 0; overflow: auto; visibility: hidden; padding: 26px 30px 40px; }
+.view.active { visibility: visible; }
+.view.leaving { visibility: visible; animation: viewOut .32s var(--ease-out) forwards; }
+.view.leaving [data-s] { opacity: 1; }
+@keyframes viewOut { to { opacity: 0; transform: translateY(-10px); filter: blur(6px); } }
+.pghead { display: flex; align-items: flex-end; gap: 16px; margin-bottom: 22px; }
+.pghead h1 { margin: 0; font-size: 34px; line-height: 38px; font-weight: 500; letter-spacing: -.035em; display: flex; align-items: center; gap: 12px; }
+.pghead h1 .serif { font-size: 38px; color: var(--muted); }
+.pghead p { margin: 6px 0 0; color: var(--muted); }
+.pghead .act { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.pghead .metaline { margin-top: 8px; }
+.toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+.toolbar .sp { flex: 1; }
+.mini-search { display: flex; align-items: center; gap: 8px; height: 34px; width: 240px; padding: 0 14px; border-radius: 999px; color: var(--dim); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
+.bento { display: grid; grid-template-columns: repeat(12, 1fr); gap: 14px; }
+.pc-icon { width: 38px; height: 38px; border-radius: 12px; display: grid; place-items: center; flex: none; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line-2), inset 0 1px 0 var(--hi); color: var(--muted); }
+
+/* sparkline + crosshatch */
+.spark { display: block; width: 100%; height: 54px; margin: 14px 0 10px; }
+.spark path.l { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; stroke-dasharray: 1; stroke-dashoffset: 1; }
+.view.active .spark path.l { animation: draw 1.6s var(--ease-out) forwards; animation-delay: calc(var(--i, 0) * 50ms + 300ms); }
+@keyframes draw { to { stroke-dashoffset: 0; } }
+.spark path.a { opacity: 0; } .view.active .spark path.a { animation: fade 1.2s var(--ease-out) forwards; animation-delay: calc(var(--i, 0) * 50ms + 600ms); }
+@keyframes fade { to { opacity: 1; } }
+.hatch { position: relative; border-radius: 12px; background-image: repeating-linear-gradient(135deg, var(--hatch) 0 1px, transparent 1px 7px), repeating-linear-gradient(45deg, var(--hatch) 0 1px, transparent 1px 7px); }
+
+/* ================= Projects ================= */
+.pgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.pcard { cursor: pointer; transition: transform .5s var(--ease-spring), box-shadow .4s var(--ease-out); }
+.pcard:hover { transform: translateY(-4px); box-shadow: inset 0 0 0 1px var(--line-2), 0 24px 40px -24px rgba(0,0,0,.6); }
+.pcard:active { transform: translateY(-1px) scale(.99); }
+.pcard .core { padding: 18px 18px 14px; }
+.pcard .core::before { content: ""; position: absolute; inset: 0; background: radial-gradient(400px circle at var(--mx, 50%) var(--my, -20%), color-mix(in oklab, var(--accent) 8%, transparent), transparent 40%); opacity: 0; transition: opacity .4s; pointer-events: none; }
+.pcard:hover .core::before { opacity: 1; }
+.pc-head { display: flex; align-items: flex-start; gap: 12px; }
+.pc-head h3 { margin: 0; font-size: 15px; font-weight: 500; letter-spacing: -.01em; }
+.pc-head .metaline { font-size: 11.5px; }
+.pc-head .status { margin-left: auto; }
+.pc-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding-top: 12px; border-top: 1px dashed var(--line-2); }
+.pc-stats div { display: grid; }
+.pc-stats span { font: 500 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
+.pc-stats b { font: 500 13px var(--mono); }
+.pc-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; color: var(--dim); font-size: 12px; }
+.pc-foot .r { display: flex; align-items: center; gap: 10px; }
+.progress { height: 4px; border-radius: 999px; background: var(--surface-3); overflow: hidden; margin: 14px 0 10px; position: relative; }
+.progress i { position: absolute; inset: 0 auto 0 0; width: 62%; border-radius: inherit; background: var(--warn); }
+.progress i::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,.6), transparent); animation: shimmer 1.6s linear infinite; }
+@keyframes shimmer { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+.newcard { border-radius: var(--r-shell); display: grid; place-items: center; text-align: center; padding: 20px; color: var(--muted); border: 1.5px dashed var(--line-2); cursor: pointer; transition: border-color .3s, background .3s, color .3s; min-height: 230px; }
+.newcard:hover { border-color: color-mix(in oklab, var(--accent) 50%, transparent); background: var(--accent-soft); color: var(--text); }
+.newcard .plus { width: 46px; height: 46px; margin: 0 auto 12px; border-radius: 999px; display: grid; place-items: center; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line-2); transition: transform .5s var(--ease-spring), background .3s; }
+.newcard:hover .plus { transform: rotate(90deg) scale(1.08); background: var(--accent); color: var(--accent-ink); }
+.pcard.paused { opacity: .8; }
+
+/* ================= Capacity ================= */
+.cap .core { padding: 16px 18px 16px; }
+.big { display: flex; align-items: baseline; gap: 6px; margin: 6px 0 2px; padding-left: 12px; border-left: 1.5px solid var(--accent); }
+.big b { font-size: 34px; line-height: 38px; font-weight: 300; letter-spacing: -.04em; font-variant-numeric: tabular-nums; }
+.big .tail { font-size: 18px; letter-spacing: -.02em; }
+.dots { display: grid; grid-template-columns: repeat(32, 1fr); gap: 3px; margin: 16px 0 10px; }
+.dots i { height: 16px; border-radius: 999px; background: var(--surface-3); transform: scaleY(.5); transition: transform .4s var(--ease-spring); }
+.dots i.f { transform: none; }
+.view.active .dots i.f { animation: dotIn .5s var(--ease-spring) both; animation-delay: calc(var(--d) * 22ms + 400ms); }
+@keyframes dotIn { from { transform: scaleY(.5); background: var(--surface-3); } }
+.dots i.g { background: var(--ok); } .dots i.a { background: var(--warn); } .dots i.r { background: var(--err); }
+.capfoot { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+.heat { display: grid; grid-auto-flow: column; grid-template-rows: repeat(7, 12px); grid-auto-columns: 1fr; gap: 3px; }
+.heat i { height: 12px; border-radius: 3px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
+.view.active .heat i { animation: fade .6s var(--ease-out) both; animation-delay: calc(var(--w) * 14ms + 300ms); opacity: 0; }
+.heat i[data-l="1"] { background: color-mix(in oklab, var(--hc) 22%, var(--surface-2)); box-shadow: none; }
+.heat i[data-l="2"] { background: color-mix(in oklab, var(--hc) 45%, var(--surface-2)); box-shadow: none; }
+.heat i[data-l="3"] { background: color-mix(in oklab, var(--hc) 72%, var(--surface-2)); box-shadow: none; }
+.heat i[data-l="4"] { background: var(--hc); box-shadow: none; }
+.heat i[data-l="x"] { background: var(--err); box-shadow: none; border-radius: 1px; }
+.heatwrap { display: grid; grid-template-columns: 30px 1fr; gap: 6px; padding: 14px 18px 4px; }
+.heatwrap .days { display: grid; grid-template-rows: repeat(7, 12px); gap: 3px; font: 10px/12px var(--mono); color: var(--dim); margin-top: 21px; }
+.months { display: flex; justify-content: space-between; font: 10px var(--mono); color: var(--dim); margin-bottom: 6px; padding-right: 12px; }
+.heatwrap { padding-top: 18px; }
+.heatfoot { display: flex; align-items: center; gap: 12px; padding: 8px 18px 16px; font-size: 12px; color: var(--muted); }
+.heatfoot .sp { flex: 1; }
+.scale { display: inline-flex; gap: 3px; align-items: center; } .scale i { width: 11px; height: 11px; border-radius: 3px; }
+.alloc { list-style: none; margin: 10px 0 0; padding: 0 18px 14px; }
+.alloc li { display: grid; grid-template-columns: 150px 1fr 90px; gap: 14px; align-items: center; height: 34px; border-bottom: 1px dashed var(--line); }
+.alloc li:last-child { border: 0; }
+.alloc .nm { font: 12.5px var(--mono); display: flex; align-items: center; gap: 8px; }
+.alloc .tr { height: 6px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
+.alloc .tr i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--violet), var(--accent)); transform-origin: left; }
+.view.active .alloc .tr i { animation: grow 1.2s var(--ease-out) both .5s; }
+@keyframes grow { from { transform: scaleX(0); } }
+.alloc .v { font: 12px var(--mono); color: var(--muted); text-align: right; }
+.empty { display: grid; justify-items: center; text-align: center; gap: 6px; padding: 18px 20px 22px; color: var(--muted); }
+.empty svg.ill { width: 132px; height: 92px; margin-bottom: 4px; color: var(--dim); }
+.empty .eg { width: 64px; height: 64px; border-radius: 20px; display: grid; place-items: center; margin-bottom: 8px; color: var(--accent-text);
+  background: radial-gradient(closest-side, var(--accent-soft), transparent), var(--surface-2); box-shadow: inset 0 0 0 1px var(--line-2); }
+.empty .eg i.ph-i { width: 32px; height: 32px; font-size: 32px; }
+.empty b { color: var(--text); font-weight: 500; font-size: 14px; }
+.empty p { margin: 0; max-width: 240px; font-size: 12.5px; }
+
+/* ================= Project home ================= */
+.kpi .core { padding: 15px 18px 12px; }
+.kpi .big { margin-top: 8px; }
+.kpi .big b { font-size: 30px; line-height: 34px; }
+.kpi .prev { display: flex; align-items: center; gap: 8px; margin-top: 8px; font: 11.5px var(--mono); color: var(--dim); }
+.kpi .hatch { margin-top: 10px; height: 40px; }
+.kpi .hatch .spark { height: 40px; margin: 0; }
+.pipe .core { display: flex; align-items: center; gap: 14px; padding: 14px 12px 14px 18px; }
+.pipe .ttl { min-width: 196px; }
+.pipe .ttl b { font-weight: 500; display: flex; align-items: center; gap: 8px; }
+.steps { flex: 1; display: flex; align-items: center; }
+.step { display: flex; align-items: center; gap: 9px; height: 42px; padding: 0 14px 0 6px; border-radius: 999px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line-2); transition: background .4s, box-shadow .4s; flex: none; }
+.step .sic { position: relative; width: 30px; height: 30px; border-radius: 999px; display: grid; place-items: center; background: var(--surface-3); transition: background .4s, color .4s; color: var(--dim); }
+.step .sic svg, .step .sic i.ph-i { position: absolute; width: 15px; height: 15px; opacity: 0; transform: scale(.5); transition: opacity .25s, transform .45s var(--ease-spring); font-size: 15px; }
+.step[data-st="pending"] .sic .p, .step[data-st="running"] .sic .r, .step[data-st="done"] .sic .d { opacity: 1; transform: none; }
+.step[data-st="running"] .sic .r { animation: spin360 .9s linear infinite; }
+.step[data-st="running"] { box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--warn) 55%, transparent), 0 0 0 4px var(--warn-soft); }
+.step[data-st="running"] .sic { color: var(--warn); background: var(--warn-soft); }
+.step[data-st="done"] .sic { color: var(--accent-ink); background: var(--accent); }
+.step[data-st="done"] .sic .d { stroke-width: 2.2; }
+.step .t { line-height: 15px; }
+.step .t b { font: 500 12.5px var(--mono); display: block; }
+.step .t small { font-size: 11px; color: var(--dim); }
+.step .dur { font: 11px var(--mono); color: var(--dim); margin-left: 2px; }
+.conn { flex: 1; min-width: 14px; height: 2px; margin: 0 6px; position: relative;
+  background: repeating-linear-gradient(90deg, var(--line-3) 0 5px, transparent 5px 10px); }
+.conn::after { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(90deg, var(--accent) 0 5px, transparent 5px 10px); transform: scaleX(0); transform-origin: left; transition: transform .7s var(--ease-out); }
+.conn.done::after { transform: none; }
+.conn.flow { background: repeating-linear-gradient(90deg, var(--warn) 0 5px, transparent 5px 10px); background-size: 20px 2px; animation: flow .6s linear infinite; }
+@keyframes flow { to { background-position: 20px 0; } }
+.chart { position: relative; height: 250px; margin: 6px 0 0; cursor: crosshair; }
+.chart svg.c { position: absolute; inset: 0; width: 100%; height: 100%; }
+.chart .gl line { stroke: var(--line-2); stroke-dasharray: 3 5; }
+.chart .yl { position: absolute; left: 18px; font: 10.5px var(--mono); color: var(--dim); }
+.chart .band { position: absolute; top: 0; bottom: 18px; border-left: 1px dashed var(--line-3); border-right: 1px dashed var(--line-3);
+  background-image: repeating-linear-gradient(135deg, var(--hatch) 0 1px, transparent 1px 6px); background-color: color-mix(in oklab, var(--violet) 6%, transparent); }
+.chart .band span { position: absolute; top: 8px; left: 8px; font: 500 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--violet); }
+.chart .ref { position: absolute; left: 0; right: 0; border-top: 1px dashed color-mix(in oklab, var(--chart-1) 70%, transparent); }
+.chart .ref span { position: absolute; right: 14px; top: -10px; font: 500 10.5px var(--mono); color: var(--accent-text); background: var(--surface); padding: 0 6px; border-radius: 999px; box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--chart-1) 50%, transparent); }
+.chart .xl { position: absolute; bottom: 0; left: 0; right: 0; display: flex; justify-content: space-between; padding: 0 18px; font: 10.5px var(--mono); color: var(--dim); }
+.chart .tip { position: absolute; padding: 8px 11px; border-radius: 14px; background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-2), var(--shadow-lg); font-size: 11.5px; white-space: nowrap; pointer-events: none; z-index: 2; line-height: 17px; }
+.chart .tip .r { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.chart .tip i { display: inline-block; width: 8px; height: 2px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+.chart .tip b { font: 500 12px var(--mono); }
+.chart .vline { position: absolute; top: 0; bottom: 18px; width: 1px; background: linear-gradient(var(--line-3), transparent); pointer-events: none; }
+.chart .mk { position: absolute; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; border-radius: 50%; background: var(--surface); box-shadow: 0 0 0 2px var(--chart-1); pointer-events: none; }
+.headdot { position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: var(--chart-1); box-shadow: 0 0 0 4px var(--accent-soft), 0 0 16px var(--chart-1); }
+.headdot::after { content: ""; position: absolute; inset: 0; border-radius: 50%; border: 1.5px solid var(--chart-1); animation: ping 1.8s var(--ease-out) infinite; }
+.legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); }
+.legend i { display: inline-block; width: 10px; height: 2px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+.svc { list-style: none; margin: 6px 0 0; padding: 4px 8px 8px; }
+.svc li { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border-radius: 14px; transition: background .2s; }
+.svc li:hover { background: var(--surface-2); }
+.svc .pc-icon { width: 32px; height: 32px; border-radius: 10px; }
+.svc .t { flex: 1; min-width: 0; line-height: 16px; }
+.svc .t b { font-weight: 500; }
+.svc .t span { display: block; color: var(--dim); font-size: 11.5px; font-family: var(--mono); }
+.svc .lat { font: 12px var(--mono); color: var(--muted); width: 50px; text-align: right; }
+.feed { list-style: none; margin: 8px 0 0; padding: 0 18px 12px; }
+.feed li { display: flex; gap: 12px; padding: 8px 0; align-items: flex-start; position: relative; }
+.feed li + li::before { content: ""; position: absolute; left: 13px; top: -9px; height: 16px; width: 0; border-left: 1px dashed var(--line-3); }
+.feed .avatar { width: 27px; height: 27px; font-size: 11px; }
+.feed .ev { width: 27px; height: 27px; border-radius: 999px; display: grid; place-items: center; flex: none; }
+.feed .ev svg, .feed .ev i.ph-i { width: 14px; height: 14px; font-size: 14px; }
+.feed .t { flex: 1; color: var(--muted); line-height: 18px; padding-top: 4px; }
+.feed .t b { color: var(--text); font-weight: 500; }
+code.c { font: 12px var(--mono); color: var(--text); background: var(--surface-2); padding: 1px 6px; border-radius: 6px; box-shadow: inset 0 0 0 1px var(--line); }
+.feed time { font: 11.5px var(--mono); color: var(--dim); padding-top: 5px; white-space: nowrap; }
+.semi { display: grid; justify-items: center; padding: 6px 18px 14px; position: relative; }
+.semi svg { width: 190px; height: 104px; }
+.semi path { fill: none; stroke-width: 10; stroke-linecap: round; }
+.semi .tr { stroke: var(--surface-3); }
+.semi .vl { stroke: url(#gg); stroke-dasharray: 100; stroke-dashoffset: 100; }
+.view.active .semi .vl { animation: semiIn 1.6s var(--ease-out) .5s forwards; }
+@keyframes semiIn { to { stroke-dashoffset: 59; } }
+.semi .mid { position: absolute; top: 52px; text-align: center; }
+.semi .mid b { font-size: 26px; font-weight: 300; letter-spacing: -.03em; }
+.semi .kvs { width: 100%; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line-2); }
+.semi .kvs div { display: grid; gap: 2px; } .semi .kvs b { font: 500 12.5px var(--mono); }
+
+/* ================= Table editor ================= */
+#v-table { padding: 0; overflow: hidden; display: grid; grid-template-columns: 248px 1fr; }
+.tlist { border-right: 1px solid var(--line); padding: 16px 12px; overflow: auto; display: flex; flex-direction: column; gap: 10px; }
+.tlist .schema { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px; border-radius: 999px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); font-size: 12.5px; color: var(--muted); }
+.tlist .schema b { color: var(--text); font-weight: 500; font-family: var(--mono); font-size: 12px; }
+.tlist .grp { font-size: 11px; color: var(--dim); padding: 6px 10px 0; font-weight: 500; display: flex; justify-content: space-between; }
+.tnav { position: relative; display: grid; }
+.tnav a { position: relative; z-index: 1; display: flex; align-items: center; gap: 9px; height: 32px; padding: 0 12px; border-radius: 999px; font: 12.5px var(--mono); color: var(--muted); cursor: pointer; transition: color .25s; }
+.tnav a:hover, .tnav a.on { color: var(--text); }
+.tnav a .c { margin-left: auto; font-size: 11px; color: var(--dim); }
+.tnav a svg, .tnav a i.ph-i { width: 14px; height: 14px; font-size: 14px; }
+.tnav a.on svg, .tnav a.on i.ph-i { color: var(--accent-text); fill: currentColor; fill-opacity: .18; }
+.tnav .ind { position: absolute; left: 0; right: 0; top: 0; height: 32px; border-radius: 999px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line-2); transition: transform .5s var(--ease-emph); }
+.tmain { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
+.thead { display: flex; align-items: center; gap: 12px; padding: 14px 18px 12px; }
+.thead h2 { margin: 0; font: 500 16px var(--mono); letter-spacing: -.01em; }
+.thead .sp { flex: 1; }
+.tbar { display: flex; align-items: center; gap: 8px; padding: 0 18px 12px; border-bottom: 1px solid var(--line); }
+.tbar .sp { flex: 1; }
+.chip .x { opacity: .6; }
+.gridwrap { flex: 1; overflow: auto; min-height: 0; }
+table.grid { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 12.5px; }
+.grid th { position: sticky; top: 0; z-index: 2; background: var(--panel); text-align: left; font-weight: 500; padding: 9px 10px 8px; border-bottom: 1px solid var(--line-2); white-space: nowrap; }
+.grid th .h { display: inline-flex; align-items: center; gap: 6px; }
+.grid th .h svg, .grid th .h i.ph-i { width: 13px; height: 13px; color: var(--dim); font-size: 13px; }
+.grid th .ty { display: block; font: 10.5px var(--mono); color: var(--dim); font-weight: 400; margin-top: 1px; padding-left: 19px; }
+.grid th .k { color: var(--warn); font: 500 9.5px var(--mono); }
+.grid td { height: 34px; padding: 0 10px; border-bottom: 1px solid var(--line); white-space: nowrap; font-family: var(--mono); font-feature-settings: "zero"; color: var(--text); }
+.grid td.dim { color: var(--muted); }
+.grid td.num, .grid th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.grid th.num .h { flex-direction: row-reverse; } .grid th.num .ty { padding: 0 19px 0 0; }
+.grid th:first-child, .grid td:first-child { width: 44px; padding: 0 0 0 18px; }
+.grid tbody tr { transition: background .15s, opacity .3s, transform .35s var(--ease-out); }
+.grid tbody tr:hover { background: color-mix(in oklab, var(--text) 3%, transparent); }
+.grid tbody tr.sel { background: var(--accent-soft); }
+.grid tbody tr.gone { opacity: 0; transform: translateX(-16px); }
+.grid tbody tr.hide { display: none; }
+.grid td.focus { box-shadow: inset 0 0 0 1.5px var(--accent); border-radius: 6px; background: var(--surface); }
+.grid .null { color: var(--dim); font-style: italic; }
+.grid .status { height: 20px; font-size: 11px; font-family: var(--sans); padding: 0 8px 0 7px; gap: 6px; }
+.grid .status .dot { width: 6px; height: 6px; }
+.grid .s-info .dot { width: 7px; height: 7px; }
+.view.active .grid tbody tr.row { animation: rowIn .5s var(--ease-out) both; animation-delay: calc(var(--r) * 20ms); }
+@keyframes rowIn { from { opacity: 0; transform: translateY(6px); } }
+.grid tr.skr td { height: 34px; }
+.tfoot { display: flex; align-items: center; gap: 12px; padding: 10px 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+.tfoot .sp { flex: 1; }
+.pager { display: flex; gap: 4px; align-items: center; }
+.pager .icon-btn { width: 28px; height: 28px; }
+.selbar { position: absolute; left: 50%; bottom: 58px; transform: translateX(-50%); display: flex; align-items: center; gap: 6px; padding: 5px 5px 5px 16px; border-radius: 999px;
+  background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-2), inset 0 1px 0 var(--hi), var(--shadow-lg); z-index: 3; font-size: 12.5px; transition: opacity .3s, transform .45s var(--ease-spring); }
+.view.active .selbar { animation: popUp .7s var(--ease-spring) both 1s; }
+.selbar.hide { opacity: 0; transform: translate(-50%, 20px) scale(.92); pointer-events: none; }
+@keyframes popUp { from { opacity: 0; transform: translate(-50%, 20px) scale(.92); } }
+
+/* ================= SQL + assistant ================= */
+#v-sql { padding: 0; overflow: hidden; display: grid; grid-template-columns: 1fr 384px; }
+.sqlmain { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--line); }
+.edtabs { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.edtabs .sp { flex: 1; }
+.ftab { display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 8px 0 12px; border-radius: 999px; font: 12px var(--mono); color: var(--muted); }
+.ftab.on { color: var(--text); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line-2); }
+.ftab .mod { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.code { flex: 1; min-height: 0; overflow: auto; padding: 14px 0; font: 13px/22px var(--mono); counter-reset: ln; }
+.code .ln { display: block; white-space: pre; min-height: 22px; padding-right: 18px; }
+.code .ln::before { counter-increment: ln; content: counter(ln); display: inline-block; width: 52px; padding-right: 16px; text-align: right; color: var(--dim); opacity: .7; flex: none; }
+.code .ln.hl { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
+.code .ln.new { background: color-mix(in oklab, var(--ok) 7%, transparent); }
+.kw { color: var(--violet); } .fn { color: var(--info); } .st { color: var(--accent-text); } .cm { color: var(--dim); font-style: italic; } .nu { color: var(--warn); }
+.caret { display: inline-block; width: 2px; height: 16px; background: var(--accent); vertical-align: -3px; animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+.results { height: 236px; flex: none; border-top: 1px solid var(--line); display: flex; flex-direction: column; }
+.results .rh { display: flex; align-items: center; gap: 10px; padding: 10px 16px; }
+.results .rh .sp { flex: 1; }
+.results .gridwrap { padding: 0; }
+.asst { display: flex; flex-direction: column; min-height: 0; background: color-mix(in oklab, var(--surface) 55%, var(--panel)); }
+.asst .ah { display: flex; align-items: center; gap: 10px; padding: 12px 14px 12px 16px; border-bottom: 1px solid var(--line); }
+.asst .ah .orb { width: 28px; height: 28px; border-radius: 999px; display: grid; place-items: center; color: var(--accent-ink); background: conic-gradient(from 200deg, var(--accent), #8BE0B8, var(--violet), var(--accent)); }
+.asst .ah .orb svg, .asst .ah .orb i.ph-i { width: 15px; height: 15px; font-size: 15px; }
+.asst .ah b { font-weight: 500; }
+.asst .ah .sp { flex: 1; }
+.msgs { flex: 1; overflow: auto; padding: 16px; display: grid; gap: 14px; align-content: start; }
+.msg.u { justify-self: end; max-width: 88%; padding: 10px 14px; border-radius: 18px 18px 6px 18px; background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-2); line-height: 19px; }
+.msg.a { display: grid; gap: 10px; line-height: 20px; color: var(--muted); }
+.msg.a b { color: var(--text); font-weight: 500; }
+.trace { display: grid; gap: 4px; font-size: 12px; color: var(--dim); }
+.trace span { display: flex; align-items: center; gap: 8px; }
+.trace svg, .trace i.ph-i { width: 13px; height: 13px; color: var(--ok); font-size: 13px; }
+.snip { border-radius: 16px; background: var(--panel); box-shadow: inset 0 0 0 1px var(--line-2); overflow: hidden; }
+.snip .sh { display: flex; align-items: center; gap: 8px; padding: 7px 8px 7px 12px; border-bottom: 1px solid var(--line); font: 11.5px var(--mono); color: var(--dim); }
+.snip .sh .sp { flex: 1; }
+.snip pre { margin: 0; padding: 10px 12px; font: 12px/19px var(--mono); color: var(--text); white-space: pre-wrap; }
+.snip .sf { display: flex; gap: 6px; padding: 8px; border-top: 1px solid var(--line); }
+.ask { margin: 0 12px 12px; padding: 6px 6px 6px 14px; border-radius: 24px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line-2), inset 0 1px 0 var(--hi); }
+.ask .ctx { display: flex; gap: 6px; padding: 6px 0 4px; }
+.ask .row { display: flex; align-items: center; gap: 8px; }
+.ask .row span { flex: 1; color: var(--dim); }
+.send { width: 32px; height: 32px; border-radius: 999px; display: grid; place-items: center; background: var(--accent); color: var(--accent-ink); }
+
+/* ================= Sites ================= */
+.envs { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.env .core { padding: 16px 18px; }
+.env .eh { display: flex; align-items: center; gap: 10px; }
+.env .eh b { font-size: 15px; font-weight: 500; }
+.env .eh .star { color: var(--warn); fill: currentColor; }
+.env .eh .status { margin-left: auto; }
+.env .dom { display: flex; align-items: center; gap: 6px; margin: 12px 0; font: 13px var(--mono); }
+.env .dom a { color: var(--text); text-decoration: none; border-bottom: 1px dashed var(--line-3); }
+.env .shot { height: 112px; border-radius: 14px; margin-bottom: 12px; position: relative; overflow: hidden; box-shadow: inset 0 0 0 1px var(--line-2); }
+.env .shot .bar { height: 18px; display: flex; gap: 4px; align-items: center; padding: 0 8px; background: var(--surface-2); border-bottom: 1px solid var(--line); }
+.env .shot .bar i { width: 6px; height: 6px; border-radius: 50%; background: var(--surface-3); }
+.env .shot .pg { padding: 12px; display: grid; gap: 7px; }
+.env .shot .pg .sk { animation: none; }
+.env .ef { display: flex; align-items: center; gap: 10px; color: var(--dim); font-size: 12px; }
+.env .ef .sp { flex: 1; }
+.prev { list-style: none; margin: 6px 0 0; padding: 0 8px 8px; }
+.prev li { display: grid; grid-template-columns: 210px 1fr 110px 120px 110px 34px; align-items: center; gap: 12px; height: 46px; padding: 0 10px; border-radius: 14px; transition: background .2s; }
+.prev li:hover { background: var(--surface-2); }
+.prev .url { font: 12.5px var(--mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prev time { font: 12px var(--mono); color: var(--dim); }
+.prev li > * { justify-self: start; }
+
+/* Sites: deployment thumbnail + facts */
+.thumb { height: 128px; border-radius: 14px; margin-bottom: 12px; overflow: hidden; position: relative; background: var(--panel); box-shadow: inset 0 0 0 1px var(--line-2); }
+.thumb .bar { height: 18px; display: flex; gap: 4px; align-items: center; padding: 0 8px; background: var(--surface-2); border-bottom: 1px solid var(--line); }
+.thumb .bar i { width: 6px; height: 6px; border-radius: 50%; background: var(--surface-3); }
+.thumb .bar span { margin-left: 8px; font: 9.5px var(--mono); color: var(--dim); padding: 0 8px; border-radius: 999px; background: var(--surface-3); }
+.thumb .pg { display: grid; grid-template-columns: 1.1fr 1fr; gap: 12px; padding: 12px 14px; }
+.thumb .pg .l { display: grid; gap: 6px; align-content: start; }
+.thumb .pg .l b { display: block; height: 9px; border-radius: 999px; background: var(--text); opacity: .75; }
+.thumb .pg .l s { display: block; height: 5px; border-radius: 999px; background: var(--muted); opacity: .35; }
+.thumb .pg .l u { display: block; width: 54px; height: 14px; border-radius: 999px; background: var(--accent); margin-top: 4px; }
+.thumb .pg .r { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.thumb .pg .r i { border-radius: 8px; background: linear-gradient(135deg, var(--surface-3), var(--surface-2)); box-shadow: inset 0 0 0 1px var(--line); }
+.thumb .pg .r i:first-child { grid-row: span 2; background: linear-gradient(160deg, color-mix(in oklab, var(--violet) 40%, var(--surface-2)), var(--surface-2)); }
+.thumb.build .pg { opacity: .35; filter: blur(1px); }
+.thumb.build::after { content: "derleniyor"; position: absolute; inset: 18px 0 0; display: grid; place-items: center; font: 500 10.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--warn); }
+.facts { display: grid; grid-template-columns: repeat(3, auto); justify-content: start; gap: 4px 28px; margin-bottom: 12px; }
+.facts b { font-weight: 500; display: flex; align-items: center; gap: 6px; font-size: 12.5px; }
+.env .acts { display: flex; gap: 8px; align-items: center; }
+.env .acts .sp { flex: 1; }
+
+/* Quick-start connect cards */
+.qs .core { padding: 14px 16px 12px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.qs .core > * { min-width: 0; }
+.qs .qh { display: flex; align-items: center; gap: 10px; }
+.qs .qh .pc-icon { width: 30px; height: 30px; border-radius: 10px; }
+.qs .qh b { font-weight: 500; }
+.qs .qh .status { margin-left: auto; height: 20px; font-size: 11px; }
+.qs .snip-line { display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 4px 0 12px; border-radius: 999px; background: var(--panel); box-shadow: inset 0 0 0 1px var(--line-2); font: 11.5px var(--mono); color: var(--muted); }
+.qs .snip-line span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qs p { margin: 0; font-size: 12px; color: var(--dim); }
+
+/* Setup checklist */
+.cl { list-style: none; margin: 10px 0 0; padding: 0 12px 12px; }
+.cl li { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 8px; border-radius: 12px; color: var(--text); }
+.cl li:hover { background: var(--surface-2); }
+.cl li .cb { width: 18px; height: 18px; border-radius: 999px; }
+.cl li.done { color: var(--dim); }
+.cl li.done .lab { text-decoration: line-through; text-decoration-color: var(--line-3); }
+.cl li .go { margin-left: auto; color: var(--dim); }
+.clbar { display: grid; grid-template-columns: repeat(6, 1fr); gap: 3px; margin: 10px 18px 0; }
+.clbar i { height: 4px; border-radius: 999px; background: var(--surface-3); }
+.clbar i.f { background: var(--accent); }
+
+/* Architecture canvas */
+.panes { position: relative; }
+.pane { transition: opacity .35s var(--ease-out), transform .45s var(--ease-emph); }
+.pane.off { position: absolute; inset: 0; opacity: 0; transform: translateY(8px) scale(.99); pointer-events: none; }
+.canvas { position: relative; height: 250px; margin: 6px 6px 6px; border-radius: 14px; overflow: hidden;
+  background-image: radial-gradient(var(--line-2) 1px, transparent 1.2px); background-size: 16px 16px; background-color: color-mix(in oklab, var(--panel) 50%, var(--surface)); box-shadow: inset 0 0 0 1px var(--line); }
+.canvas svg.edges { position: absolute; inset: 0; width: 100%; height: 100%; }
+.canvas .edges path { fill: none; stroke: var(--line-3); stroke-width: 1.5; stroke-dasharray: 4 5; animation: dash 1.2s linear infinite; }
+.canvas .edges path.hot { stroke: color-mix(in oklab, var(--chart-1) 70%, transparent); }
+@keyframes dash { to { stroke-dashoffset: -18; } }
+.node { position: absolute; transform: translate(-50%, -50%); display: flex; align-items: center; gap: 9px; height: 44px; padding: 0 12px 0 6px; border-radius: 999px;
+  background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2), inset 0 1px 0 var(--hi), 0 10px 24px -12px rgba(0,0,0,.5); white-space: nowrap; transition: transform .4s var(--ease-spring); }
+.node:hover { transform: translate(-50%, -50%) scale(1.04); }
+.node .pc-icon { width: 32px; height: 32px; border-radius: 999px; }
+.node .t { line-height: 14px; }
+.node .t b { font: 500 12px var(--mono); display: block; }
+.node .t small { font-size: 10.5px; color: var(--dim); }
+.node .status { height: 18px; padding: 0 6px; margin-left: 2px; }
+.node.vol { height: 34px; padding: 0 12px 0 10px; border-radius: 12px; box-shadow: inset 0 0 0 1px var(--line-2); background: var(--surface-2); font: 11px var(--mono); color: var(--muted); }
+.canvas .tools { position: absolute; right: 10px; bottom: 10px; display: flex; gap: 2px; padding: 3px; border-radius: 999px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2); }
+.canvas .tools .icon-btn { width: 28px; height: 28px; }
+
+/* Side sheet (import / export) */
+.sheet { position: fixed; inset: 0; z-index: 65; visibility: hidden; }
+.sheet .scrim { position: absolute; inset: 0; background: color-mix(in oklab, var(--bg) 40%, transparent); opacity: 0; transition: opacity .35s; }
+.sheet .panel { position: absolute; top: 10px; right: 10px; bottom: 10px; width: 480px; border-radius: 22px; background: var(--panel); display: flex; flex-direction: column;
+  box-shadow: inset 0 0 0 1px var(--line-2), inset 0 1px 0 var(--hi), -30px 0 80px -30px rgba(0,0,0,.6); transform: translateX(calc(100% + 20px)); transition: transform .6s var(--ease-emph); }
+.sheet.open { visibility: visible; } .sheet.open .scrim { opacity: 1; } .sheet.open .panel { transform: none; }
+.sheet .sh-h { display: flex; align-items: flex-start; gap: 12px; padding: 20px 20px 16px; border-bottom: 1px solid var(--line); }
+.sheet .sh-h h3 { margin: 0; font-size: 18px; font-weight: 500; letter-spacing: -.02em; }
+.sheet .sh-b { flex: 1; overflow: auto; padding: 16px 16px 20px; display: grid; gap: 10px; align-content: start; }
+.sheet .sh-f { display: flex; gap: 8px; padding: 14px 16px; border-top: 1px solid var(--line); }
+.sheet .sh-f .sp { flex: 1; }
+.stp { border-radius: 18px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2); overflow: hidden; }
+.stp .sh { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 14px; text-align: left; }
+.stp .num { width: 26px; height: 26px; border-radius: 999px; display: grid; place-items: center; font: 500 12px var(--mono); background: var(--surface-3); color: var(--muted); flex: none; }
+.stp.ok .num { background: var(--accent); color: var(--accent-ink); }
+.stp.cur .num { box-shadow: 0 0 0 1px var(--accent), 0 0 0 4px var(--accent-soft); color: var(--accent-text); background: var(--surface); }
+.stp.lock { opacity: .55; }
+.stp .sh b { font-weight: 500; flex: 1; }
+.stp .sh .chev { color: var(--dim); transition: transform .45s var(--ease-emph); }
+.stp.exp .sh .chev { transform: rotate(180deg); }
+.stp .bd { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .5s var(--ease-emph); }
+.stp.exp .bd { grid-template-rows: 1fr; }
+.stp .bd > div { overflow: hidden; }
+.stp .in { padding: 0 14px 14px 52px; display: grid; gap: 10px; }
+.stp .chk { display: grid; gap: 6px; font-size: 12.5px; color: var(--muted); }
+.stp .chk span { display: flex; align-items: center; gap: 8px; }
+.stp .chk svg, .stp .chk i.ph-i { width: 14px; height: 14px; color: var(--ok); font-size: 14px; }
+.stp .opt { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--muted); }
+
+/* ================= Details sheet ================= */
+#v-details { padding: 26px 30px 60px; }
+.ds { display: grid; grid-template-columns: repeat(12, 1fr); gap: 14px; }
+.ds .core { padding: 16px 18px 18px; }
+.ds h4 { margin: 0 0 12px; display: flex; align-items: center; gap: 10px; font-size: 13.5px; font-weight: 500; }
+.ds h4 .secno { margin-right: 2px; }
+.ds .row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.ds .row + .row { margin-top: 12px; }
+.ds .sub { font: 500 10px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--dim); margin: 14px 0 8px; }
+.wts span { display: inline-flex; align-items: center; gap: 8px; font: 11px var(--mono); color: var(--dim); margin-right: 18px; }
+.wts i.ph-i, .wts svg { color: var(--text); }
+.icgrid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
+.icgrid div { display: grid; justify-items: center; gap: 6px; padding: 10px 4px 8px; border-radius: 14px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); color: var(--text); }
+.icgrid div span { font: 10.5px var(--mono); color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.icgrid.g div { color: var(--accent-text); }
+.icgrid.g svg, .icgrid.g i.ph-i { width: 20px; height: 20px; font-size: 20px; }
+.statemx { display: grid; grid-template-columns: 60px repeat(5, auto); justify-content: start; gap: 10px 12px; align-items: center; }
+.statemx > span { font: 10.5px var(--mono); color: var(--dim); }
+.statemx .btn { font-family: var(--sans); }
+.statemx .hd { text-transform: uppercase; letter-spacing: .1em; font-size: 10px; }
+.nav.demo { position: relative; inset: auto; }
+.nav.demo a { width: 190px; }
+.nav.demo a.on { background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line-2); }
+.fmt { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: 12px; color: var(--dim); }
+.fmt b { font: 500 12.5px var(--mono); color: var(--text); }
+
+/* ================= Command palette ================= */
+.cmdk { position: fixed; inset: 0; z-index: 60; display: grid; justify-items: center; align-items: start; padding-top: 13vh; visibility: hidden; }
+.cmdk .scrim { position: absolute; inset: 0; background: color-mix(in oklab, var(--bg) 45%, transparent); backdrop-filter: blur(5px) saturate(1.1); opacity: 0; transition: opacity .35s var(--ease-out); }
+.cmdk.open { visibility: visible; } .cmdk.open .scrim { opacity: 1; }
+.cmdk .pal { position: relative; width: 660px; border-radius: 26px; padding: 6px; background: color-mix(in oklab, var(--panel) 80%, transparent);
+  box-shadow: inset 0 0 0 1px var(--line-2), 0 50px 120px -30px rgba(0,0,0,.8), 0 0 0 1px rgba(0,0,0,.2);
+  transform: translateY(-14px) scale(.94); opacity: 0; filter: blur(8px); transition: transform .55s var(--ease-spring), opacity .3s var(--ease-out), filter .4s var(--ease-out); }
+.cmdk.open .pal { transform: none; opacity: 1; filter: none; }
+.cmdk.closing .pal { transition-duration: .22s; transform: scale(.97); opacity: 0; }
+.pal .core { border-radius: 21px; background: var(--surface); box-shadow: inset 0 1px 0 var(--hi), 0 0 0 1px var(--line); overflow: hidden; }
+.pal .q { display: flex; align-items: center; gap: 12px; height: 58px; padding: 0 16px 0 20px; border-bottom: 1px solid var(--line); }
+.pal .q svg, .pal .q i.ph-i { width: 18px; height: 18px; color: var(--accent-text); font-size: 18px; }
+.pal .q input { flex: 1; border: 0; outline: 0; background: none; font-size: 16px; letter-spacing: -.01em; }
+.pal .q input::placeholder { color: var(--dim); }
+.pal .ctx { display: flex; gap: 6px; padding: 10px 14px 0; }
+.pal .list { position: relative; max-height: 430px; overflow: auto; padding: 6px 8px 8px; }
+.pal .gh { font-size: 11px; color: var(--dim); padding: 10px 12px 4px; font-weight: 500; }
+.pal .it { position: relative; z-index: 1; display: flex; align-items: center; gap: 12px; height: 44px; padding: 0 12px 0 8px; border-radius: 999px; color: var(--muted); cursor: pointer; transition: color .2s; }
+.pal .it.on { color: var(--text); }
+.pal .it .tile { width: 30px; height: 30px; border-radius: 999px; display: grid; place-items: center; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line-2); transition: background .3s, color .3s, transform .4s var(--ease-spring); }
+.pal .it.on .tile { background: var(--accent); color: var(--accent-ink); box-shadow: none; transform: scale(1.06); }
+.pal .it .lab { flex: 1; } .pal .it .lab small { color: var(--dim); margin-left: 8px; font-size: 12px; }
+.pal .it .hint { display: flex; gap: 4px; }
+.pal .it .go { opacity: 0; transform: translateX(-6px); transition: opacity .25s, transform .35s var(--ease-spring); color: var(--accent-text); }
+.pal .it.on .go { opacity: 1; transform: none; }
+.pal .hl { position: absolute; left: 8px; right: 8px; top: 0; height: 44px; border-radius: 999px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line-2), inset 0 1px 0 var(--hi); transition: transform .38s var(--ease-emph); }
+.cmdk.open .it, .cmdk.open .gh { animation: rise .5s var(--ease-out) both; animation-delay: calc(var(--i) * 28ms + 120ms); }
+.pal .ft { display: flex; align-items: center; gap: 16px; padding: 10px 18px; border-top: 1px solid var(--line); color: var(--dim); font-size: 11.5px; }
+.pal .ft span { display: inline-flex; gap: 6px; align-items: center; }
+.pal .ft .sp { flex: 1; }
+
+/* Mockup dock (not part of product) */
+.dock { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 80; display: flex; align-items: center; gap: 2px; padding: 4px; border-radius: 999px;
+  background: color-mix(in oklab, var(--surface-3) 75%, transparent); backdrop-filter: blur(16px); box-shadow: inset 0 0 0 1px var(--line-2), inset 0 1px 0 var(--hi), var(--shadow-lg); }
+.dock .lbl { font: 500 10px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--dim); padding: 0 10px 0 12px; }
+.dock button { position: relative; z-index: 1; height: 30px; padding: 0 11px; border-radius: 999px; font-size: 12px; font-weight: 500; color: var(--muted); transition: color .3s; }
+.dock button.on { color: var(--accent-ink); }
+.dock .ind { position: absolute; top: 4px; left: 0; height: 30px; border-radius: 999px; background: var(--accent); transition: transform .5s var(--ease-emph), width .5s var(--ease-emph); }
+.clean .dock { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-delay: 0ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+  .status.live .dot::after, .headdot::after { display: none; }
+  .ribbons i, .glimpse .gl { animation: none !important; }
+}
+@media (max-width: 900px) {
+  #app { grid-template-columns: 1fr; } .side { display: none; } .main { margin: 8px; }
+  #signin { grid-template-columns: 1fr; } .si-left { display: none; } .si-right { padding: 24px; } .si-form { width: min(400px, calc(100vw - 48px)); }
+  .pgrid, .envs { grid-template-columns: 1fr; } .bento > *, .ds > * { grid-column: 1 / -1 !important; } .search { width: auto; } .search .lab { display: none; }
+  #v-table, #v-sql { grid-template-columns: 1fr; } .tlist, .asst { display: none; } .steps { flex-wrap: wrap; gap: 8px; }
+}
+</style>
+</head>
+<body>
+<div class="grain"></div>
+
+<!-- Brand mark + custom service glyphs (24 grid, 1.5 stroke, round caps: matches Phosphor Regular) -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="gg" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#9686FF"/><stop offset="1" stop-color="#C9F65E"/></linearGradient>
+    <symbol id="logo" viewBox="0 0 32 32"><rect x="3" y="5" width="26" height="10" rx="5" fill="currentColor" opacity=".35"/><rect x="3" y="17" width="26" height="10" rx="5" fill="currentColor"/><circle cx="23.5" cy="22" r="2.6" fill="var(--accent-ink, #0A0D03)"/></symbol>
+    <symbol id="g-postgres" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="11" cy="5.5" rx="7" ry="2.5"/><path d="M4 5.5v12c0 1.4 3.1 2.5 7 2.5 1.3 0 2.5-.1 3.5-.4"/><path d="M18 5.5V11"/><path d="M4 11.5c0 1.4 3.1 2.5 7 2.5"/><path d="M16 14.5c1.5-.6 3.5 0 3.5 2s-1.8 2.6-3 2.2"/></symbol>
+    <symbol id="g-rest" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4H7a2 2 0 0 0-2 2v3.5A2.5 2.5 0 0 1 2.5 12 2.5 2.5 0 0 1 5 14.5V18a2 2 0 0 0 2 2h1"/><path d="M16 4h1a2 2 0 0 1 2 2v3.5a2.5 2.5 0 0 0 2.5 2.5 2.5 2.5 0 0 0-2.5 2.5V18a2 2 0 0 1-2 2h-1"/><path d="M9.5 12h5M12.5 10l2 2-2 2"/></symbol>
+    <symbol id="g-auth" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 2.8V11c0 4.6-3 8-7 10-4-2-7-5.4-7-10V5.8z"/><circle cx="12" cy="10.5" r="2"/><path d="M12 12.5V16"/></symbol>
+    <symbol id="g-realtime" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1.8"/><path d="M8.5 8.5a5 5 0 0 0 0 7M15.5 8.5a5 5 0 0 1 0 7M5.5 5.5a9.2 9.2 0 0 0 0 13M18.5 5.5a9.2 9.2 0 0 1 0 13"/></symbol>
+    <symbol id="g-storage" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7.5l1.6 11.2a2 2 0 0 0 2 1.8h8.8a2 2 0 0 0 2-1.8L20 7.5"/><ellipse cx="12" cy="7" rx="8" ry="2.8"/><path d="M9 13.5h6"/></symbol>
+    <symbol id="g-fn" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="17" height="17" rx="5"/><path d="M9 7.5h1.4l4.6 9"/><path d="M12.3 11.4L9 16.5"/></symbol>
+    <symbol id="g-sites" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3.5"/><path d="M3 8.5h18"/><path d="M10 16.5l4.5-4.5M10.5 12h4v4"/></symbol>
+  </defs>
+</svg>
+
+<!-- ================= SIGN-IN ================= -->
+<section id="signin" class="screen" aria-label="Giriş">
+  <div class="si-left">
+    <div class="si-panel">
+      <div class="ribbons" aria-hidden="true">
+        <i style="--x:3%;--w:38px;--b:16px;--o:0.5;--d:27s;--dl:-3s;--dx:26px;--s1:26%;--s2:70%"></i>
+        <i style="--x:11%;--w:110px;--b:44px;--o:0.55;--d:34s;--dl:-12s;--dx:-30px;--s1:18%;--s2:64%"></i>
+        <i style="--x:24%;--w:22px;--b:6px;--o:0.7;--d:23s;--dl:-8s;--dx:18px;--s1:34%;--s2:80%"></i>
+        <i style="--x:31%;--w:64px;--b:22px;--o:0.42;--d:31s;--dl:-20s;--dx:34px;--s1:22%;--s2:66%"></i>
+        <i style="--x:44%;--w:140px;--b:56px;--o:0.5;--d:38s;--dl:-5s;--dx:-24px;--s1:30%;--s2:74%"></i>
+        <i style="--x:57%;--w:18px;--b:5px;--o:0.75;--d:21s;--dl:-14s;--dx:16px;--s1:40%;--s2:82%"></i>
+        <i style="--x:64%;--w:78px;--b:28px;--o:0.5;--d:29s;--dl:-9s;--dx:-28px;--s1:20%;--s2:62%"></i>
+        <i style="--x:78%;--w:34px;--b:12px;--o:0.6;--d:25s;--dl:-17s;--dx:22px;--s1:28%;--s2:76%"></i>
+        <i style="--x:86%;--w:120px;--b:48px;--o:0.45;--d:36s;--dl:-24s;--dx:-20px;--s1:24%;--s2:70%"></i>
+        <i style="--x:38%;--w:5px;--b:1.5px;--o:0.55;--d:24s;--dl:-6s;--dx:40px;--s1:30%;--s2:68%"></i>
+        <i style="--x:71%;--w:8px;--b:2.5px;--o:0.45;--d:28s;--dl:-15s;--dx:-36px;--s1:24%;--s2:74%"></i>
+      </div>
+      <div class="brand" data-s><svg class="mark"><use href="#logo"/></svg><span data-wordmark>selfbase</span><span class="tag">STUDIO</span></div>
+      <div class="si-hero">
+        <h1 data-s>Verin senin.<br><span class="serif">Sunucun</span> da.</h1>
+        <div class="si-stats" data-s>
+          <div><span class="micro">Projeler</span><b class="tnum">6<span class="tail"> aktif</span></b></div>
+          <div><span class="micro">Erişilebilirlik</span><b class="tnum"><span class="tail">%</span>99,98</b></div>
+          <div><span class="micro">p95 sorgu</span><b class="tnum">14<span class="tail"> ms</span></b></div>
+        </div>
+      </div>
+    </div>
+    <div class="glimpse" data-s aria-label="Ürün önizlemesi: proje sağlığı">
+      <div class="gl">
+        <div class="gl-h"><span class="avatar">İ</span><div><b>ilkbahar-api</b><small>Atölye Labs · üretim</small></div><span class="status s-ok" id="gl-st"><span class="dot"></span>Sağlıklı</span></div>
+        <div class="gl-m"><div><span class="micro">CPU</span><b>%23</b></div><div><span class="micro">Bellek</span><b>1,2 GB</b></div><div><span class="micro">p95</span><b>14 ms</b></div></div>
+        <div class="gl-p" id="gl-p"></div>
+        <div class="gl-f"><span>Dağıtım <b id="gl-n">#483</b></span><span id="gl-d" class="tnum">0,0 sn</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="si-right">
+    <div class="si-form">
+      <h2 data-s>Tekrar hoş geldin</h2>
+      <div class="sub" data-s>Studio'ya devam etmek için oturum aç.</div>
+      <div class="field" data-s><label for="si-mail">E-posta</label>
+        <div class="input focus"><i class="ph ph-envelope-simple ph-i"></i><input id="si-mail" value="yonetici@example.com"></div></div>
+      <div class="field" data-s><label for="si-pw">Parola <a href="#">Parolamı unuttum</a></label>
+        <div class="input"><i class="ph ph-lock-key ph-i"></i><input id="si-pw" type="password" value="mockup-parola"><button class="icon-btn" style="width:28px;height:28px;margin-right:-10px" data-tip="Parolayı göster"><i class="ph ph-eye ph-i"></i></button></div></div>
+      <div class="check" data-s><span class="toggle"></span>Bu cihazda oturumu açık tut</div>
+      <div data-s><button class="btn btn-primary btn-lg btn-block" data-go="projects">Giriş yap<span class="ic"><i class="ph ph-arrow-right ph-i"></i></span></button>
+      <div class="or">veya</div>
+      <button class="btn btn-glass btn-lg btn-block"><i class="ph ph-key ph-i"></i>Kurumsal SSO ile devam et</button></div>
+      <div class="si-foot" data-s><span>Davet mi aldın? <a href="#" style="color:var(--accent-text);text-decoration:none">Hesabını etkinleştir</a></span><span class="mono">studio.example.com</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= APP ================= -->
+<section id="app" class="screen" aria-label="Studio">
+  <aside class="side">
+    <div class="brand"><svg class="mark"><use href="#logo"/></svg><span data-wordmark>selfbase</span><span class="tag">STUDIO</span></div>
+    <button class="switcher" data-tip="Organizasyon veya proje değiştir" data-kbd="Ctrl O"><span class="avatar" id="sw-av">A</span><span class="t"><b id="sw-name">Atölye Labs</b><span id="sw-sub">organizasyon · 6 proje</span></span><i class="ph ph-caret-up-down ph-i" style="color:var(--dim)"></i></button>
+    <div class="navwrap">
+      <nav class="nav" id="nav-org">
+        <div class="ind"></div>
+        <div class="grp">Organizasyon</div>
+        <a data-go="projects"><i class="ph ph-squares-four ph-i"></i>Projeler<span class="badge">6</span></a>
+        <a><i class="ph ph-users ph-i"></i>Üyeler<span class="badge">12</span></a>
+        <a><i class="ph ph-key ph-i"></i>Erişim belirteçleri</a>
+        <a><i class="ph ph-scroll ph-i"></i>Denetim kaydı</a>
+        <a data-go="capacity"><i class="ph ph-gauge ph-i"></i>Kapasite</a>
+      </nav>
+      <nav class="nav off" id="nav-proj">
+        <div class="ind"></div>
+        <a data-go="home"><i class="ph ph-house ph-i"></i>Ana sayfa</a>
+        <div class="grp">Veritabanı</div>
+        <a data-go="table"><i class="ph ph-table ph-i"></i>Tablolar<span class="badge">14</span></a>
+        <a data-go="sql"><i class="ph ph-terminal-window ph-i"></i>SQL</a>
+        <a><i class="ph ph-shield-check ph-i"></i>RLS politikaları</a>
+        <div class="grp">Uygulama</div>
+        <a><svg class="glyph"><use href="#g-auth"/></svg>Kimlik doğrulama</a>
+        <a><svg class="glyph"><use href="#g-storage"/></svg>Depolama</a>
+        <a><svg class="glyph"><use href="#g-fn"/></svg>Fonksiyonlar</a>
+        <a data-go="sites"><svg class="glyph"><use href="#g-sites"/></svg>Siteler<span class="pv">ÖNİZLEME</span></a>
+        <a><i class="ph ph-pulse ph-i"></i>Günlükler</a>
+        <a><i class="ph ph-gear-six ph-i"></i>Ayarlar</a>
+      </nav>
+    </div>
+    <div class="side-foot">
+      <div class="meter"><div class="row"><span>Disk</span><b class="tnum">41,2 / 100 GB</b></div><div class="dots" style="grid-template-columns:repeat(20,1fr);margin:10px 0 0" id="side-dots"></div></div>
+      <div class="user"><span class="avatar v">Y</span><span class="t">Yönetici<br><span>yonetici@example.com</span></span><button class="icon-btn" data-tip="Hesap menüsü"><i class="ph ph-dots-three ph-i"></i></button></div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="top">
+      <div class="crumbs" id="crumbs"></div>
+      <div class="sp"></div>
+      <button class="search" id="open-cmdk"><i class="ph ph-magnifying-glass ph-i"></i><span class="lab">Ara veya komut çalıştır…</span><span class="kbd">Ctrl</span><span class="kbd">K</span></button>
+      <button class="theme-sw" id="theme" aria-label="Temayı değiştir" data-tip="Temayı değiştir" data-kbd="Ctrl ⇧ L"><i class="ph ph-sun ph-i sun"></i><i class="ph ph-moon ph-i moon"></i></button>
+      <button class="icon-btn" data-tip="Belgeler" data-kbd="?"><i class="ph ph-book-open ph-i"></i></button>
+      <button class="icon-btn notif" data-tip="Bildirimler · 2 yeni" data-kbd="G N"><i class="ph ph-bell-simple ph-i"></i></button>
+    </header>
+
+    <div class="stage">
+      <!-- ===== Projects ===== -->
+      <section class="view" id="v-projects">
+        <div class="pghead">
+          <div>
+            <h1 data-s>Projeler <span class="serif">· Atölye Labs</span></h1>
+            <div class="metaline" data-s>org_atolye <i>·</i> 6 proje <i>·</i> 12 üye <i>·</i> host-01 <i>·</i> self-hosted v2.0</div>
+          </div>
+          <div class="act" data-s>
+            <button class="btn btn-glass" id="open-import" data-tip="Başka bir Postgres'ten taşı"><i class="ph ph-download-simple ph-i"></i>İçe aktar</button>
+            <button class="btn btn-primary">Yeni proje<span class="ic"><i class="ph ph-plus ph-i"></i></span></button>
+          </div>
+        </div>
+        <div class="toolbar" data-s>
+          <div class="seg"><div class="ind"></div><button class="on">Tümü <span class="n">6</span></button><button>Çalışan <span class="n">4</span></button><button>Duraklatılmış <span class="n">1</span></button><button>Bakımda <span class="n">1</span></button></div>
+          <div class="sp"></div>
+          <div class="mini-search"><i class="ph ph-magnifying-glass ph-i"></i>Proje ara</div>
+          <div class="seg"><div class="ind"></div><button class="on" data-tip="Kart görünümü"><i class="ph ph-squares-four ph-i"></i></button><button data-tip="Liste görünümü"><i class="ph ph-list ph-i"></i></button></div>
+        </div>
+        <div class="pgrid" id="pgrid"></div>
+      </section>
+
+      <!-- ===== Capacity ===== -->
+      <section class="view" id="v-capacity">
+        <div class="pghead">
+          <div>
+            <h1 data-s>Kapasite <span class="serif">· host-01</span></h1>
+            <div class="metaline" data-s>16 vCPU <i>·</i> 64 GB bellek <i>·</i> 2 TB NVMe <i>·</i> çalışma süresi 41 gün <i>·</i> son kontrol <span id="cap-ago"></span></div>
+          </div>
+          <div class="act" data-s><button class="btn btn-glass"><i class="ph ph-sliders-horizontal ph-i"></i>Sınırları düzenle</button></div>
+        </div>
+        <div class="bento">
+          <div class="bz cap" data-s style="grid-column:span 4"><div class="core">
+            <div class="micro">Bellek bütçesi</div>
+            <div class="big"><b>41,6</b><span class="tail">/ 64 GB</span></div>
+            <div class="dots" data-fill="0.65"></div>
+            <div class="capfoot"><span>Kalan <b class="mono">22,4 GB</b></span><span class="status s-warn"><span class="dot"></span>%65 · dikkat</span></div>
+          </div></div>
+          <div class="bz cap" data-s style="grid-column:span 4"><div class="core">
+            <div class="micro">Sunucu yuvaları</div>
+            <div class="big"><b>7</b><span class="tail">/ 8 proje</span></div>
+            <div class="dots" data-fill="0.875"></div>
+            <div class="capfoot"><span>1 yuva boş</span><span class="status s-err"><span class="dot"></span>%87,5 · dolmak üzere</span></div>
+          </div></div>
+          <div class="bz cap" data-s style="grid-column:span 4"><div class="core">
+            <div class="micro">Sertifikalar · bu hafta</div>
+            <div class="big"><b>3</b><span class="tail">/ 50 yenileme</span></div>
+            <div class="dots" data-fill="0.06"></div>
+            <div class="capfoot"><span>Sonraki yenileme <b class="mono">4 gün</b></span><span class="status s-ok"><span class="dot"></span>Sağlıklı</span></div>
+          </div></div>
+
+          <div class="bz" data-s style="grid-column:span 8"><div class="core">
+            <div class="card-h"><span class="secno">01</span><h3>Etkinlik</h3><div class="sp"></div>
+              <div class="seg sm" id="heat-kind"><div class="ind"></div><button class="on" data-k="req">İstekler</button><button data-k="bak">Yedekler</button></div>
+              <div class="seg sm"><div class="ind"></div><button>7g</button><button>1a</button><button>6a</button><button class="on">1y</button></div></div>
+            <div class="heatwrap"><div class="days"><span></span><span>Pzt</span><span></span><span>Çar</span><span></span><span>Cum</span><span></span></div>
+              <div><div class="months"><span>Ara</span><span>Oca</span><span>Şub</span><span>Mar</span><span>Nis</span><span>May</span><span>Haz</span><span>Tem</span><span>Ağu</span><span>Eyl</span><span>Eki</span><span>Kas</span></div><div class="heat" id="heat"></div></div></div>
+            <div class="heatfoot"><span class="mono" id="heat-peak"></span><div class="sp"></div><span>Az</span><span class="scale" id="heat-scale"></span><span>Çok</span></div>
+          </div></div>
+          <div class="bz" data-s style="grid-column:span 4"><div class="core">
+            <div class="card-h"><span class="secno">02</span><h3>Uyarılar</h3><div class="sp"></div><button class="btn btn-ghost btn-sm">Kurallar</button></div>
+            <div class="empty">
+              <span class="eg"><i class="ph-duotone ph-bell-simple-z ph-i"></i></span>
+              <b>Her şey yolunda</b>
+              <p>Son 7 günde eşik aşılmadı. Bellek %80'i geçerse burada görünecek.</p>
+              <button class="btn btn-glass btn-sm" style="margin-top:8px"><i class="ph ph-bell-simple ph-i"></i>Uyarı kuralı ekle</button>
+            </div>
+          </div></div>
+
+          <div class="bz" data-s style="grid-column:span 12"><div class="core">
+            <div class="card-h"><span class="secno">03</span><h3>Proje başına bellek</h3><div class="sp"></div><span class="metaline">toplam 41,6 GB · 7 proje</span></div>
+            <ul class="alloc" id="alloc"></ul>
+          </div></div>
+        </div>
+      </section>
+
+      <!-- ===== Project home ===== -->
+      <section class="view" id="v-home">
+        <div class="pghead">
+          <div>
+            <h1 data-s>ilkbahar-api <span class="status s-ok live" style="font-size:12px;letter-spacing:0"><span class="dot"></span>Sağlıklı</span></h1>
+            <div class="metaline" data-s>v2.0 <i>·</i> postgres 17.2 <i>·</i> eu-central <i>·</i> ref ilk-7q2m <button class="copy" data-tip="Ref'i kopyala" data-kbd="Ctrl ⇧ C" data-copy="ilk-7q2m"><i class="ph ph-copy ph-i"></i><i class="ph ph-check ph-i"></i></button></div>
+          </div>
+          <div class="act" data-s>
+            <div class="seg"><div class="ind"></div><button>1 sa</button><button class="on">24 sa</button><button>7 gün</button><button>30 gün</button></div>
+            <button class="btn btn-glass"><i class="ph ph-plugs ph-i"></i>Bağlan</button>
+            <button class="btn btn-primary" data-go="table">Tabloları aç<span class="ic"><i class="ph ph-arrow-up-right ph-i"></i></span></button>
+          </div>
+        </div>
+        <div class="bento">
+          <div class="bz kpi" data-s style="grid-column:span 3"><div class="core"><div class="micro">API isteği / dk</div><div class="big"><b id="live-rpm">1.284</b><span class="tail">/dk</span></div><div class="prev">önceki 1.142 <span class="delta up"><i class="ph-bold ph-arrow-up-right ph-i"></i>%12,4</span></div><div class="hatch"><svg class="spark" data-c="var(--chart-1)"></svg></div></div></div>
+          <div class="bz kpi" data-s style="grid-column:span 3"><div class="core"><div class="micro">p95 gecikme</div><div class="big"><b>14</b><span class="tail">ms</span></div><div class="prev">önceki 17 ms <span class="delta up"><i class="ph-bold ph-arrow-down-right ph-i"></i>3 ms</span></div><div class="hatch"><svg class="spark" data-c="var(--violet)"></svg></div></div></div>
+          <div class="bz kpi" data-s style="grid-column:span 3"><div class="core"><div class="micro">Aktif kullanıcı · 24 sa</div><div class="big"><b>3.917</b><span class="tail">kişi</span></div><div class="prev">önceki 3.763 <span class="delta up"><i class="ph-bold ph-arrow-up-right ph-i"></i>%4,1</span></div><div class="hatch"><svg class="spark" data-c="var(--info)"></svg></div></div></div>
+          <div class="bz kpi" data-s style="grid-column:span 3"><div class="core"><div class="micro">Depolama çıkışı</div><div class="big"><b>8,6</b><span class="tail">GB</span></div><div class="prev">önceki 7,0 GB <span class="delta dn"><i class="ph-bold ph-arrow-up-right ph-i"></i>%22</span></div><div class="hatch"><svg class="spark" data-c="var(--warn)"></svg></div></div></div>
+
+          <div class="bz pipe" data-s style="grid-column:span 12"><div class="core">
+            <div class="ttl"><b><span class="secno">İŞ</span> Dağıtım #482 <span class="status s-warn live" id="pipe-st" style="height:20px;font-size:11px"><span class="dot"></span>Çalışıyor</span></b><div class="metaline" style="margin-top:4px">deniz@example.com <i>·</i> <span class="hash">a3f9c2e<button class="copy" data-tip="Commit'i kopyala" data-copy="a3f9c2e"><i class="ph ph-copy ph-i"></i><i class="ph ph-check ph-i"></i></button></span></div></div>
+            <div class="steps" id="steps"></div>
+            <button class="icon-btn" id="pipe-rerun" data-tip="İşi yeniden çalıştır" data-kbd="R"><i class="ph ph-arrow-clockwise ph-i"></i></button>
+          </div></div>
+
+          <div class="bz" data-s style="grid-column:span 8"><div class="core">
+            <div class="card-h"><span class="secno">01</span><div class="seg sm" id="home-tab"><div class="ind"></div><button class="on" data-p="traffic"><i class="ph ph-chart-line ph-i s14"></i>Trafik</button><button data-p="arch"><i class="ph ph-flow-arrow ph-i s14"></i>Mimari</button></div><span class="status s-ok live" style="height:22px;font-size:11.5px"><span class="dot"></span>Canlı</span><div class="sp"></div>
+              <div class="legend" id="legend"><span><i style="background:var(--chart-1)"></i>REST</span><span><i style="background:var(--violet)"></i>Realtime</span><span><i style="background:none;border-top:1px dashed var(--chart-1);height:0"></i>Hedef</span></div></div>
+            <div class="panes">
+              <div class="pane" id="pane-traffic"><div class="chart" id="chart"></div></div>
+              <div class="pane off" id="pane-arch"><div class="canvas" id="canvas">
+                <svg class="edges"></svg>
+                <div class="node" data-n="site" style="left:13%;top:25%"><span class="pc-icon"><svg class="glyph"><use href="#g-sites"/></svg></span><span class="t"><b>site</b><small>magaza-web</small></span><span class="status s-ok live"><span class="dot"></span></span></div>
+                <div class="node" data-n="fn" style="left:13%;top:72%"><span class="pc-icon"><svg class="glyph"><use href="#g-fn"/></svg></span><span class="t"><b>fn</b><small>7 fonksiyon</small></span><span class="status s-ok live"><span class="dot"></span></span></div>
+                <div class="node" data-n="rest" style="left:40%;top:25%"><span class="pc-icon"><svg class="glyph"><use href="#g-rest"/></svg></span><span class="t"><b>rest</b><small>9 ms</small></span><span class="status s-ok live"><span class="dot"></span></span></div>
+                <div class="node" data-n="core" style="left:40%;top:72%"><span class="pc-icon"><svg class="glyph"><use href="#g-auth"/></svg></span><span class="t"><b>core</b><small>auth · realtime</small></span><span class="status s-ok live"><span class="dot"></span></span></div>
+                <div class="node" data-n="pooler" style="left:63%;top:48%"><span class="pc-icon"><i class="ph ph-share-network ph-i"></i></span><span class="t"><b>pooler</b><small>38/200</small></span><span class="status s-warn live"><span class="dot"></span></span></div>
+                <div class="node" data-n="db" style="left:85%;top:35%"><span class="pc-icon" style="color:var(--accent-text)"><svg class="glyph"><use href="#g-postgres"/></svg></span><span class="t"><b>db</b><small>postgres 17.2</small></span><span class="status s-ok live"><span class="dot"></span></span></div>
+                <div class="node vol" data-n="vol" style="left:85%;top:76%"><i class="ph ph-hard-drives ph-i s14"></i>pgdata · 4,1 / 10 GB</div>
+                <div class="tools"><button class="icon-btn" data-tip="Uzaklaş" data-kbd="−"><i class="ph ph-minus ph-i"></i></button><button class="icon-btn" data-tip="Yakınlaş" data-kbd="+"><i class="ph ph-plus ph-i"></i></button><button class="icon-btn" data-tip="Sığdır" data-kbd="0"><i class="ph ph-corners-out ph-i"></i></button></div>
+              </div></div>
+            </div>
+          </div></div>
+          <div class="bz" data-s style="grid-column:span 4"><div class="core">
+            <div class="card-h"><span class="secno">02</span><h3>Servisler</h3><div class="sp"></div><span class="status s-ok"><span class="dot"></span>5/6 sağlıklı</span></div>
+            <ul class="svc">
+              <li><span class="pc-icon"><svg class="glyph"><use href="#g-postgres"/></svg></span><span class="t"><b>Postgres</b><span>38 / 200 bağlantı</span></span><span class="lat">2 ms</span><span class="status s-ok live" data-tip="Sağlıklı"><span class="dot"></span></span></li>
+              <li><span class="pc-icon"><svg class="glyph"><use href="#g-rest"/></svg></span><span class="t"><b>REST API</b><span>postgrest 13</span></span><span class="lat">9 ms</span><span class="status s-ok live" data-tip="Sağlıklı"><span class="dot"></span></span></li>
+              <li><span class="pc-icon"><svg class="glyph"><use href="#g-auth"/></svg></span><span class="t"><b>Kimlik doğrulama</b><span>3.917 oturum</span></span><span class="lat">21 ms</span><span class="status s-ok live" data-tip="Sağlıklı"><span class="dot"></span></span></li>
+              <li><span class="pc-icon"><svg class="glyph"><use href="#g-realtime"/></svg></span><span class="t"><b>Realtime</b><span>412 kanal</span></span><span class="lat">4 ms</span><span class="status s-ok live" data-tip="Sağlıklı"><span class="dot"></span></span></li>
+              <li><span class="pc-icon"><svg class="glyph"><use href="#g-storage"/></svg></span><span class="t"><b>Depolama</b><span>3 kova · 18,4 GB</span></span><span class="lat">33 ms</span><span class="status s-warn live" data-tip="Yavaş · p95 > 30 ms"><span class="dot"></span></span></li>
+              <li><span class="pc-icon"><svg class="glyph"><use href="#g-fn"/></svg></span><span class="t"><b>Fonksiyonlar</b><span>7 fonksiyon</span></span><span class="lat">12 ms</span><span class="status s-ok live" data-tip="Sağlıklı"><span class="dot"></span></span></li>
+            </ul>
+          </div></div>
+
+          <div class="bz qs" data-s style="grid-column:span 3"><div class="core">
+            <div class="qh"><span class="pc-icon"><i class="ph ph-link-simple ph-i"></i></span><b>Bağlantı dizesi</b><span class="status s-mute">havuzlu</span></div>
+            <div class="snip-line"><span>postgresql://app@db.example.com:6543/postgres</span><button class="copy" data-tip="Kopyala" data-kbd="Ctrl C" data-copy="postgresql://app@db.example.com:6543/postgres"><i class="ph ph-copy ph-i"></i><i class="ph ph-check ph-i"></i></button></div>
+            <p>Parola ayrı saklanır · <span class="mono">sslmode=require</span></p>
+          </div></div>
+          <div class="bz qs" data-s style="grid-column:span 3"><div class="core">
+            <div class="qh"><span class="pc-icon"><i class="ph ph-brackets-curly ph-i"></i></span><b>supabase-js</b><span class="status s-ok"><span class="dot"></span>uyumlu</span></div>
+            <div class="snip-line"><span>createClient(URL, ANON_KEY)</span><button class="copy" data-tip="Kodu kopyala" data-copy="createClient(URL, ANON_KEY)"><i class="ph ph-copy ph-i"></i><i class="ph ph-check ph-i"></i></button></div>
+            <p>Mevcut istemci kodun değişmeden çalışır.</p>
+          </div></div>
+          <div class="bz qs" data-s style="grid-column:span 3"><div class="core">
+            <div class="qh"><span class="pc-icon"><i class="ph ph-terminal ph-i"></i></span><b>CLI</b><span class="status s-mute">v2.0</span></div>
+            <div class="snip-line"><span>selfbase link --project ilk-7q2m</span><button class="copy" data-tip="Komutu kopyala" data-copy="selfbase link --project ilk-7q2m"><i class="ph ph-copy ph-i"></i><i class="ph ph-check ph-i"></i></button></div>
+            <p>Göçler, tür üretimi ve yedekler için.</p>
+          </div></div>
+          <div class="bz qs" data-s style="grid-column:span 3"><div class="core">
+            <div class="qh"><span class="pc-icon"><i class="ph ph-robot ph-i"></i></span><b>MCP sunucusu</b><span class="status s-violet"><span class="dot"></span>yeni</span></div>
+            <div class="snip-line"><span>studio.example.com/mcp?ref=ilk-7q2m</span><button class="copy" data-tip="Adresi kopyala" data-copy="https://studio.example.com/mcp?ref=ilk-7q2m"><i class="ph ph-copy ph-i"></i><i class="ph ph-check ph-i"></i></button></div>
+            <p>Ajanların salt okunur şemaya erişimi.</p>
+          </div></div>
+
+          <div class="bz" data-s style="grid-column:span 5"><div class="core">
+            <div class="card-h"><span class="secno">03</span><h3>Son etkinlik</h3><div class="sp"></div><div class="stack"><span class="avatar">D</span><span class="avatar v">E</span><span class="avatar b">M</span><span class="more">+4</span></div><button class="btn btn-ghost btn-sm">Denetim kaydı<i class="ph ph-arrow-right ph-i"></i></button></div>
+            <ul class="feed" id="feed"></ul>
+          </div></div>
+          <div class="bz" data-s style="grid-column:span 4"><div class="core">
+            <div class="card-h"><span class="secno">05</span><h3>Kurulum listesi</h3><div class="sp"></div><span class="mono" style="font-size:12px;color:var(--muted)"><b style="color:var(--text);font-weight:500">3</b>/6</span></div>
+            <div class="clbar"><i class="f"></i><i class="f"></i><i class="f"></i><i></i><i></i><i></i></div>
+            <ul class="cl">
+              <li class="done"><span class="cb on"><i class="ph-bold ph-check ph-i"></i></span><span class="lab">RLS'i tüm tablolarda etkinleştir</span></li>
+              <li class="done"><span class="cb on"><i class="ph-bold ph-check ph-i"></i></span><span class="lab">Günlük yedekleri kur</span></li>
+              <li class="done"><span class="cb on"><i class="ph-bold ph-check ph-i"></i></span><span class="lab">Ekibi davet et</span></li>
+              <li><span class="cb"></span><span class="lab">Alan adı ekle</span><i class="ph ph-caret-right ph-i go"></i></li>
+              <li><span class="cb"></span><span class="lab">SMTP ayarla (e-posta doğrulama)</span><i class="ph ph-caret-right ph-i go"></i></li>
+              <li><span class="cb"></span><span class="lab">Bağlantı havuzunu boyutlandır</span><i class="ph ph-caret-right ph-i go"></i></li>
+            </ul>
+          </div></div>
+          <div class="bz" data-s style="grid-column:span 3"><div class="core">
+            <div class="card-h"><span class="secno">04</span><h3>Boyut</h3><div class="sp"></div><span class="status s-ok"><span class="dot"></span>Sağlıklı</span></div>
+            <div class="semi">
+              <svg viewBox="0 0 190 104"><path class="tr" d="M15 95a80 80 0 0 1 160 0" pathLength="100"/><path class="vl" d="M15 95a80 80 0 0 1 160 0" pathLength="100"/></svg>
+              <div class="mid"><b>4,1</b><span class="tail"> / 10 GB</span></div>
+              <div class="kvs"><div><span class="micro">Tablo</span><b>14</b></div><div><span class="micro">İndeks</span><b>1,2 GB</b></div><div><span class="micro">Son yedek</span><b>18 dk</b></div></div>
+            </div>
+          </div></div>
+        </div>
+      </section>
+
+      <!-- ===== Table editor ===== -->
+      <section class="view" id="v-table">
+        <div class="tlist">
+          <div class="schema" data-s><i class="ph ph-database ph-i"></i>şema <b>public</b><i class="ph ph-caret-up-down ph-i" style="margin-left:auto;color:var(--dim)"></i></div>
+          <div class="mini-search" data-s style="width:auto"><i class="ph ph-magnifying-glass ph-i"></i>Tablo ara<span class="kbd" style="margin-left:auto">/</span></div>
+          <div class="grp" data-s><span>Tablolar</span><span class="mono">14</span></div>
+          <div class="tnav" id="tnav" data-s><div class="ind"></div></div>
+        </div>
+        <div class="tmain">
+          <div class="thead">
+            <h2 data-s>siparisler</h2>
+            <span class="status s-ok" data-s style="height:22px;font-size:11.5px"><span class="dot"></span>RLS etkin</span>
+            <div class="sp"></div>
+            <div class="seg" data-s><div class="ind"></div><button class="on">Veri</button><button>Tanım</button><button>Politikalar <span class="n">3</span></button><button>İndeksler</button></div>
+          </div>
+          <div class="tbar" data-s>
+            <span class="chip on"><i class="ph ph-funnel-simple ph-i"></i>durum <b>≠ iptal</b><i class="ph ph-x ph-i x"></i></span>
+            <span class="chip"><i class="ph ph-sort-descending ph-i"></i>olusturma <b>↓</b></span>
+            <button class="chip"><i class="ph ph-plus ph-i"></i>Filtre ekle</button>
+            <div class="sp"></div>
+            <button class="btn btn-ghost btn-sm" data-tip="Sütunları göster/gizle"><i class="ph ph-columns ph-i"></i>Sütunlar</button>
+            <button class="btn btn-ghost btn-sm" data-tip="Yenile" data-kbd="Ctrl R"><i class="ph ph-arrow-clockwise ph-i"></i>Yenile</button>
+            <button class="btn btn-glass btn-sm" data-go="sql"><i class="ph ph-terminal-window ph-i"></i>SQL olarak aç</button>
+            <button class="btn btn-primary btn-sm">Satır ekle<span class="ic"><i class="ph ph-plus ph-i"></i></span></button>
+          </div>
+          <div class="gridwrap"><table class="grid" id="grid"></table></div>
+          <div class="selbar" id="selbar"><b>2</b> satır seçildi<button class="btn btn-ghost btn-sm"><i class="ph ph-download-simple ph-i"></i>CSV</button><button class="btn btn-danger btn-sm" id="del-rows" data-kbd="Del" data-tip="Seçili satırları sil"><i class="ph ph-trash ph-i"></i>Sil</button></div>
+          <div class="tfoot">
+            <span class="mono tnum" id="rowcount"></span><span>·</span><span>Sorgu <span class="mono">11 ms</span></span>
+            <div class="sp"></div>
+            <div class="pager"><button class="icon-btn" data-tip="Önceki sayfa"><i class="ph ph-caret-left ph-i"></i></button><span class="mono">Sayfa 1 / 249</span><button class="icon-btn" data-tip="Sonraki sayfa"><i class="ph ph-caret-right ph-i"></i></button></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== SQL + assistant ===== -->
+      <section class="view" id="v-sql">
+        <div class="sqlmain">
+          <div class="edtabs" data-s>
+            <span class="ftab on"><i class="ph ph-file-sql ph-i s14"></i>profiller_rls.sql<span class="mod"></span></span>
+            <span class="ftab"><i class="ph ph-file-sql ph-i s14"></i>haftalik_rapor.sql</span>
+            <button class="icon-btn" style="width:28px;height:28px" data-tip="Yeni sorgu" data-kbd="Ctrl N"><i class="ph ph-plus ph-i"></i></button>
+            <div class="sp"></div>
+            <button class="btn btn-ghost btn-sm"><i class="ph ph-magic-wand ph-i"></i>Biçimlendir</button>
+            <button class="btn btn-glass btn-sm"><i class="ph ph-floppy-disk ph-i"></i>Kaydet</button>
+            <button class="btn btn-primary btn-sm" data-tip="Sorguyu çalıştır" data-kbd="Ctrl ↵">Çalıştır<span class="ic"><i class="ph ph-play ph-i"></i></span></button>
+          </div>
+          <div class="code" data-s>
+            <div class="ln"><span class="cm">-- profiller: her kullanıcı yalnızca kendi satırını görür</span></div>
+            <div class="ln"><span class="kw">alter table</span>&nbsp;public.profiller <span class="kw">enable row level security</span>;</div>
+            <div class="ln"></div>
+            <div class="ln new"><span class="kw">create policy</span>&nbsp;<span class="st">"profiller_kendi_satiri_okuma"</span></div>
+            <div class="ln new">&nbsp;&nbsp;<span class="kw">on</span>&nbsp;public.profiller <span class="kw">for select</span></div>
+            <div class="ln new">&nbsp;&nbsp;<span class="kw">to</span>&nbsp;authenticated</div>
+            <div class="ln new">&nbsp;&nbsp;<span class="kw">using</span>&nbsp;((<span class="kw">select</span>&nbsp;<span class="fn">auth.uid</span>()) = kullanici_id);</div>
+            <div class="ln"></div>
+            <div class="ln new"><span class="kw">create policy</span>&nbsp;<span class="st">"profiller_kendi_satiri_guncelleme"</span></div>
+            <div class="ln new">&nbsp;&nbsp;<span class="kw">on</span>&nbsp;public.profiller <span class="kw">for update</span></div>
+            <div class="ln new">&nbsp;&nbsp;<span class="kw">to</span>&nbsp;authenticated</div>
+            <div class="ln new">&nbsp;&nbsp;<span class="kw">using</span>&nbsp;((<span class="kw">select</span>&nbsp;<span class="fn">auth.uid</span>()) = kullanici_id)</div>
+            <div class="ln hl">&nbsp;&nbsp;<span class="kw">with check</span>&nbsp;((<span class="kw">select</span>&nbsp;<span class="fn">auth.uid</span>()) = kullanici_id);<span class="caret"></span></div>
+            <div class="ln"></div>
+            <div class="ln"><span class="kw">select</span>&nbsp;policyname, cmd, roles <span class="kw">from</span>&nbsp;pg_policies <span class="kw">where</span>&nbsp;tablename = <span class="st">'profiller'</span>;</div>
+          </div>
+          <div class="results" data-s>
+            <div class="rh"><div class="seg sm"><div class="ind"></div><button class="on">Sonuç</button><button>Açıklama</button><button>Geçmiş</button></div><span class="status s-ok" style="height:22px;font-size:11.5px"><span class="dot"></span>Başarılı</span><span class="metaline">3 satır · 8 ms · <span id="sql-ago"></span></span><div class="sp"></div><button class="btn btn-ghost btn-sm"><i class="ph ph-download-simple ph-i"></i>CSV</button></div>
+            <div class="gridwrap"><table class="grid">
+              <thead><tr><th style="width:auto;padding-left:18px">policyname<span class="ty" style="padding:0">name</span></th><th>cmd<span class="ty" style="padding:0">text</span></th><th>roles<span class="ty" style="padding:0">name[]</span></th></tr></thead>
+              <tbody><tr><td style="width:auto;padding-left:18px">profiller_kendi_satiri_okuma</td><td><span class="status s-info"><span class="dot"></span>SELECT</span></td><td class="dim">{authenticated}</td></tr>
+              <tr><td style="width:auto;padding-left:18px">profiller_kendi_satiri_guncelleme</td><td><span class="status s-warn"><span class="dot"></span>UPDATE</span></td><td class="dim">{authenticated}</td></tr>
+              <tr><td style="width:auto;padding-left:18px">profiller_yonetici_tumu</td><td><span class="status s-violet"><span class="dot"></span>ALL</span></td><td class="dim">{service_role}</td></tr></tbody>
+            </table></div>
+          </div>
+        </div>
+        <aside class="asst">
+          <div class="ah" data-s><span class="orb"><i class="ph ph-sparkle ph-i"></i></span><div><b>Asistan</b><div class="metaline" style="font-size:11px">şema: public · salt okunur bağlam</div></div><div class="sp"></div><button class="icon-btn" data-tip="Yeni konuşma"><i class="ph ph-note-pencil ph-i"></i></button><button class="icon-btn" data-tip="Paneli kapat" data-kbd="Ctrl J"><i class="ph ph-sidebar-simple ph-i"></i></button></div>
+          <div class="msgs">
+            <div class="msg u" data-s>profiller tablosu için RLS yaz: herkes sadece kendi profilini görüp güncelleyebilsin.</div>
+            <div class="msg a" data-s>
+              <div class="trace"><span><i class="ph ph-check ph-i"></i><code class="c">public.profiller</code> şeması okundu (6 sütun)</span><span><i class="ph ph-check ph-i"></i>Mevcut politikalar kontrol edildi · 1 adet</span><span><i class="ph ph-check ph-i"></i><code class="c">kullanici_id → auth.users.id</code> bulundu</span></div>
+              <div><b>İki politika öneriyorum.</b> Okuma ve güncelleme, oturumdaki kullanıcının <code class="c">auth.uid()</code> değeri ile satırdaki <code class="c">kullanici_id</code> eşleşince açılır. <code class="c">select auth.uid()</code> sarmalı, sorgu başına bir kez değerlendirilir.</div>
+            </div>
+            <div class="snip" data-s>
+              <div class="sh"><i class="ph ph-shield-check ph-i s13"></i>2 politika · 9 satır<span class="sp"></span><button class="copy" data-tip="SQL'i kopyala" data-copy="create policy ..."><i class="ph ph-copy ph-i"></i><i class="ph ph-check ph-i"></i></button></div>
+<pre><span class="kw">create policy</span> <span class="st">"…_okuma"</span>
+  <span class="kw">on</span> public.profiller <span class="kw">for select</span>
+  <span class="kw">using</span> ((<span class="kw">select</span> <span class="fn">auth.uid</span>()) = kullanici_id);
+<span class="cm">-- + güncelleme politikası (with check)</span></pre>
+              <div class="sf"><button class="btn btn-glass btn-sm"><i class="ph ph-arrow-elbow-down-left ph-i"></i>Düzenleyiciye eklendi</button><button class="btn btn-primary btn-sm">Çalıştır<span class="ic"><i class="ph ph-play ph-i"></i></span></button></div>
+            </div>
+            <div class="msg a" data-s style="font-size:12px"><span><i class="ph ph-info ph-i s13" style="color:var(--info)"></i> Yönetici rolü <code class="c">service_role</code> RLS'i zaten atlıyor; ek politika gerekmez.</span></div>
+          </div>
+          <div class="ask" data-s>
+            <div class="ctx"><span class="chip on" style="height:22px"><i class="ph ph-table ph-i"></i>profiller</span><span class="chip" style="height:22px"><i class="ph ph-at ph-i"></i>tablo ekle</span></div>
+            <div class="row"><span>Asistana sor veya / ile komut yaz…</span><button class="send" data-tip="Gönder" data-kbd="↵"><i class="ph ph-arrow-up ph-i"></i></button></div>
+          </div>
+        </aside>
+      </section>
+
+      <!-- ===== Sites (Wave 6 preview) ===== -->
+      <section class="view" id="v-sites">
+        <div class="pghead">
+          <div>
+            <h1 data-s>Siteler <span class="serif">· magaza-web</span> <span class="chip" style="color:var(--violet);background:var(--violet-soft);box-shadow:none;font-family:var(--mono);font-size:11px;letter-spacing:.06em">DALGA 6 · ÖNİZLEME</span></h1>
+            <div class="metaline" data-s>statik + ssr <i>·</i> node 22 <i>·</i> github: atolye/magaza-web <i>·</i> 3 alan adı</div>
+          </div>
+          <div class="act" data-s><button class="btn btn-glass"><i class="ph ph-globe-simple ph-i"></i>Alan adları</button><button class="btn btn-primary">Yeni dağıtım<span class="ic"><i class="ph ph-rocket-launch ph-i"></i></span></button></div>
+        </div>
+        <div class="bento">
+          <div class="bz kpi" data-s style="grid-column:span 3"><div class="core"><div class="micro">Derleme · bu hafta</div><div class="big"><b>48</b><span class="tail">derleme</span></div><div class="prev">önceki 43 <span class="delta up"><i class="ph-bold ph-arrow-up-right ph-i"></i>%11,6</span></div></div></div>
+          <div class="bz kpi" data-s style="grid-column:span 3"><div class="core"><div class="micro">Başarı oranı</div><div class="big"><b><span class="tail">%</span>96,2</b></div><div class="prev">önceki %94,8 <span class="delta up"><i class="ph-bold ph-arrow-up-right ph-i"></i>1,4 puan</span></div></div></div>
+          <div class="bz kpi" data-s style="grid-column:span 3"><div class="core"><div class="micro">Ort. derleme süresi</div><div class="big"><b>42</b><span class="tail">sn</span></div><div class="prev">önceki 48 sn <span class="delta up"><i class="ph-bold ph-arrow-down-right ph-i"></i>6 sn</span></div></div></div>
+          <div class="bz kpi" data-s style="grid-column:span 3"><div class="core"><div class="micro">Bant genişliği</div><div class="big"><b>128</b><span class="tail">GB</span></div><div class="prev">önceki 104 GB <span class="delta dn"><i class="ph-bold ph-arrow-up-right ph-i"></i>%23</span></div></div></div>
+          <div class="envs" style="grid-column:span 12">
+            <div class="bz env" data-s><div class="core">
+              <div class="eh"><i class="ph ph-star ph-i star"></i><b>Üretim</b><span class="branch"><i class="ph ph-git-branch ph-i"></i>main</span><span class="status s-ok live"><span class="dot"></span>Yayında</span></div>
+              <div class="dom"><i class="ph ph-globe-simple ph-i s14" style="color:var(--dim)"></i><a href="#">magaza.example.com</a><button class="copy" data-tip="Adresi kopyala" data-copy="https://magaza.example.com"><i class="ph ph-copy ph-i"></i><i class="ph ph-check ph-i"></i></button><i class="ph ph-lock ph-i s13" style="color:var(--ok)" data-tip="TLS geçerli · 61 gün"></i></div>
+              <div class="thumb"><div class="bar"><i></i><i></i><i></i><span>magaza.example.com</span></div><div class="pg"><div class="l"><b style="width:86%"></b><b style="width:60%"></b><s style="width:92%;margin-top:4px"></s><s style="width:74%"></s><u></u></div><div class="r"><i></i><i></i><i></i></div></div></div>
+              <div class="facts"><span class="micro">Durum</span><span class="micro">Oluşturuldu</span><span class="micro">Kaynak</span>
+                <b><span class="status s-ok" style="height:20px;font-size:11px"><span class="dot"></span>Hazır</span></b><b><span id="env1-ago"></span><span class="stack"><span class="avatar">D</span></span></b><b><span class="branch"><i class="ph ph-git-branch ph-i"></i>main</span><span class="hash">a3f9c2e<button class="copy" data-tip="Commit'i kopyala" data-copy="a3f9c2e"><i class="ph ph-copy ph-i"></i><i class="ph ph-check ph-i"></i></button></span></b></div>
+              <div class="acts"><span class="metaline">"ödeme adımında kupon alanı"</span><div class="sp"></div><button class="btn btn-glass btn-sm" data-tip="Önceki dağıtıma anında dön" data-kbd="⇧ R"><i class="ph ph-clock-counter-clockwise ph-i"></i>Anında geri al</button><button class="btn btn-glass btn-sm">Ziyaret et<span class="ic"><i class="ph ph-arrow-up-right ph-i"></i></span></button></div>
+            </div></div>
+            <div class="bz env" data-s><div class="core">
+              <div class="eh"><i class="ph ph-star ph-i star" style="fill:none;color:var(--dim)"></i><b>Hazırlık</b><span class="branch"><i class="ph ph-git-branch ph-i"></i>develop</span><span class="status s-warn live"><span class="dot"></span>Derleniyor · 3/5</span></div>
+              <div class="dom"><i class="ph ph-globe-simple ph-i s14" style="color:var(--dim)"></i><a href="#">staging.magaza.example.com</a><button class="copy" data-tip="Adresi kopyala" data-copy="https://staging.magaza.example.com"><i class="ph ph-copy ph-i"></i><i class="ph ph-check ph-i"></i></button><i class="ph ph-lock ph-i s13" style="color:var(--ok)"></i></div>
+              <div class="thumb build"><div class="bar"><i></i><i></i><i></i><span>staging.magaza.example.com</span></div><div class="pg"><div class="l"><b style="width:70%"></b><b style="width:50%"></b><s style="width:92%;margin-top:4px"></s><s style="width:64%"></s><u></u></div><div class="r"><i></i><i></i><i></i></div></div><div class="progress" style="position:absolute;left:14px;right:14px;bottom:10px;margin:0"><i></i></div></div>
+              <div class="facts"><span class="micro">Durum</span><span class="micro">Oluşturuldu</span><span class="micro">Kaynak</span>
+                <b><span class="status s-warn live" style="height:20px;font-size:11px"><span class="dot"></span>Derleniyor</span></b><b><span id="env2-ago"></span><span class="stack"><span class="avatar b">M</span></span></b><b><span class="branch"><i class="ph ph-git-branch ph-i"></i>develop</span><span class="hash">7be41d0<button class="copy" data-tip="Commit'i kopyala" data-copy="7be41d0"><i class="ph ph-copy ph-i"></i><i class="ph ph-check ph-i"></i></button></span></b></div>
+              <div class="acts"><span class="metaline">"ürün listesinde sanal kaydırma"</span><div class="sp"></div><button class="btn btn-ghost btn-sm"><i class="ph ph-scroll ph-i"></i>Derleme günlüğü</button><button class="btn btn-glass btn-sm" disabled>Ziyaret et<span class="ic"><i class="ph ph-arrow-up-right ph-i"></i></span></button></div>
+            </div></div>
+          </div>
+          <div class="bz" data-s style="grid-column:span 12"><div class="core">
+            <div class="card-h"><span class="secno">01</span><h3>Canlı önizlemeler</h3><span class="metaline">dal başına bir adres · 7 gün sonra kapanır</span><div class="sp"></div><div class="seg sm"><div class="ind"></div><button class="on">Açık <span class="n">4</span></button><button>Kapanmış</button></div></div>
+            <ul class="prev" id="prev"></ul>
+          </div></div>
+        </div>
+      </section>
+
+      <!-- ===== Details sheet ===== -->
+      <section class="view" id="v-details">
+        <div class="pghead">
+          <div>
+            <h1 data-s>Ayrıntı sayfası <span class="serif">· bileşenler</span></h1>
+            <div class="metaline" data-s>phosphor 2.1 · regular / duotone / bold 12 px <i>·</i> 7 servis glifi @ 1,5 / 24 <i>·</i> geist + geist mono + instrument serif <i>·</i> tr-TR biçimleri</div>
+          </div>
+        </div>
+        <div class="ds">
+          <div class="bz" data-s style="grid-column:span 7"><div class="core">
+            <h4><span class="secno">01</span>İkonlar</h4>
+            <div class="icgrid" id="icgrid"></div>
+            <div class="sub">Servis glifleri · özel çizim</div>
+            <div class="icgrid g" style="grid-template-columns:repeat(7,1fr)">
+              <div><svg class="glyph"><use href="#g-postgres"/></svg><span>postgres</span></div><div><svg class="glyph"><use href="#g-rest"/></svg><span>rest</span></div><div><svg class="glyph"><use href="#g-auth"/></svg><span>auth</span></div>
+              <div><svg class="glyph"><use href="#g-realtime"/></svg><span>realtime</span></div><div><svg class="glyph"><use href="#g-storage"/></svg><span>storage</span></div><div><svg class="glyph"><use href="#g-fn"/></svg><span>functions</span></div><div><svg class="glyph"><use href="#g-sites"/></svg><span>sites</span></div>
+            </div>
+            <div class="sub">Ağırlık · regular (arayüz) / duotone (etkin, boş durum) / bold (yalnızca 12 px)</div>
+            <div class="row wts"><span><i class="ph ph-database ph-i s20"></i>regular</span><span><i class="ph-duotone ph-database ph-i s20"></i>duotone</span><span><i class="ph-bold ph-arrow-up-right ph-i" style="width:12px;height:12px;font-size:12px"></i>bold 12</span><span><svg class="glyph s20"><use href="#g-postgres"/></svg>glif</span></div>
+            <div class="sub">Gezinme · varsayılan / etkin (iki tonlu)</div>
+            <div class="row"><nav class="nav demo"><a><i class="ph ph-table ph-i"></i>Tablolar<span class="badge">14</span></a></nav><nav class="nav demo"><a class="on"><i class="ph ph-table ph-i"></i>Tablolar<span class="badge">14</span></a></nav><nav class="nav demo"><a class="on"><svg class="glyph"><use href="#g-sites"/></svg>Siteler</a></nav></div>
+          </div></div>
+          <div class="bz" data-s style="grid-column:span 5"><div class="core">
+            <h4><span class="secno">02</span>Durum, rozet ve çipler</h4>
+            <div class="sub">Durum · renk + şekil</div>
+            <div class="row"><span class="status s-ok"><span class="dot"></span>Çalışıyor</span><span class="status s-warn"><span class="dot"></span>Bekliyor</span><span class="status s-err"><span class="dot"></span>Hata</span><span class="status s-info"><span class="dot"></span>Bilgi</span><span class="status s-mute"><span class="dot"></span>Duraklatıldı</span><span class="status s-violet"><span class="dot"></span>Hazırlanıyor</span></div>
+            <div class="sub">Değişim · çip · commit</div>
+            <div class="row"><span class="delta up"><i class="ph-bold ph-arrow-up-right ph-i"></i>%12,4</span><span class="delta dn"><i class="ph-bold ph-arrow-down-right ph-i"></i>%3,1</span><span class="chip">Varsayılan</span><span class="chip on"><i class="ph ph-funnel-simple ph-i"></i>durum <b>≠ iptal</b><i class="ph ph-x ph-i x"></i></span><span class="hash">a3f9c2e<button class="copy ok"><i class="ph ph-copy ph-i"></i><i class="ph ph-check ph-i"></i></button></span><span class="branch"><i class="ph ph-git-branch ph-i"></i>feat/odeme</span></div>
+            <div class="sub">Klavye · avatar yığını</div>
+            <div class="row"><span class="kbd">Ctrl</span><span class="kbd">K</span><span class="kbd">⇧</span><span class="kbd">↵</span><span class="kbd">esc</span><span class="stack" style="margin-left:10px"><span class="avatar">D</span><span class="avatar v">E</span><span class="avatar b">M</span><span class="avatar o">Z</span><span class="more">+8</span></span></div>
+            <div class="sub">Biçimler · tr-TR</div>
+            <div class="fmt" id="fmt"></div>
+          </div></div>
+
+          <div class="bz" data-s style="grid-column:span 7"><div class="core">
+            <h4><span class="secno">03</span>Butonlar · her durum</h4>
+            <div class="statemx">
+              <span></span><span class="hd">varsayılan</span><span class="hd">üzerinde</span><span class="hd">basılı</span><span class="hd">devre dışı</span><span class="hd">yükleniyor</span>
+              <span>primary</span>
+              <span><button class="btn btn-primary btn-sm">Kaydet<span class="ic"><i class="ph ph-arrow-right ph-i"></i></span></button></span>
+              <span><button class="btn btn-primary btn-sm is-hover">Kaydet<span class="ic"><i class="ph ph-arrow-right ph-i"></i></span></button></span>
+              <span><button class="btn btn-primary btn-sm is-press">Kaydet<span class="ic"><i class="ph ph-arrow-right ph-i"></i></span></button></span>
+              <span><button class="btn btn-primary btn-sm" disabled>Kaydet<span class="ic"><i class="ph ph-arrow-right ph-i"></i></span></button></span>
+              <span><button class="btn btn-primary btn-sm is-loading">Kaydediliyor<span class="ic"><i class="ph ph-spinner-gap ph-i spin"></i></span></button></span>
+              <span>glass</span>
+              <span><button class="btn btn-glass btn-sm"><i class="ph ph-plugs ph-i"></i>Bağlan</button></span>
+              <span><button class="btn btn-glass btn-sm is-hover"><i class="ph ph-plugs ph-i"></i>Bağlan</button></span>
+              <span><button class="btn btn-glass btn-sm is-hover is-press"><i class="ph ph-plugs ph-i"></i>Bağlan</button></span>
+              <span><button class="btn btn-glass btn-sm" disabled><i class="ph ph-plugs ph-i"></i>Bağlan</button></span>
+              <span><button class="btn btn-glass btn-sm is-loading"><i class="ph ph-spinner-gap ph-i spin"></i>Bağlanıyor</button></span>
+              <span>ghost</span>
+              <span><button class="btn btn-ghost btn-sm"><i class="ph ph-arrow-clockwise ph-i"></i>Yenile</button></span>
+              <span><button class="btn btn-ghost btn-sm is-hover"><i class="ph ph-arrow-clockwise ph-i"></i>Yenile</button></span>
+              <span><button class="btn btn-ghost btn-sm is-hover is-press"><i class="ph ph-arrow-clockwise ph-i"></i>Yenile</button></span>
+              <span><button class="btn btn-ghost btn-sm" disabled><i class="ph ph-arrow-clockwise ph-i"></i>Yenile</button></span>
+              <span><button class="btn btn-ghost btn-sm is-loading"><i class="ph ph-spinner-gap ph-i spin"></i>Yenileniyor</button></span>
+              <span>danger</span>
+              <span><button class="btn btn-danger btn-sm"><i class="ph ph-trash ph-i"></i>Sil</button></span>
+              <span><button class="btn btn-danger btn-sm is-hover"><i class="ph ph-trash ph-i"></i>Sil</button></span>
+              <span><button class="btn btn-danger btn-sm is-hover is-press"><i class="ph ph-trash ph-i"></i>Sil</button></span>
+              <span><button class="btn btn-danger btn-sm" disabled><i class="ph ph-trash ph-i"></i>Sil</button></span>
+              <span><button class="btn btn-danger btn-sm is-loading"><i class="ph ph-spinner-gap ph-i spin"></i>Siliniyor</button></span>
+            </div>
+            <div class="sub">Boyutlar · ikon butonları · odak halkası</div>
+            <div class="row"><button class="btn btn-primary btn-lg">Büyük<span class="ic"><i class="ph ph-arrow-right ph-i"></i></span></button><button class="btn btn-primary">Orta<span class="ic"><i class="ph ph-arrow-right ph-i"></i></span></button><button class="btn btn-primary btn-sm">Küçük<span class="ic"><i class="ph ph-arrow-right ph-i"></i></span></button><button class="icon-btn"><i class="ph ph-bell-simple ph-i"></i></button><button class="icon-btn is-hover"><i class="ph ph-gear-six ph-i"></i></button><button class="btn btn-glass btn-sm" style="box-shadow:0 0 0 2px var(--panel),0 0 0 4px var(--accent)"><i class="ph ph-keyboard ph-i"></i>Klavye odağı</button></div>
+          </div></div>
+          <div class="bz" data-s style="grid-column:span 5"><div class="core">
+            <h4><span class="secno">04</span>Girdiler</h4>
+            <div class="field"><label>Proje adı <span class="mono" style="color:var(--dim);font-weight:400">varsayılan</span></label><div class="input sm"><i class="ph ph-folder-simple ph-i"></i><input placeholder="ör. magaza-prod"></div></div>
+            <div class="field"><label>Alan adı <span class="mono" style="color:var(--dim);font-weight:400">odak</span></label><div class="input sm focus"><span class="pre">https://</span><input value="magaza.example.com"></div></div>
+            <div class="field"><label>Bağlantı sınırı <span class="mono" style="color:var(--dim);font-weight:400">hata</span></label><div class="input sm error"><i class="ph ph-warning-circle ph-i"></i><input value="5000"></div><div class="help err"><i class="ph ph-warning-circle ph-i s13"></i>En fazla 1.000 olabilir.</div></div>
+            <div class="field"><label>Bağlantı dizesi <span class="mono" style="color:var(--dim);font-weight:400">kopyala</span></label><div class="input sm"><i class="ph ph-link-simple ph-i"></i><input class="mono" style="font-size:12px" value="postgresql://app@db.example.com:5432/postgres" readonly><button class="copy" data-tip="Kopyala" data-kbd="Ctrl C" data-copy="postgresql://app@db.example.com:5432/postgres"><i class="ph ph-copy ph-i"></i><i class="ph ph-check ph-i"></i></button></div></div>
+            <div class="row"><div class="input sm disabled" style="flex:1"><i class="ph ph-lock ph-i"></i><input value="devre dışı" disabled></div><span class="toggle"></span><span class="toggle off"></span><span class="cb on"><i class="ph-bold ph-check ph-i"></i></span><span class="cb mixed"></span><span class="cb"></span></div>
+          </div></div>
+
+          <div class="bz" data-s style="grid-column:span 6"><div class="core">
+            <h4><span class="secno">05</span>Bildirimler</h4>
+            <div style="display:grid;gap:8px;justify-items:start">
+              <div class="toast static"><span class="ti s-ok"><i class="ph ph-check-circle ph-i"></i></span><span class="tx"><b>Yedek alındı</b><span>ilkbahar-api · 2,4 GB · 41 sn</span></span><button class="icon-btn" style="width:28px;height:28px"><i class="ph ph-x ph-i"></i></button></div>
+              <div class="toast static"><span class="ti s-err"><i class="ph ph-x-circle ph-i"></i></span><span class="tx"><b>Sorgu başarısız</b><span class="mono" style="font-size:11.5px">42501 · permission denied</span></span><button class="btn btn-ghost btn-sm">Ayrıntı</button></div>
+              <div class="toast static"><span class="ti s-mute"><i class="ph ph-trash ph-i"></i></span><span class="tx"><b>2 satır silindi</b><span>siparisler</span></span><span class="cd">3 sn</span><button class="btn btn-glass btn-sm"><i class="ph ph-arrow-u-up-left ph-i"></i>Geri al</button><span class="drain"></span></div>
+            </div>
+          </div></div>
+          <div class="bz" data-s style="grid-column:span 6"><div class="core">
+            <h4><span class="secno">06</span>İpuçları · yükleme · boş durum</h4>
+            <div class="row" style="gap:16px;align-items:flex-start">
+              <div style="display:grid;gap:22px;justify-items:center;padding-top:4px"><button class="icon-btn is-hover"><i class="ph ph-copy ph-i"></i></button><span class="tt static">Kopyala <span class="k"><span class="kbd">Ctrl</span><span class="kbd">C</span></span></span></div>
+              <div style="display:grid;gap:22px;justify-items:center;padding-top:4px"><button class="icon-btn is-hover"><i class="ph ph-circle-half ph-i"></i></button><span class="tt static">Temayı değiştir</span></div>
+              <div style="flex:1;display:grid;gap:9px;padding:12px;border-radius:16px;box-shadow:inset 0 0 0 1px var(--line)"><div style="display:flex;gap:10px;align-items:center"><span class="sk" style="width:30px;height:30px"></span><div style="flex:1;display:grid;gap:6px"><span class="sk" style="width:60%"></span><span class="sk" style="width:35%;height:8px"></span></div></div><span class="sk" style="height:46px;border-radius:12px"></span><span class="sk" style="width:80%"></span></div>
+            </div>
+            <div class="empty" style="padding:12px 0 0;grid-template-columns:auto 1fr;justify-items:start;text-align:left;gap:4px 16px;align-items:center">
+              <span class="eg" style="grid-row:span 3"><i class="ph-duotone ph-table ph-i"></i></span>
+              <b>Henüz tablo yok</b><p>İlk tablonu oluştur ya da bir CSV içe aktar.</p><button class="btn btn-primary btn-sm">Tablo oluştur<span class="ic"><i class="ph ph-plus ph-i"></i></span></button>
+            </div>
+          </div></div>
+        </div>
+      </section>
+    </div>
+  </main>
+</section>
+
+<!-- ================= COMMAND PALETTE ================= -->
+<div class="cmdk" id="cmdk" role="dialog" aria-modal="true" aria-label="Komut paleti">
+  <div class="scrim" data-close></div>
+  <div class="pal"><div class="core">
+    <div class="q"><i class="ph ph-magnifying-glass ph-i"></i><input id="cmdk-q" placeholder="Ekran, tablo veya komut ara…" autocomplete="off"><span class="kbd">esc</span></div>
+    <div class="ctx"><span class="chip on">ilkbahar-api</span><span class="chip">Tüm projeler</span><span class="chip">Komutlar</span></div>
+    <div class="list" id="cmdk-list"><div class="hl"></div></div>
+    <div class="ft"><span><span class="kbd">↑</span><span class="kbd">↓</span> gezin</span><span><span class="kbd">↵</span> aç</span><span><span class="kbd">esc</span> kapat</span><div class="sp"></div><span>ı/i, ş/s duyarsız arama</span></div>
+  </div></div>
+</div>
+
+<!-- ================= IMPORT / EXPORT SHEET ================= -->
+<div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-label="Verileri içe aktar">
+  <div class="scrim" data-sheet-close></div>
+  <div class="panel">
+    <div class="sh-h"><span class="pc-icon"><i class="ph ph-database ph-i"></i></span><div style="flex:1"><h3>Verileri taşı</h3><div class="metaline">hedef: magaza-prod <i>·</i> postgres 17.2</div></div><button class="icon-btn" data-sheet-close data-tip="Kapat" data-kbd="esc"><i class="ph ph-x ph-i"></i></button></div>
+    <div class="sh-b">
+      <div class="seg" style="justify-self:start"><div class="ind"></div><button class="on"><i class="ph ph-download-simple ph-i s14"></i>İçe aktar</button><button><i class="ph ph-upload-simple ph-i s14"></i>Dışa aktar</button></div>
+      <div class="stp ok exp"><button class="sh"><span class="num"><i class="ph ph-check ph-i s14"></i></span><b>Uyumluluk kontrolü</b><span class="status s-ok" style="height:20px;font-size:11px"><span class="dot"></span>Geçti</span><i class="ph ph-caret-down ph-i chev"></i></button>
+        <div class="bd"><div><div class="in">
+          <div class="chk"><span><i class="ph ph-check ph-i"></i>Kaynak Postgres 15.4 → hedef 17.2 uyumlu</span><span><i class="ph ph-check ph-i"></i>Uzantılar 6/6 mevcut <span class="mono" style="color:var(--dim)">pgcrypto, pg_trgm, …</span></span><span><i class="ph ph-check ph-i"></i>Tahmini boyut 3,2 GB · boş alan 58 GB</span><span><i class="ph ph-warning ph-i" style="color:var(--warn)"></i>2 rol hedefte yok, otomatik oluşturulacak</span></div>
+          <div><button class="btn btn-ghost btn-sm"><i class="ph ph-arrow-clockwise ph-i"></i>Yeniden kontrol et</button></div>
+        </div></div></div></div>
+      <div class="stp cur exp"><button class="sh"><span class="num">2</span><b>Verileri içe aktar</b><i class="ph ph-caret-down ph-i chev"></i></button>
+        <div class="bd"><div><div class="in">
+          <div class="field" style="margin:0"><label>Kaynak bağlantı dizesi</label><div class="input sm"><i class="ph ph-link-simple ph-i"></i><input class="mono" style="font-size:12px" value="postgresql://eski@kaynak.example.com:5432/app"></div><div class="help">Salt okunur bir kullanıcı yeterli. Parola kaydedilmez.</div></div>
+          <div class="opt"><span class="toggle"></span>Şema ve verileri birlikte aktar</div>
+          <div class="opt"><span class="toggle"></span>auth.users kayıtlarını eşle</div>
+          <div class="opt"><span class="toggle off"></span>Depolama nesnelerini de kopyala <span class="mono" style="color:var(--dim)">+11 GB</span></div>
+          <div><button class="btn btn-primary btn-sm">İçe aktarmayı başlat<span class="ic"><i class="ph ph-arrow-right ph-i"></i></span></button></div>
+        </div></div></div></div>
+      <div class="stp lock"><button class="sh"><span class="num">3</span><b>Doğrula ve trafiği yönlendir</b><i class="ph ph-lock ph-i s14" style="color:var(--dim)"></i></button></div>
+    </div>
+    <div class="sh-f"><span class="metaline">adım 2 / 3 · tahmini süre ~6 dk</span><div class="sp"></div><button class="btn btn-ghost btn-sm" data-sheet-close>Vazgeç</button></div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<div class="tt" id="tt" role="tooltip"></div>
+
+<div class="dock" id="dock"><div class="ind"></div><span class="lbl">Mockup</span>
+  <button data-go="signin">Giriş</button><button data-go="projects">Projeler</button><button data-go="capacity">Kapasite</button><button data-go="home">Ana sayfa</button><button data-go="table">Tablo</button><button data-go="sql">SQL</button><button data-go="sites">Siteler</button><button data-go="palette">Ctrl K</button><button data-go="details">Detaylar</button>
+</div>
+
+<script>
+const BRAND = 'selfbase'; // swap the wordmark here
+document.querySelectorAll('[data-wordmark]').forEach(n => n.textContent = BRAND);
+const $ = (s, r = document) => r.querySelector(s), $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const params = new URLSearchParams(location.search);
+if (params.get('theme') === 'light') document.documentElement.dataset.theme = 'light';
+if (params.has('clean')) document.body.classList.add('clean');
+const icons = () => {}; // Phosphor is a CSS icon font: nothing to hydrate
+const MAP = {"mail":"envelope-simple","lock-keyhole":"lock-key","lock":"lock","eye":"eye","arrow-right":"arrow-right","key-round":"key","chevrons-up-down":"caret-up-down","layout-grid":"squares-four","users":"users","scroll-text":"scroll","gauge":"gauge","house":"house","table-2":"table","square-terminal":"terminal-window","shield-check":"shield-check","activity":"pulse","settings":"gear-six","ellipsis":"dots-three","search":"magnifying-glass","sun":"sun","moon":"moon","book-open":"book-open","download":"download-simple","plus":"plus","list":"list","sliders-horizontal":"sliders-horizontal","bell-plus":"bell-simple","bell":"bell-simple","copy":"copy","check":"check","plug":"plugs","arrow-up-right":"arrow-up-right","arrow-down-right":"arrow-down-right","rotate-cw":"arrow-clockwise","chart-spline":"chart-line","workflow":"flow-arrow","waypoints":"share-network","hard-drive":"hard-drives","minus":"minus","scan":"corners-out","link":"link-simple","braces":"brackets-curly","terminal":"terminal","bot":"robot","database":"database","list-filter":"funnel-simple","x":"x","arrow-down-wide-narrow":"sort-descending","columns-3":"columns","trash-2":"trash","chevron-left":"caret-left","chevron-right":"caret-right","file-code-2":"file-sql","wand-sparkles":"magic-wand","save":"floppy-disk","play":"play","sparkles":"sparkle","message-square-plus":"note-pencil","panel-right-close":"sidebar-simple","info":"info","at-sign":"at","corner-down-left":"arrow-elbow-down-left","globe":"globe-simple","rocket":"rocket-launch","star":"star","git-branch":"git-branch","history":"clock-counter-clockwise","folder":"folder-simple","circle-alert":"warning-circle","keyboard":"keyboard","circle-check":"check-circle","circle-x":"x-circle","undo-2":"arrow-u-up-left","sun-moon":"circle-half","database-zap":"database","upload":"upload-simple","chevron-down":"caret-down","triangle-alert":"warning","circle-dashed":"circle-dashed","loader-circle":"spinner-gap","zap":"lightning","shopping-bag":"shopping-bag","chart-no-axes-combined":"chart-bar","smartphone":"device-mobile","flask-conical":"flask","external-link":"arrow-square-out","banknote":"money","coins":"coins","circle-dot":"radio-button","map-pin":"map-pin","ticket":"ticket","calendar-clock":"calendar-blank","arrow-up":"arrow-up"};
+const L = (n, c = '', w = 'regular') => `<i class="${w === 'regular' ? 'ph' : 'ph-' + w} ph-${MAP[n] || n} ph-i ${c}"></i>`;
+
+
+/* tr-TR formatting */
+const nf = (n, d = 0) => new Intl.NumberFormat('tr-TR', { minimumFractionDigits: d, maximumFractionDigits: d }).format(n);
+const pct = (v, d = 1) => new Intl.NumberFormat('tr-TR', { style: 'percent', minimumFractionDigits: d, maximumFractionDigits: d }).format(v);
+const RTF = new Intl.RelativeTimeFormat('tr', { numeric: 'auto' });
+const ago = m => m < 1 ? 'şimdi' : m < 60 ? RTF.format(-m, 'minute') : m < 1440 ? RTF.format(-Math.round(m / 60), 'hour') : RTF.format(-Math.round(m / 1440), 'day');
+const setAgo = (id, m) => { const n = document.getElementById(id); if (n) n.textContent = ago(m); };
+setAgo('cap-ago', 2); setAgo('sql-ago', 0); setAgo('env1-ago', 125); setAgo('env2-ago', 4);
+
+/* seeded random */
+let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+const series = (n, base, vol, trend = 0) => { let v = base; return Array.from({ length: n }, () => (v = Math.max(4, v + (rnd() - .5) * vol + trend))); };
+function smooth(pts) {
+  let d = `M${pts[0][0]},${pts[0][1]}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
+    d += ` C${p1[0] + (p2[0] - p0[0]) / 6},${p1[1] + (p2[1] - p0[1]) / 6} ${p2[0] - (p3[0] - p1[0]) / 6},${p2[1] - (p3[1] - p1[1]) / 6} ${p2[0]},${p2[1]}`;
+  }
+  return d;
+}
+const toPts = (data, w, h, pad = 4, max) => { max = max || Math.max(...data) * 1.1; return data.map((v, i) => [i / (data.length - 1) * w, h - pad - v / max * (h - pad * 2)]); };
+let gid = 0;
+function spark(svg, data, color) {
+  const w = 300, h = 60, pts = toPts(data, w, h), id = 'sg' + gid++;
+  svg.setAttribute('viewBox', `0 0 ${w} ${h}`); svg.setAttribute('preserveAspectRatio', 'none');
+  svg.innerHTML = `<defs><linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${color}" stop-opacity=".28"/><stop offset="1" stop-color="${color}" stop-opacity="0"/></linearGradient></defs>
+    <path class="a" d="${smooth(pts)} L${w},${h} L0,${h}Z" fill="url(#${id})"/><path class="l" pathLength="1" d="${smooth(pts)}" stroke="${color}"/>`;
+}
+
+/* ---------- Projects ---------- */
+const projects = [
+  { n: 'ilkbahar-api', ref: 'ilk-7q2m', st: ['s-ok live', 'Çalışıyor'], c: 'var(--chart-1)', icon: 'zap', stats: ['17.2', '4,1 GB', '38'], foot: `Dağıtım ${ago(125)}`, go: 'home', team: ['D', 'E', 'M'], more: 4 },
+  { n: 'magaza-prod', ref: 'mgz-p01x', st: ['s-ok live', 'Çalışıyor'], c: 'var(--chart-1)', icon: 'shopping-bag', stats: ['17.2', '12,8 GB', '112'], foot: `Dağıtım ${ago(1500)}`, team: ['Z', 'K'], more: 0 },
+  { n: 'analitik-depo', ref: 'anl-3kd9', st: ['s-warn live', 'Yedekleniyor'], c: 'var(--warn)', icon: 'chart-no-axes-combined', stats: ['16.6', '21,3 GB', '9'], foot: 'Yedek · %62 · ~3 dk kaldı', progress: true, team: ['S'], more: 0 },
+  { n: 'mobil-backend', ref: 'mob-88ta', st: ['s-ok live', 'Çalışıyor'], c: 'var(--chart-1)', icon: 'smartphone', stats: ['17.2', '2,2 GB', '54'], foot: `Dağıtım ${ago(7200)}`, team: ['A', 'B', 'C'], more: 2 },
+  { n: 'staging-web', ref: 'stg-w4p2', st: ['s-mute', 'Duraklatıldı'], c: 'var(--dim)', icon: 'flask-conical', stats: ['17.0', '0,8 GB', '0'], foot: `Duraklatıldı ${ago(20160)}`, paused: true, team: ['E'], more: 0 },
+];
+const avc = ['', 'v', 'b', 'o'];
+$('#pgrid').innerHTML = projects.map((p, k) => `
+  <div class="bz pcard${p.paused ? ' paused' : ''}" data-s ${p.go ? `data-go="${p.go}"` : ''}><div class="core">
+    <div class="pc-head"><span class="pc-icon">${L(p.icon)}</span>
+      <div><h3>${p.n}</h3><div class="metaline">${p.ref} <i>·</i> eu-central</div></div>
+      <span class="status ${p.st[0]}"><span class="dot"></span>${p.st[1]}</span></div>
+    ${p.progress ? `<div class="progress"><i></i></div><svg class="spark" style="height:30px;margin-top:0" data-c="${p.c}"></svg>` : `<svg class="spark" data-c="${p.c}"></svg>`}
+    <div class="pc-stats"><div><span>Postgres</span><b>${p.stats[0]}</b></div><div><span>Boyut</span><b>${p.stats[1]}</b></div><div><span>Bağlantı</span><b>${p.stats[2]}</b></div></div>
+    <div class="pc-foot"><span>${p.foot}</span><span class="r"><span class="stack">${p.team.map((t, i) => `<span class="avatar ${avc[(i + k) % 4]}">${t}</span>`).join('')}${p.more ? `<span class="more">+${p.more}</span>` : ''}</span>${L('arrow-up-right')}</span></div>
+  </div></div>`).join('') + `<div class="newcard" data-s><div><div class="plus">${L('plus')}</div><b style="font-weight:500;color:var(--text)">Yeni proje oluştur</b><div style="font-size:12px;margin-top:2px">Boş Postgres veya yedekten geri yükle</div></div></div>`;
+$$('#pgrid .spark').forEach((s, i) => spark(s, projects[i].paused ? series(40, 10, 1) : series(40, 30, 14, .3), s.dataset.c));
+$$('.kpi .spark').forEach(s => spark(s, series(36, 30, 12, .25), s.dataset.c));
+$$('.pcard').forEach(c => c.addEventListener('pointermove', e => { const r = c.getBoundingClientRect(); c.style.setProperty('--mx', e.clientX - r.left + 'px'); c.style.setProperty('--my', e.clientY - r.top + 'px'); }));
+
+/* ---------- Capacity ---------- */
+function dots(el, fill, n = 32) {
+  const f = Math.round(fill * n);
+  el.innerHTML = Array.from({ length: n }, (_, i) => { const r = (i + 1) / n; const c = i < f ? (r <= .6 ? 'f g' : r <= .85 ? 'f a' : 'f r') : ''; return `<i class="${c}" style="--d:${i}"></i>`; }).join('');
+}
+$$('.cap .dots').forEach(d => dots(d, +d.dataset.fill));
+dots($('#side-dots'), .41, 20);
+function heat(kind) {
+  const el = $('#heat'), hc = kind === 'bak' ? 'var(--violet)' : 'var(--chart-1)'; el.style.setProperty('--hc', hc);
+  let s = kind === 'bak' ? 99 : 3; const r = () => (s = (s * 16807) % 2147483647) / 2147483647;
+  let html = '', peak = 0;
+  for (let w = 0; w < 52; w++) for (let d = 0; d < 7; d++) {
+    let v = kind === 'bak' ? (r() < .03 ? 'x' : (r() < .85 ? 2 + (r() < .3 ? 1 : 0) : 0)) : Math.min(4, Math.floor(r() * 3 + (w / 52) * 2.2 + (d > 4 ? -1 : 0)));
+    if (v !== 'x') v = Math.max(0, v); if (v === 4) peak++;
+    html += `<i data-l="${v}" style="--w:${w}" ${v === 'x' ? 'title="Yedek başarısız"' : ''}></i>`;
+  }
+  el.innerHTML = html;
+  $('#heat-peak').textContent = kind === 'bak' ? 'Başarı: %97,4 · 9 başarısız (son: 2 Kas)' : 'Zirve: 3.214 istek/sa (14 Kas)';
+  $('#heat-scale').innerHTML = [0, 1, 2, 3, 4].map(l => `<i style="background:${l ? `color-mix(in oklab, ${hc} ${[0, 22, 45, 72, 100][l]}%, var(--surface-2))` : 'var(--surface-2)'};box-shadow:inset 0 0 0 1px var(--line)"></i>`).join('');
+}
+heat('req');
+$$('#heat-kind button').forEach(b => b.addEventListener('click', () => heat(b.dataset.k)));
+const alloc = [['ilkbahar-api', 12.4], ['magaza-prod', 14.1], ['analitik-depo', 8.2], ['mobil-backend', 3.6], ['bildirim-servisi', 1.8], ['staging-web', .9], ['deneme-sandbox', .6]];
+$('#alloc').innerHTML = alloc.map(([n, v]) => `<li><span class="nm">${n}</span><span class="tr"><i style="width:${v / 16 * 100}%"></i></span><span class="v">${nf(v, 1)} GB</span></li>`).join('');
+
+/* ---------- Pipeline ---------- */
+const steps = [['ensure', 'Kaynaklar ayrıldı', '1,2 sn'], ['healthy', 'Sağlık kontrolü', '3,8 sn'], ['certificate', 'TLS sertifikası', '6,1 sn'], ['warm', 'Önbellek ısıtma', '2,4 sn']];
+$('#steps').innerHTML = steps.map((s, i) => (i ? '<span class="conn"></span>' : '') + `<div class="step" data-st="pending"><span class="sic">${L('circle-dashed', 'p')}${L('loader-circle', 'r')}${L('check', 'd')}</span><span class="t"><b>${s[0]}</b><small>${s[1]}</small></span><span class="dur">–</span></div>`).join('');
+let pipeTimers = [];
+function runPipe() {
+  pipeTimers.forEach(clearTimeout); pipeTimers = [];
+  const st = $$('#steps .step'), cn = $$('#steps .conn'), badge = $('#pipe-st');
+  st.forEach(s => { s.dataset.st = 'pending'; $('.dur', s).textContent = '–'; }); cn.forEach(c => c.className = 'conn');
+  badge.className = 'status s-warn live'; badge.lastChild.textContent = 'Çalışıyor';
+  const set = (i, v) => { st[i].dataset.st = v; if (v === 'done') { $('.dur', st[i]).textContent = steps[i][2]; if (cn[i]) cn[i].className = 'conn flow'; } if (v === 'running' && cn[i - 1]) cn[i - 1].className = 'conn done'; };
+  const plan = [[300, 0, 'running'], [1000, 0, 'done'], [1050, 1, 'running'], [1800, 1, 'done'], [1850, 2, 'running'], [3000, 2, 'done'], [3050, 3, 'running'], [3800, 3, 'done']];
+  if (reduce) { st.forEach((_, i) => set(i, 'done')); cn.forEach(c => c.className = 'conn done'); badge.className = 'status s-ok'; badge.lastChild.textContent = 'Tamamlandı'; return; }
+  plan.forEach(([t, i, v]) => pipeTimers.push(setTimeout(() => set(i, v), t)));
+  pipeTimers.push(setTimeout(() => { badge.className = 'status s-ok'; badge.lastChild.textContent = 'Tamamlandı · 13,5 sn'; toast({ kind: 'ok', title: 'Dağıtım #482 tamamlandı', body: 'ilkbahar-api · 4 adım · 13,5 sn' }); }, 3900));
+}
+$('#pipe-rerun').addEventListener('click', runPipe);
+const duo = () => $$('.nav a, .tnav a').forEach(a => { const i = $(':scope > i.ph-i', a); if (!i) return; const on = a.classList.contains('on'); i.classList.toggle('ph', !on); i.classList.toggle('ph-duotone', on); });
+new MutationObserver(ms => ms.some(m => m.target.tagName === 'A') && duo()).observe(document.body, { subtree: true, attributes: true, attributeFilter: ['class'] });
+
+// Sign-in glimpse: ensure → healthy → certificate → warm, looping
+(() => {
+  const box = $('#gl-p'), st = $('#gl-st'), clock = $('#gl-d'), no = $('#gl-n'), STEP = 1100, HOLD = 3200;
+  box.innerHTML = steps.map((x, i) => (i ? L('caret-right', '', 'bold') : '') + `<span class="gl-c" data-st="pending">${L('circle-dashed', 'p', 'bold')}${L('spinner-gap', 'r', 'bold')}${L('check', 'd', 'bold')}${x[0]}</span>`).join('');
+  const chips = $$('.gl-c', box), n = chips.length;
+  const paint = k => {
+    chips.forEach((c, i) => c.dataset.st = i < k ? 'done' : i === k ? 'running' : 'pending');
+    st.className = 'status ' + (k >= n ? 's-ok' : 's-warn live'); st.lastChild.textContent = k >= n ? 'Sağlıklı' : 'Dağıtılıyor';
+  };
+  const secs = ms => nf(ms / 1000, 1) + ' sn';
+  if (reduce) { paint(n); clock.textContent = secs(n * STEP); return; }
+  let t = 0, dep = 483;
+  setInterval(() => {
+    if (current !== 'signin') return;
+    t += 100;
+    if (t > n * STEP + HOLD) { t = 0; no.textContent = '#' + ++dep; }
+    paint(Math.min(n, Math.floor(t / STEP)));
+    clock.textContent = secs(Math.min(t, n * STEP));
+  }, 100);
+})();
+
+/* ---------- Chart ---------- */
+(function chart() {
+  const el = $('#chart'), W = 1000, H = 250, B = 18, n = 48;
+  const rest = series(n, 70, 26, .6), rt = series(n, 30, 12, .2), max = Math.max(...rest) * 1.15;
+  const pr = toPts(rest, W, H - B, 20, max), pt = toPts(rt, W, H - B, 20, max);
+  const grid = [.25, .5, .75].map(f => `<line x1="0" x2="${W}" y1="${f * (H - B)}" y2="${f * (H - B)}" vector-effect="non-scaling-stroke"/>`).join('');
+  const refY = (H - B) - 20 - (110 / max) * (H - B - 40);
+  el.innerHTML = `<div class="band" style="left:${28 / 47 * 100}%;width:${8 / 47 * 100}%"><span>Kampanya</span></div>
+    <svg class="c" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+    <defs><linearGradient id="cg1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--chart-1)" stop-opacity=".26"/><stop offset="1" stop-color="var(--chart-1)" stop-opacity="0"/></linearGradient>
+    <linearGradient id="cg2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--violet)" stop-opacity=".22"/><stop offset="1" stop-color="var(--violet)" stop-opacity="0"/></linearGradient></defs>
+    <g class="gl">${grid}</g>
+    <g class="spark"><path class="a" d="${smooth(pr)} L${W},${H - B} L0,${H - B}Z" fill="url(#cg1)"/><path class="l" pathLength="1" d="${smooth(pr)}" stroke="var(--chart-1)" style="stroke-width:2"/>
+    <path class="a" d="${smooth(pt)} L${W},${H - B} L0,${H - B}Z" fill="url(#cg2)"/><path class="l" pathLength="1" d="${smooth(pt)}" stroke="var(--violet)" style="stroke-width:1.6"/></g></svg>
+    <div class="ref" style="top:${refY / H * 100}%"><span>hedef ${nf(2000)}/dk</span></div>
+    <span class="yl" style="top:${.25 * (H - B) - 16}px">${nf(2400)}</span><span class="yl" style="top:${.5 * (H - B) - 16}px">${nf(1600)}</span><span class="yl" style="top:${.75 * (H - B) - 16}px">800</span>
+    <div class="xl"><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>şimdi</span></div>
+    <div class="vline"></div><span class="mk"></span><div class="tip"></div><span class="headdot"></span>`;
+  const hd = $('.headdot', el), tip = $('.tip', el), vl = $('.vline', el), mk = $('.mk', el);
+  const place = () => { const w = el.clientWidth, h = el.clientHeight; hd.style.left = pr[n - 1][0] / W * w - 2 + 'px'; hd.style.top = pr[n - 1][1] / H * h + 'px'; };
+  const show = (i, px, py) => {
+    const w = el.clientWidth, h = el.clientHeight, x = pr[i][0] / W * w, y = pr[i][1] / H * h;
+    vl.style.left = x + 'px'; mk.style.left = x + 'px'; mk.style.top = y + 'px';
+    const hh = String(Math.floor(i / 2)).padStart(2, '0') + ':' + (i % 2 ? '30' : '00');
+    tip.innerHTML = `<div class="r" style="color:var(--dim);font-family:var(--mono)">${hh}${i >= 28 && i < 36 ? '<span style="color:var(--violet)">kampanya</span>' : ''}</div><div class="r"><span><i style="background:var(--chart-1)"></i>REST</span><b>${nf(Math.round(rest[i] * 19))}</b></div><div class="r"><span><i style="background:var(--violet)"></i>Realtime</span><b>${nf(Math.round(rt[i] * 19))}</b></div>`;
+    px = px ?? x; py = py ?? y; const tw = tip.offsetWidth, th = tip.offsetHeight;
+    tip.style.left = Math.min(px + 16, w - tw - 8) + 'px'; tip.style.top = Math.max(4, Math.min(py - th - 12, h - th - 24)) + 'px';
+  };
+  el.addEventListener('pointermove', e => { const r = el.getBoundingClientRect(); const px = e.clientX - r.left, py = e.clientY - r.top; show(Math.max(0, Math.min(n - 1, Math.round(px / r.width * (n - 1)))), px, py); });
+  addEventListener('resize', place);
+  window.__chart = () => { place(); show(33); };
+})();
+if (!reduce) setInterval(() => { $('#live-rpm').textContent = nf(1200 + Math.round(rnd() * 160)); }, 1600);
+
+/* ---------- Feed ---------- */
+const feed = [
+  ['av', 'D', '', `<b>deniz@example.com</b> <code class="c">siparisler</code> tablosuna 3 satır ekledi`, 2],
+  ['ev', 'circle-check', 's-ok', `<b>Otomatik yedek</b> tamamlandı · 2,4 GB · 41 sn`, 18],
+  ['av', 'E', 'v', `<b>ece@example.com</b> RLS politikasını güncelledi: <code class="c">profiller_okuma</code>`, 64],
+  ['ev', 'triangle-alert', 's-warn', `<b>Depolama</b> p95 gecikmesi 30 ms eşiğini aştı`, 130],
+  ['ev', 'rocket', 's-violet', `<b>Fonksiyon</b> <code class="c">fatura-gonder</code> dağıtıldı · v14`, 190],
+];
+$('#feed').innerHTML = feed.map(f => `<li>${f[0] === 'av' ? `<span class="avatar ${f[2]}">${f[1]}</span>` : `<span class="ev ${f[2]}">${L(f[1])}</span>`}<span class="t">${f[3]}</span><time>${ago(f[4])}</time></li>`).join('');
+
+/* ---------- Table editor ---------- */
+const tables = [['siparisler', 12408], ['musteriler', 3917], ['urunler', 842], ['siparis_kalemleri', 48120], ['odemeler', 11903], ['adresler', 4215], ['kuponlar', 96], ['stok_hareketleri', 102340], ['profiller', 3917], ['bildirimler', 27011]];
+const compact = n => new Intl.NumberFormat('tr-TR', { notation: 'compact', maximumFractionDigits: 1 }).format(n);
+$('#tnav').insertAdjacentHTML('beforeend', tables.map((t, i) => `<a class="${i ? '' : 'on'}">${L('table-2')}${t[0]}<span class="c">${compact(t[1])}</span></a>`).join(''));
+const names = ['deniz', 'ece', 'mert', 'zeynep', 'kaan', 'selin', 'emre', 'aylin', 'baran', 'irem', 'onur', 'derya', 'cem', 'gizem', 'tolga', 'nil', 'arda', 'yasemin'];
+const states = [['s-ok', 'teslim edildi'], ['s-info', 'kargoda'], ['s-warn', 'beklemede'], ['s-violet', 'hazırlanıyor'], ['s-ok', 'teslim edildi'], ['s-err', 'iade']];
+const cities = ['İstanbul', 'Ankara', 'İzmir', 'Bursa', 'Antalya', 'Eskişehir', 'Konya', 'Trabzon'];
+const hex = () => Math.floor(rnd() * 0xffffffff).toString(16).padStart(8, '0');
+let total = 12408, rowsHtml = '';
+for (let r = 0; r < 22; r++) {
+  const s = states[Math.floor(rnd() * states.length)], sel = r === 2 || r === 3;
+  rowsHtml += `<tr class="row${sel ? ' sel' : ''}" style="--r:${r}"><td><span class="cb ${sel ? 'on' : ''}">${sel ? L('check') : ''}</span></td>
+    <td class="dim">${hex().slice(0, 6)}…</td><td>${names[r % names.length]}${r > 8 ? '.' + (r * 7 % 90) : ''}@example.com</td>
+    <td class="num${r === 4 ? ' focus' : ''}">${nf(rnd() * 4800 + 60, 2)}</td><td class="dim">TRY</td>
+    <td><span class="status ${s[0]}"><span class="dot"></span>${s[1]}</span></td>
+    <td>${cities[r % cities.length]}</td><td>${r % 5 === 3 ? '<span class="null">NULL</span>' : 'KUPON' + (10 + r * 3)}</td>
+    <td class="dim">23 Kas ${String(23 - Math.floor(r / 2)).padStart(2, '0')}:${String(59 - r * 2 % 60).padStart(2, '0')}</td></tr>`;
+}
+const th = (ic, n, ty, cls = '', k = '') => `<th class="${cls}"><span class="h">${L(ic)}${n}${k}</span><span class="ty">${ty}</span></th>`;
+const thead = `<thead><tr><th><span class="cb mixed"></span></th>${th('key-round', 'id', 'uuid', '', ' <span class="k">PK</span>')}${th('at-sign', 'musteri_eposta', 'text')}${th('banknote', 'tutar', 'numeric(12,2)', 'num')}${th('coins', 'para_birimi', 'char(3)')}${th('circle-dot', 'durum', 'siparis_durumu')}${th('map-pin', 'sehir', 'text')}${th('ticket', 'kupon_kodu', 'text · null')}${th('calendar-clock', 'olusturma', 'timestamptz')}</tr></thead>`;
+const skel = Array.from({ length: 14 }, (_, r) => `<tr class="skr"><td><span class="sk" style="width:15px;height:15px;border-radius:5px"></span></td>${[52, 150, 70, 30, 80, 60, 64, 90].map(w => `<td><span class="sk" style="width:${w * (0.8 + (r * 7 % 5) / 12)}px"></span></td>`).join('')}</tr>`).join('');
+const setCount = () => $('#rowcount').textContent = `1–50 / ${nf(total)} satır`;
+function loadTable() {
+  $('#grid').innerHTML = thead + `<tbody>${skel}</tbody>`; $('#selbar').classList.remove('hide'); total = 12408; setCount(); icons();
+  setTimeout(() => { $('#grid tbody').innerHTML = rowsHtml; icons(); }, reduce ? 0 : 650);
+}
+$('#tnav').addEventListener('click', e => { const a = e.target.closest('a'); if (!a) return; $$('#tnav a').forEach(x => x.classList.remove('on')); a.classList.add('on'); slideV($('#tnav'), a); });
+function deleteRows() {
+  const rows = $$('#grid tbody tr.sel'); if (!rows.length) return;
+  rows.forEach(r => r.classList.add('gone')); setTimeout(() => rows.forEach(r => r.classList.add('hide')), reduce ? 0 : 320);
+  $('#selbar').classList.add('hide'); total -= rows.length; setCount();
+  toast({ kind: 'undo', title: `${rows.length} satır silindi`, body: 'siparisler', undo: () => { rows.forEach(r => { r.classList.remove('hide'); requestAnimationFrame(() => r.classList.remove('gone')); }); $('#selbar').classList.remove('hide'); total += rows.length; setCount(); } });
+}
+$('#del-rows').addEventListener('click', deleteRows);
+
+/* ---------- Toasts ---------- */
+function toast({ kind, title, body, undo }) {
+  const t = document.createElement('div'); t.className = 'toast';
+  const ic = { ok: ['s-ok', 'circle-check'], err: ['s-err', 'circle-x'], undo: ['s-mute', 'trash-2'] }[kind];
+  t.innerHTML = `<span class="ti ${ic[0]}">${L(ic[1])}</span><span class="tx"><b>${title}</b><span>${body}</span></span>` +
+    (undo ? `<span class="cd">5 sn</span><button class="btn btn-glass btn-sm">${L('undo-2')}Geri al</button><span class="drain"></span>` : `<button class="icon-btn" style="width:28px;height:28px" aria-label="Kapat">${L('x')}</button>`);
+  $('#toasts').append(t); icons();
+  let left = 5, done = false;
+  const close = () => { if (done) return; done = true; clearInterval(iv); t.classList.add('out'); setTimeout(() => t.remove(), 350); };
+  const iv = setInterval(() => { left--; const cd = $('.cd', t); if (cd) cd.textContent = `${left} sn`; if (left <= 0) close(); }, 1000);
+  if (!undo) { clearInterval(iv); setTimeout(close, 3200); }
+  $('button', t).addEventListener('click', () => { if (undo) undo(); close(); });
+}
+
+/* ---------- Sites ---------- */
+const prevs = [['feat/odeme-akisi', 'feat-odeme-akisi', 'c71e0a4', 's-ok', 'Hazır', 12], ['fix/kupon-yuvarlama', 'fix-kupon-yuvarlama', '19d3b6f', 's-ok', 'Hazır', 95], ['feat/urun-filtre', 'feat-urun-filtre', 'e02aa91', 's-warn live', 'Derleniyor', 1], ['deneme/yeni-tema', 'deneme-yeni-tema', '5f8c3d2', 's-err', 'Başarısız', 300]];
+$('#prev').innerHTML = prevs.map(p => `<li><span class="branch">${L('git-branch')}${p[0]}</span><span class="url">${p[1]}.onizleme.example.com</span><span class="hash">${p[2]}<button class="copy" data-tip="Commit'i kopyala" data-copy="${p[2]}">${L('copy')}${L('check')}</button></span><span class="status ${p[3]}"><span class="dot"></span>${p[4]}</span><time>${ago(p[5])}</time><button class="icon-btn" style="width:30px;height:30px" data-tip="Önizlemeyi aç">${L('external-link')}</button></li>`).join('');
+
+/* ---------- Details sheet ---------- */
+const icset = ['house', 'squares-four', 'table', 'terminal-window', 'database', 'file-sql', 'hard-drives', 'plugs', 'key', 'lock', 'git-branch', 'rocket-launch', 'cloud-arrow-up', 'shield-check', 'users', 'gauge', 'pulse', 'gear-six', 'magnifying-glass', 'bell-simple', 'copy', 'arrow-u-up-left', 'funnel-simple', 'sparkle'];
+$('#icgrid').innerHTML = icset.map(n => `<div>${L(n)}<span>${n}</span></div>`).join(''); duo();
+$('#fmt').innerHTML = [['Tam sayı', nf(12408)], ['Ondalık', nf(1255.75, 2) + ' ₺'], ['Yüzde', pct(.962)], ['Kısa', compact(48120)], ['Göreli', ago(3)], ['Göreli', ago(1440)], ['Tarih', new Intl.DateTimeFormat('tr-TR', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' }).format(new Date(2026, 10, 23, 14, 5))]].map(([a, b]) => `<span>${a}</span><b>${b}</b>`).join('');
+
+/* ---------- Sliding indicators ---------- */
+function slideV(nav, item) { const ind = $(':scope > .ind', nav); if (ind && item) ind.style.transform = `translateY(${item.offsetTop}px)`; }
+function slideH(seg, btn) { const ind = $(':scope > .ind', seg); if (!ind || !btn) return; ind.style.width = btn.offsetWidth + 'px'; ind.style.transform = `translateX(${btn.offsetLeft}px)`; }
+$$('.seg').forEach(seg => { const btns = $$(':scope > button', seg); btns.forEach(b => b.addEventListener('click', () => { btns.forEach(x => x.classList.remove('on')); b.classList.add('on'); slideH(seg, b); })); });
+const initSegs = () => $$('.seg').forEach(seg => { const on = $(':scope > button.on', seg); on && on.offsetWidth && slideH(seg, on); });
+$$('.nav:not(.demo) a').forEach(a => a.addEventListener('click', () => { if (a.dataset.go) return; const nav = a.closest('.nav'); $$('a', nav).forEach(x => x.classList.remove('on')); a.classList.add('on'); slideV(nav, a); }));
+
+/* ---------- Copy micro-feedback ---------- */
+document.addEventListener('click', e => {
+  const c = e.target.closest('.copy'); if (!c) return; e.stopPropagation();
+  try { navigator.clipboard && navigator.clipboard.writeText(c.dataset.copy || '').catch(() => {}); } catch (_) {}
+  c.classList.add('ok'); showTip(c, 'Kopyalandı'); setTimeout(() => c.classList.remove('ok'), 1500);
+}, true);
+
+/* ---------- Tooltips ---------- */
+const tt = $('#tt');
+function showTip(t, text) {
+  tt.innerHTML = (text || t.dataset.tip) + (!text && t.dataset.kbd ? `<span class="k">${t.dataset.kbd.split(' ').map(k => `<span class="kbd">${k}</span>`).join('')}</span>` : '');
+  const r = t.getBoundingClientRect(); tt.classList.add('on');
+  const w = tt.offsetWidth, h = tt.offsetHeight; let top = r.bottom + 8; if (top + h > innerHeight - 8) top = r.top - h - 8;
+  tt.style.left = Math.max(8, Math.min(r.left + r.width / 2 - w / 2, innerWidth - w - 8)) + 'px'; tt.style.top = top + 'px';
+}
+document.addEventListener('pointerover', e => { const t = e.target.closest('[data-tip]'); t ? showTip(t) : tt.classList.remove('on'); });
+document.addEventListener('focusin', e => { const t = e.target.closest('[data-tip]'); t && t.matches(':focus-visible') ? showTip(t) : tt.classList.remove('on'); });
+
+/* ---------- Routing ---------- */
+const crumbs = {
+  projects: ['Atölye Labs', 'Projeler'], capacity: ['Atölye Labs', 'Kapasite'],
+  home: ['Atölye Labs', 'ilkbahar-api', 'Ana sayfa'], table: ['Atölye Labs', 'ilkbahar-api', 'Tablolar', 'siparisler'],
+  sql: ['Atölye Labs', 'ilkbahar-api', 'SQL', 'profiller_rls.sql'], sites: ['Atölye Labs', 'ilkbahar-api', 'Siteler'],
+  details: ['Studio', 'Ayrıntı sayfası'],
+};
+const orgViews = ['projects', 'capacity', 'details'];
+let current = null;
+function setCrumbs(k) { const c = crumbs[k]; $('#crumbs').innerHTML = c.map((t, i) => (i ? '<span class="sep">/</span>' : '') + `<a class="${i === c.length - 1 ? 'cur' : ''}" ${i === 0 ? 'data-go="projects"' : i === 1 && !orgViews.includes(k) ? 'data-go="home"' : ''}>${t}</a>`).join(''); }
+function restart(el) { el.classList.remove('active'); void el.offsetWidth; el.classList.add('active'); }
+function swapClass(el, on) {
+  if (on) { el.classList.remove('leaving'); restart(el); }
+  else if (el.classList.contains('active')) { el.classList.remove('active'); el.classList.add('leaving'); setTimeout(() => el.classList.remove('leaving'), reduce ? 0 : 380); }
+}
+const onEnter = { home: runPipe, table: loadTable };
+function go(k) {
+  if (k === 'palette') { go('home'); setTimeout(openCmdk, reduce ? 0 : 450); return; }
+  closeCmdk(true); tt.classList.remove('on');
+  if (k === current) return;
+  const toApp = k !== 'signin', wasApp = current && current !== 'signin';
+  if (toApp !== wasApp || !current) { swapClass($('#signin'), !toApp); swapClass($('#app'), toApp); }
+  if (toApp) {
+    $$('.view').forEach(v => swapClass(v, v.id === 'v-' + k));
+    const proj = !orgViews.includes(k);
+    $('#nav-org').classList.toggle('off', proj); $('#nav-proj').classList.toggle('off', !proj);
+    $('#sw-name').textContent = proj ? 'ilkbahar-api' : 'Atölye Labs'; $('#sw-av').textContent = proj ? 'İ' : 'A';
+    $('#sw-sub').textContent = proj ? 'ilk-7q2m · Atölye Labs' : 'organizasyon · 6 proje';
+    const nav = proj ? $('#nav-proj') : $('#nav-org');
+    $$('a', nav).forEach(a => a.classList.toggle('on', a.dataset.go === k));
+    setCrumbs(k); onEnter[k] && onEnter[k]();
+    $(':scope > .ind', nav).style.opacity = $('a.on', nav) ? 1 : 0;
+    requestAnimationFrame(() => { slideV(nav, $('a.on', nav)); slideV($('#tnav'), $('#tnav a.on')); initSegs(); window.__chart(); });
+  }
+  current = k;
+  const db = $$('#dock button'), b = db.find(x => x.dataset.go === k); db.forEach(x => x.classList.toggle('on', x === b)); b && slideH($('#dock'), b);
+}
+document.addEventListener('click', e => { const t = e.target.closest('[data-go]'); if (t) { e.preventDefault(); go(t.dataset.go); } });
+
+/* ---------- Theme: circular reveal from the toggle ---------- */
+function toggleTheme() {
+  const root = document.documentElement, next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+  const b = $('#theme').getBoundingClientRect(), x = b.left + b.width / 2, y = b.top + b.height / 2;
+  const r = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y));
+  const clip = [`circle(0px at ${x}px ${y}px)`, `circle(${r}px at ${x}px ${y}px)`], opts = { duration: 780, easing: 'cubic-bezier(.22,1,.36,1)' };
+  tt.classList.remove('on');
+  if (reduce) { root.dataset.theme = next; return; }
+  if (document.startViewTransition) {
+    const vt = document.startViewTransition(() => { root.dataset.theme = next; });
+    vt.ready.then(() => root.animate({ clipPath: clip }, { ...opts, pseudoElement: '::view-transition-new(root)' }));
+    return;
+  }
+  // fallback: paint the next theme's panel colour as an expanding circle, then swap
+  const o = document.createElement('div'); o.className = 'reveal'; o.style.background = next === 'light' ? '#F7F7F9' : '#0D0E12'; document.body.append(o);
+  o.animate({ clipPath: clip }, opts).finished.then(() => { root.dataset.theme = next; o.animate({ opacity: [1, 0] }, { duration: 260 }).finished.then(() => o.remove()); });
+}
+$('#theme').addEventListener('click', toggleTheme);
+
+/* ---------- Command palette ---------- */
+const cmds = [
+  ['Önerilen', 'table-2', 'Tablo editörünü aç', 'siparisler', ['G', 'T'], 'table'],
+  ['Önerilen', 'square-terminal', 'SQL düzenleyici', 'Asistan ile', ['G', 'S'], 'sql'],
+  ['Önerilen', 'globe', 'Siteler', 'Dalga 6 önizleme', ['G', 'W'], 'sites'],
+  ['Önerilen', 'plus', 'Yeni proje oluştur', 'Atölye Labs', []],
+  ['Tablolar', 'table-2', 'musteriler', 'public · 3.917 satır', [], 'table'],
+  ['Tablolar', 'table-2', 'siparis_kalemleri', 'public · 48.120 satır', [], 'table'],
+  ['Eylemler', 'sun-moon', 'Temayı değiştir', 'koyu / açık', ['Ctrl', '⇧', 'L'], 'theme'],
+  ['Eylemler', 'download', 'Şimdi yedek al', 'ilkbahar-api', []],
+  ['Gezinme', 'gauge', 'Kapasite', 'host-01', ['G', 'C'], 'capacity'],
+  ['Gezinme', 'layout-grid', 'Projelere git', '', ['G', 'P'], 'projects'],
+];
+let active = 0, visible = [];
+const norm = s => s.toLocaleLowerCase('tr').replace(/ı/g, 'i').replace(/ş/g, 's').replace(/ğ/g, 'g').replace(/ü/g, 'u').replace(/ö/g, 'o').replace(/ç/g, 'c');
+function renderCmdk(q = '') {
+  visible = cmds.filter(c => norm(c[2] + ' ' + c[3]).includes(norm(q)));
+  let html = '<div class="hl"></div>', g = '', i = 0;
+  visible.forEach((c, k) => {
+    if (c[0] !== g) { g = c[0]; html += `<div class="gh" style="--i:${i++}">${g}</div>`; }
+    html += `<div class="it" data-k="${k}" style="--i:${i++}"><span class="tile">${L(c[1])}</span><span class="lab">${c[2]}${c[3] ? `<small>${c[3]}</small>` : ''}</span><span class="hint">${c[4].map(x => `<span class="kbd">${x}</span>`).join('')}</span>${L('arrow-right', 'go')}</div>`;
+  });
+  if (!visible.length) html += '<div class="empty" style="padding:26px"><span class="eg"><i class="ph-duotone ph-magnifying-glass ph-i"></i></span><b>Sonuç yok</b><p>Başka bir ad dene ya da <span class="kbd">esc</span> ile kapat.</p></div>';
+  $('#cmdk-list').innerHTML = html; icons(); active = 0; hl();
+}
+function hl() {
+  const its = $$('#cmdk-list .it'); its.forEach((x, k) => x.classList.toggle('on', k === active));
+  const it = its[active], h = $('#cmdk-list .hl'); if (it) { h.style.opacity = 1; h.style.transform = `translateY(${it.offsetTop}px)`; it.scrollIntoView({ block: 'nearest' }); } else h.style.opacity = 0;
+}
+function run(c) { if (c[5] === 'theme') { closeCmdk(true); toggleTheme(); } else if (c[5]) go(c[5]); else closeCmdk(); }
+function openCmdk() { const c = $('#cmdk'); renderCmdk(''); $('#cmdk-q').value = ''; c.classList.remove('closing'); void c.offsetWidth; c.classList.add('open'); setTimeout(() => $('#cmdk-q').focus(), 50); }
+function closeCmdk(instant) { const c = $('#cmdk'); if (!c.classList.contains('open')) return; c.classList.add('closing'); c.classList.remove('open'); setTimeout(() => c.classList.remove('closing'), instant || reduce ? 0 : 250); }
+$('#open-cmdk').addEventListener('click', openCmdk);
+$('#cmdk-q').addEventListener('input', e => renderCmdk(e.target.value));
+$('#cmdk').addEventListener('click', e => { if (e.target.dataset.close !== undefined) closeCmdk(); const it = e.target.closest('.it'); if (it) run(visible[+it.dataset.k]); });
+$('#cmdk-list').addEventListener('pointermove', e => { const it = e.target.closest('.it'); if (it && +it.dataset.k !== active) { active = +it.dataset.k; hl(); } });
+addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); $('#cmdk').classList.contains('open') ? closeCmdk() : (current !== 'signin' && openCmdk()); }
+  if (!$('#cmdk').classList.contains('open')) return;
+  if (e.key === 'Escape') closeCmdk();
+  if (e.key === 'ArrowDown') { e.preventDefault(); active = Math.min(active + 1, visible.length - 1); hl(); }
+  if (e.key === 'ArrowUp') { e.preventDefault(); active = Math.max(active - 1, 0); hl(); }
+  if (e.key === 'Enter' && visible[active]) run(visible[active]);
+});
+
+/* ---------- Home: traffic / architecture tabs ---------- */
+const edges = [['site', 'rest', 1], ['fn', 'rest', 0], ['fn', 'core', 0], ['rest', 'pooler', 1], ['core', 'pooler', 0], ['pooler', 'db', 1], ['db', 'vol', 0]];
+function drawEdges() {
+  const cv = $('#canvas'), r0 = cv.getBoundingClientRect(); if (!r0.width) return;
+  const box = n => { const r = $(`[data-n="${n}"]`, cv).getBoundingClientRect(); return { l: r.left - r0.left, r: r.right - r0.left, t: r.top - r0.top, b: r.bottom - r0.top, cx: r.left - r0.left + r.width / 2, cy: r.top - r0.top + r.height / 2 }; };
+  $('.edges', cv).setAttribute('viewBox', `0 0 ${r0.width} ${r0.height}`);
+  $('.edges', cv).innerHTML = edges.map(([a, b, hot]) => {
+    const A = box(a), B = box(b);
+    if (b === 'vol') return `<path d="M${A.cx},${A.b} L${B.cx},${B.t}"/>`;
+    const x1 = A.r, y1 = A.cy, x2 = B.l, y2 = B.cy, m = (x1 + x2) / 2;
+    return `<path class="${hot ? 'hot' : ''}" d="M${x1},${y1} C${m},${y1} ${m},${y2} ${x2},${y2}"/>`;
+  }).join('');
+}
+function homeTab(p) {
+  $$('#home-tab button').forEach(b => b.classList.toggle('on', b.dataset.p === p)); slideH($('#home-tab'), $(`#home-tab [data-p="${p}"]`));
+  $('#pane-traffic').classList.toggle('off', p !== 'traffic'); $('#pane-arch').classList.toggle('off', p !== 'arch');
+  $('#legend').style.opacity = p === 'traffic' ? 1 : 0;
+  if (p === 'arch') requestAnimationFrame(drawEdges);
+}
+$$('#home-tab button').forEach(b => b.addEventListener('click', () => homeTab(b.dataset.p)));
+addEventListener('resize', () => $('#pane-arch:not(.off)') && drawEdges());
+
+/* ---------- Import sheet ---------- */
+const openSheet = () => { $('#sheet').classList.add('open'); requestAnimationFrame(initSegs); };
+const closeSheet = () => $('#sheet').classList.remove('open');
+$('#open-import').addEventListener('click', openSheet);
+$$('[data-sheet-close]').forEach(b => b.addEventListener('click', closeSheet));
+$$('.stp:not(.lock) .sh').forEach(h => h.addEventListener('click', () => h.parentElement.classList.toggle('exp')));
+addEventListener('keydown', e => { if (e.key === 'Escape') closeSheet(); });
+
+/* stagger indices + boot */
+$$('.view, #signin').forEach(v => $$('[data-s]', v).forEach((el, i) => el.style.setProperty('--i', i)));
+icons();
+const missing = $$('i.ph-i').filter(n => ['none', 'normal', ''].includes(getComputedStyle(n, '::before').content)).map(n => n.className); if (missing.length) console.error('missing icons', [...new Set(missing)].join(','));
+document.fonts.ready.then(() => {
+  const sc = params.get('screen') || 'signin';
+  go(sc === 'import' ? 'projects' : sc);
+  if (sc === 'import') setTimeout(openSheet, 500);
+  if (params.has('arch')) setTimeout(() => homeTab('arch'), 600);
+  if (params.has('undo')) setTimeout(deleteRows, 1500);
+});
+</script>
+</body>
+</html>
