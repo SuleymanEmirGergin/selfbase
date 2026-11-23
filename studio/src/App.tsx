@@ -4,7 +4,7 @@ import { onSignedOut, platform } from './api.ts'
 import type { Me, OrgRef } from './api.ts'
 import { Link, navigate, usePath } from './router.tsx'
 import { Dots, Icon } from './ui.tsx'
-import { ConfirmHost, Loading, ToastHost } from './ui.tsx'
+import { ConfirmHost, Loading, ToastHost, flushUndo } from './ui.tsx'
 import { Shell } from './shell.tsx'
 import { useLoad } from './org/common.tsx'
 import { nf, t, upper, useLocale } from './i18n/index.ts'
@@ -138,6 +138,7 @@ export default function App() {
   useEffect(() => { if (me === null) clearProjectMemory() }, [me])
 
   const signOut = useCallback(async () => {
+    flushUndo() // a delete still in its undo window goes out before the session ends
     await platform.logout().catch(() => {})
     // An explicit sign-out keeps no `next`: the next account must not land on this one's page. Replacing the URL
     // without emitting keeps the redirect effect from adding it back; the render below reads the new path.

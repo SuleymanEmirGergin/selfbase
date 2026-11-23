@@ -156,4 +156,18 @@ test('the undo timer commits once after the delay, never after an undo', () => {
   d.resume()
   advance(10000)
   expect(commits).toBe(2)
+
+  // flush (sign-out inside the window): commits at once, exactly once, even while paused; nothing after an undo
+  const e = startUndo(5000, () => commits++, () => {}, clock)
+  e.pause()
+  expect(e.flush()).toBe(true)
+  expect(commits).toBe(3)
+  expect(e.flush()).toBe(false)
+  expect(e.undo()).toBe(false)
+  advance(10000)
+  expect(commits).toBe(3)
+  const f = startUndo(5000, () => commits++, () => {}, clock)
+  f.undo()
+  expect(f.flush()).toBe(false)
+  expect(commits).toBe(3)
 })

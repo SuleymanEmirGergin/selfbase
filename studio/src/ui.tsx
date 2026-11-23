@@ -175,13 +175,17 @@ let pushToast: (t: Toast) => void = () => {}
 let toastId = 0
 export const toast = (text: string, kind: 'ok' | 'error' = 'ok') => pushToast({ id: ++toastId, text, kind })
 /**
- * A reversible action instead of a confirm dialog: `commit` runs after 5 seconds unless "Geri al" is pressed first,
- * in which case `undo` restores what the caller hid. A page closed before then never commits.
+ * A reversible action instead of a confirm dialog: `commit` runs after 5 seconds unless Undo is pressed first, in
+ * which case `undo` restores what the caller hid. Sign-out commits at once; a page closed before then never commits
+ * (the toast says "Deleting…", not "Deleted").
  */
 export const toastUndo = (text: string, body: string, commit: () => void, undo: () => void) =>
   pushToast({ id: ++toastId, text, kind: 'undo', body, commit, undo })
 
 const UNDO_MS = 5000
+// pending undo windows; sign-out commits them first, while the session that may send them still exists
+const flushers = new Set<() => void>()
+export const flushUndo = () => flushers.forEach((f) => f())
 
 function UndoToast({ item, close }: { item: Extract<Toast, { kind: 'undo' }>; close: () => void }) {
   const [left, setLeft] = useState(UNDO_MS / 1000)
@@ -203,7 +207,9 @@ function UndoToast({ item, close }: { item: Extract<Toast, { kind: 'undo' }>; cl
     // the only way back is this button: keyboard and screen-reader users land on it at once
     button.current?.focus()
     timer.current = startUndo(UNDO_MS, () => { item.commit(); finish() }, setLeft)
-    return () => { timer.current?.undo() } // unmounted without an answer: nothing is committed
+    const flush = () => { timer.current?.flush() }
+    flushers.add(flush)
+    return () => { flushers.delete(flush); timer.current?.undo() } // unmounted without an answer: nothing is committed
   }, [])
   const paused = held.focus || held.hover
   useEffect(() => { if (paused) timer.current?.pause(); else timer.current?.resume() }, [paused])

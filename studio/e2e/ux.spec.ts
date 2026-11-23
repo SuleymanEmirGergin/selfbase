@@ -352,3 +352,37 @@ test('global shortcuts leave an open sheet and the editor alone', async ({ page 
   await page.waitForTimeout(900) // longer than the reveal
   expect(await theme(page)).toBe(before)
 })
+
+test('a row deleted, then the table left and opened again inside the window, stays hidden until the delete lands', async ({ page }) => {
+  await page.clock.install()
+  const api = await mockApi(page, routes())
+  const DEL = `DELETE /projects/${REF}/admin/rows/public/notes`
+  await page.goto(`/project/${REF}/editor`)
+  const row = page.getByRole('row').filter({ hasText: 'ilk sürüm yayında' })
+  await row.click()
+  await page.getByRole('dialog', { name: 'Satırı düzenle' }).getByRole('button', { name: 'Sil' }).click()
+  await expect(row).toHaveCount(0)
+  await page.getByRole('link', { name: 'SQL' }).click()
+  await page.getByRole('link', { name: 'Tablolar' }).click()
+  await expect(page.getByRole('row').filter({ hasText: 'merhaba studio' })).toHaveCount(1)
+  await expect(row).toHaveCount(0) // remounted view: still hidden
+  await page.getByRole('heading', { level: 1 }).click() // focus leaves the toast: the count runs
+  await page.clock.runFor(5600)
+  await expect.poll(() => api.count(DEL)).toBe(1)
+  await expect(row).toHaveCount(0) // and gone for good: the list was read again after the delete
+})
+test('signing out inside the undo window sends the delete first, while the session still exists', async ({ page }) => {
+  await page.clock.install()
+  const r = routes()
+  const order: string[] = []
+  const del = r[`DELETE /projects/${REF}/admin/rows/public/notes`] as (req: import('@playwright/test').Request) => { body?: unknown }
+  r[`DELETE /projects/${REF}/admin/rows/public/notes`] = (req) => { order.push('delete'); return del(req) }
+  r['POST /logout'] = () => { order.push('logout'); return { body: {} } }
+  await mockApi(page, r)
+  await page.goto(`/project/${REF}/editor`)
+  await page.getByRole('row').filter({ hasText: 'ilk sürüm yayında' }).click()
+  await page.getByRole('dialog', { name: 'Satırı düzenle' }).getByRole('button', { name: 'Sil' }).click()
+  await expect(page.getByRole('status').filter({ hasText: 'Satır siliniyor' })).toBeVisible()
+  await page.getByRole('button', { name: 'Çıkış' }).click()
+  await expect.poll(() => order).toEqual(['delete', 'logout'])
+})
