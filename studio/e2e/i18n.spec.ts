@@ -15,6 +15,18 @@ test('a first visit is in English, with <html lang="en">', async ({ page }) => {
   expect(await lang(page)).toBe('en')
 })
 
+test('an English visit does not download the Turkish catalogue; switching loads it', async ({ page }) => {
+  const trLoads: string[] = []
+  page.on('request', (r) => { if (/\/i18n\/tr(\.ts)?[.?-]|\/tr-[\w-]+\.js/.test(r.url())) trLoads.push(r.url()) })
+  await mockApi(page, routes())
+  await page.goto('/org/acme')
+  await expect(page.getByRole('heading', { name: 'Projects', level: 1 })).toBeVisible()
+  expect(trLoads).toEqual([])
+  await page.getByLabel('Language').selectOption('tr')
+  await expect(page.getByRole('heading', { name: 'Projeler', level: 1 })).toBeVisible()
+  expect(trLoads.length).toBeGreaterThan(0)
+})
+
 test('switching to Türkçe in the sidebar changes the copy, lang and numbers, and survives a reload', async ({ page }) => {
   await mockApi(page, routes())
   await page.goto('/org/acme/capacity')

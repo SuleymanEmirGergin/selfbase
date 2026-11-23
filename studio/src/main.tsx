@@ -1,9 +1,10 @@
 import { createRoot } from 'react-dom/client'
 import App from './App.tsx'
 import { applyStoredTheme } from './theme.ts'
-import { applyStoredLocale } from './i18n/index.ts'
+import { applyStoredLocale, loadLocale, locale } from './i18n/index.ts'
 import './styles.css'
 
 applyStoredTheme() // before the first paint, so a light-theme user never sees a dark flash
 applyStoredLocale()
-createRoot(document.getElementById('root')!).render(<App />)
+// a stored Turkish choice loads its catalogue first; if that fails the app still starts, in English
+loadLocale(locale()).catch(() => {}).finally(() => createRoot(document.getElementById('root')!).render(<App />))
