@@ -41,6 +41,27 @@ test('a switch on Members also changes the role options in the invite form', asy
   await expect(roles.locator('option')).toHaveText(['Sahip', 'Yönetici', 'Geliştirici', 'Salt okunur'])
 })
 
+test('server errors read in the chosen language: known codes from the catalogue, others generic with the code', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('studio-locale', 'tr'))
+  const fail = (body: object) => ({ ...routes(), 'GET /projects': { status: 409, body } })
+  await mockApi(page, fail({ error: 'project_busy', message: 'another operation is running on this project; try again when it ends' }))
+  await page.goto('/org/acme')
+  await expect(page.getByRole('alert')).toContainText('Bu projede başka bir işlem sürüyor')
+  await expect(page.getByRole('alert')).not.toContainText('another operation')
+
+  await page.unrouteAll()
+  await mockApi(page, fail({ error: 'quota_exceeded', message: 'over quota' }))
+  await page.reload()
+  await expect(page.getByRole('alert').locator('code')).toHaveText('quota_exceeded')
+  await expect(page.getByRole('alert')).not.toContainText('over quota')
+
+  // a code whose message is the detail (which field, the SQL error) keeps the server's words
+  await page.unrouteAll()
+  await mockApi(page, fail({ error: 'validation_failed', message: 'name must be 1 to 100 characters' }))
+  await page.reload()
+  await expect(page.getByRole('alert')).toContainText('name must be 1 to 100 characters')
+})
+
 test('the Ctrl+K palette offers the other language and switches to it', async ({ page }) => {
   await mockApi(page, routes())
   await page.goto('/org/acme')

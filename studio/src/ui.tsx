@@ -65,10 +65,13 @@ export const Empty = ({ icon = 'empty', children }: { icon?: string; children: R
     <div>{children}</div>
   </div>
 )
+/** Error text with `code` spans in mono (the server's error code in the generic message). */
+export const errText = (s: string) => s.split(/`([^`]+)`/).map((p, i) => (i % 2 ? <code key={i}>{p}</code> : p))
+
 export const ErrorBox = ({ message, onRetry }: { message: string; onRetry?: () => void }) => (
   <div className="error-box" role="alert">
     <Icon name="warning" />
-    <div className="grow">{message}</div>
+    <div className="grow">{errText(message)}</div>
     {onRetry && <button className="btn sm" onClick={onRetry}>{t('common.retry')}</button>}
   </div>
 )
@@ -251,7 +254,7 @@ export function ToastHost() {
       {items.map((x) => x.kind === 'undo' ? <UndoToast key={x.id} item={x} close={() => drop(x.id)} /> : (
         <div key={x.id} className={`toast ${x.kind}`} role={x.kind === 'error' ? 'alert' : 'status'}>
           <span className={`ti ${x.kind === 'error' ? 's-err' : 's-ok'}`}><Icon name={x.kind === 'error' ? 'x-circle' : 'check-circle'} /></span>
-          <span className="tx"><b>{x.text}</b></span>
+          <span className="tx"><b>{x.kind === 'error' ? errText(x.text) : x.text}</b></span>
           <button className="icon-btn sm" onClick={() => drop(x.id)} aria-label={t('toast.dismiss')}><Icon name="close" size={14} /></button>
         </div>
       ))}

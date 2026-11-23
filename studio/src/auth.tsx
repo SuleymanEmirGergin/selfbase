@@ -3,7 +3,7 @@ import type { FormEvent, InputHTMLAttributes, ReactNode } from 'react'
 import { ApiError, errMsg, platform } from './api.ts'
 import type { Me } from './api.ts'
 import { Link, navigate } from './router.tsx'
-import { Icon } from './ui.tsx'
+import { Icon, errText } from './ui.tsx'
 import { Brand } from './glyphs.tsx'
 import { SignInPanel } from './SignInPanel.tsx'
 import { rich, t } from './i18n/index.ts'
@@ -92,7 +92,7 @@ export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
       <Field label={t('common.email')} type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus />
       <Field label={t('auth.password')} type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)}
         extra={<Link to="/reset-password">{t('auth.forgot')}</Link>} />
-      {error && <div className="error-box" role="alert">{error}</div>}
+      {error && <div className="error-box" role="alert">{errText(error)}</div>}
       <Submit busy={busy}>{t(busy ? 'auth.signingIn' : 'auth.signIn')}</Submit>
     </Card>
   )
@@ -109,7 +109,7 @@ function NewPasswordCard({ title, label, onSave }: { title: string; label: strin
     <Card title={title} lead={t('auth.setPasswordLead')} onSubmit={submit}>
       <Field label={t('auth.newPassword')} type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} autoFocus />
       <Field label={t('auth.newPasswordAgain')} type="password" autoComplete="new-password" value={again} onChange={(e) => setAgain(e.target.value)} />
-      {error && <div className="error-box" role="alert">{error}</div>}
+      {error && <div className="error-box" role="alert">{errText(error)}</div>}
       <Submit busy={busy}>{label}</Submit>
     </Card>
   )

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { errMsg, platform } from '../api.ts'
 import type { Job, OrgRef, Size } from '../api.ts'
-import { Copy, Icon, Status } from '../ui.tsx'
+import { Copy, Icon, Status, errText } from '../ui.tsx'
 import type { Tone } from '../ui.tsx'
 import { has, t } from '../i18n/index.ts'
 import type { Key } from '../i18n/index.ts'
@@ -68,7 +68,7 @@ export function JobSteps({ jobId, onDone }: { jobId: string; onDone?: (job: Job)
     return () => { stopped = true; clearTimeout(timer) }
   }, [jobId])
 
-  if (!job) return error ? <div className="error-box" role="alert">{error}</div> : <div className="muted small">{t('job.starting')}</div>
+  if (!job) return error ? <div className="error-box" role="alert">{errText(error)}</div> : <div className="muted small">{t('job.starting')}</div>
   return (
     <div className="job">
       <ol className="steps" aria-label={t('job.steps')}>
@@ -88,7 +88,7 @@ export function JobSteps({ jobId, onDone }: { jobId: string; onDone?: (job: Job)
         })}
       </ol>
       {job.status === 'failed' && <div className="error-box" role="alert">{job.error || t('job.failedMsg')}</div>}
-      {error && <div className="muted small">{error}</div>}
+      {error && <div className="muted small">{errText(error)}</div>}
     </div>
   )
 }

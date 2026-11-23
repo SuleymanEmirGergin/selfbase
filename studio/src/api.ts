@@ -1,6 +1,6 @@
 // The one client module for control's /platform API (plan Tasks 10, 13, 14). Same origin, authenticated by the
 // httpOnly session cookies; nothing from the session is kept in the browser beyond them. Contract fixes go here.
-import { t } from './i18n/index.ts'
+import { has, t } from './i18n/index.ts'
 
 export class ApiError extends Error {
   status: number
@@ -58,7 +58,8 @@ export async function request<T = unknown>(method: string, path: string, opts: O
   const data = await res.json().catch(() => null)
   if (!res.ok)
     throw new ApiError(res.status, (data && (data.message || data.error_description || data.msg || data.error)) || `HTTP ${res.status}`,
-      typeof data?.error === 'string' ? data.error : '')
+      // core's admin API puts a sentence in `error`; only a snake_case word is a code
+      typeof data?.error === 'string' && /^[a-z]+(_[a-z]+)*$/.test(data.error) ? data.error : '')
   return data as T
 }
 
@@ -242,4 +243,11 @@ export function projectAdmin(ref: string) {
 
 export type ProjectAdmin = ReturnType<typeof projectAdmin>
 
-export const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e))
+// codes whose message is the detail itself (which field, the SQL error): shown as the server sent them
+const DETAIL = new Set(['validation_failed', 'query_failed', 'invalid_env_file', 'invalid_secrets'])
+/** The text to show for a failure: catalogue copy for control's known codes, a generic line naming any other code. */
+export const errMsg = (e: unknown) => {
+  if (!(e instanceof ApiError) || !e.code || DETAIL.has(e.code)) return e instanceof Error ? e.message : String(e)
+  const k = `apiErr.${e.code}`
+  return has(k) ? t(k) : t('apiErr.other', { code: e.code })
+}
