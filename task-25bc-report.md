@@ -143,3 +143,83 @@ The skill was run on the Turkish catalogue before it was committed. Register: UI
 3. **First second of the drain bar.** If the toast is not held when it appears, the first second does not animate: the bar starts at 4/5, not at 5/5. A keyboard delete focuses Undo, so it starts held. A pointer delete in the sheet moves focus to the toast too, so I did not see it in practice.
 4. **No video from 761 to 900 px.** The breakpoint move to 900 px means landscape tablets in that range now get the still only. The stacked 300 px band makes the video add little there.
 5. **Locale detection.** The browser language is not read: a first visit is always English, as the brief says. Turkish users switch once, and the choice persists.
+
+## Fix round 1
+
+This round answers `task-25bc-review.md`: 1 Important and 8 Minor findings. The commits are 017eeb9..82a8377, plus this report update. Each code fix has a spec. Every spec except the KiB one in `lib.spec` was run and seen failing before its fix landed.
+
+| Finding | Commit | What changed | Spec |
+|---|---|---|---|
+| Important: role options built at module load | e256cbc | `roleOptions()` is a function called at render. A grep for other module-level `t()` and catalogue reads found nothing else. The remaining hits are functions or default parameters, which run per call. | i18n: "a switch on Members also changes the role options in the invite form" |
+| 1: sign-out does not wait for the DELETE | 9647283 | `commit` returns the delete's promise. `flushUndo()` returns `Promise.allSettled` over the pending windows. `signOut` awaits `Promise.race([flushUndo(), 3 s])` before `POST /logout`. | ux: "sign-out waits for the server to answer the pending delete…" holds the DELETE response for 1.5 s and expects `delete, deleted, logout` (the server answered first). "…waits at most 3 seconds" holds it for 20 s: no logout before 3 s on the page clock, logout after. |
+| 2: raw English server errors | 40e3dcc | `errMsg` maps control's codes to `apiErr.<code>` in both catalogues (19 codes). An unknown code gives `apiErr.other` with the code in a `<code>` span (`errText()` in ErrorBox, error toasts and the auth and job error boxes). Four codes keep the server's words because the message is the detail: `validation_failed`, `query_failed`, `invalid_env_file` and `invalid_secrets`. Only a snake_case `error` counts as a code, because core's admin API puts sentences there. | i18n: "server errors read in the chosen language…": a known code, an unknown code in mono, and a detail code. |
+| 3: both catalogues in the main chunk | 2c17cef | `tr.ts` loads with `import()`. `main.tsx` awaits the stored locale's catalogue before `createRoot`, so there is no flash. `setLocale` loads before it switches. `tr: Messages` still makes `tsc` enforce parity. | i18n: "an English visit does not download the Turkish catalogue; switching loads it" |
+| 4: KB label on 1024 units; raw SQL duration | 04167b5 | `fmtSize` prints B, KiB, MiB, GiB or TiB. A value that would round to 1024 moves up a unit (1,048,575 B → "1.0 MiB"). The SQL duration goes through `nf`. | lib: fmtSize cases. i18n: "on the SQL screen a switch…" (1,234 ms → 1.234 ms). |
+| 5: SQL editor label fixed at mount | 04167b5 | The label is set on `contentDOM` in an effect keyed on the locale, not through `contentAttributes`. `@codemirror/state` is not a direct dependency, so I avoided a Compartment. | Same SQL spec: the textbox name changes from "SQL query" to "SQL sorgusu". |
+| 6: "Wave 6" in user copy | 8f3c73f | The chip is "COMING SOON" / "YAKINDA". The text starts "Coming soon: …" / "Yakında …". | Screenshots `project-sites-*` |
+| 7: Turkish calques | 8f3c73f | Reworked, then the whole `tr.ts` went through turkce-dogal again (see below). | Existing shell spec selectors updated for the two aria-labels |
+| 8: no language switch when signed out | 6918adb | `LangSelect` is exported from `shell.tsx` and shown in the sign-in, invitation and reset footer, next to the host. | i18n: "the signed-out screens have their own language switch" |
+
+### turkce-dogal, second pass on the whole `tr.ts`
+
+- Register: UI micro copy, "sen", localisation mode.
+- `lint.py --count` over all 510 values (1,552 words): 0 hits before and after. The pass caught no mechanical issues, only calques.
+- Reviewer's strings:
+  - `tokens.meta`: "Belirteçle yönetim API’sine ({v1}) ve CLI’ye senin rollerinle erişilir."
+  - `files.downloadOf` / `files.deleteOf`: "{name} dosyasını indir" / "{name} dosyasını sil"
+  - `rls.disableBtn`: "RLS’i kapat"
+  - `rls.noRls`: "Bu bir {kind}. RLS açılamaz, policy de eklenemez."
+  - `tables.blankDefault`: "Boş bırakırsan varsayılan değer kullanılır." In English, "Leave empty to use the default".
+  - `sites.chip` / `sites.text`: see Minor 6.
+- Found in the second pass:
+
+  | Key | Before | After | Why |
+  |---|---|---|---|
+  | `common.created` | Oluşturma | Oluşturulma | Column header for a date |
+  | `auth.signInLead` | Studio’ya devam etmek için oturum aç | Studio’yu kullanmak için giriş yap | Calque of "continue to" |
+  | `members.roleOf` | Rol: {email} | {email} için rol | Colon label read aloud |
+  | `members.removeOf` | Çıkar: {email} | {email} üyesini çıkar | Colon label read aloud |
+  | `capacity.certNote` | Her yeni adres bir sertifika ister | Her yeni adres için bir sertifika gerekir | Calque of "needs" |
+  | `apiErr.admin_forbidden` | … çağrısını … | Proje bu yönetim isteğini reddetti. | "çağrı" is a calque of "call" |
+  | `apiErr.payload_too_large` | Gönderilemeyecek kadar büyük. | Gönderilen veri çok büyük. | It had no subject |
+  | `apiErr.no_template_version` | Projenin yükseltilecek bir şablon sürümü yok. | Projenin şablon sürümü bilinmiyor, bu yüzden güncellenemiyor. | Says what is wrong |
+
+- Kept on purpose:
+  - `common.deleteOf` "Sil: {name}" and `domains.removeOf` "Kaldır: {host}". They read well enough as action labels.
+  - `users.markedConfirmed` keeps "olarak", which marks a real status here.
+
+### Commands and output (from `studio/`)
+
+```
+$ npx tsc --noEmit -p .
+TypeScript: No errors found
+
+$ npm run build
+dist/assets/index-BncPhUZz.css   55.67 kB │ gzip:  12.27 kB
+dist/assets/tr-CXU4Xh41.js       21.59 kB │ gzip:   7.82 kB
+dist/assets/Sql-C8LDYWuF.js     430.93 kB │ gzip: 140.06 kB
+dist/assets/index-CaWKf4FO.js   512.41 kB │ gzip: 142.34 kB
+✓ built
+(Vite still warns: the main chunk is over 500 kB)
+
+$ STUDIO_E2E_PORT=5293 npx playwright test
+136 tests: 76 passed, 60 skipped, 0 failed (3.9 min)
+
+$ STUDIO_SHOTS=1 STUDIO_E2E_PORT=5293 npx playwright test e2e/screens.spec.ts
+59 passed (1.9 min)
+```
+
+- Main chunk: 530.3 kB before this round, 512.4 kB now (142.3 kB gzip). Turkish is a separate 21.6 kB chunk.
+- The chunk is still over Vite's 500 kB hint. The English catalogue and the 19 new error strings stay in the main chunk. Getting under 500 kB would need a split elsewhere, which this round did not attempt.
+- 18 screenshots changed (commit 82a8377):
+  - invite, reset and sign-in in every variant: the language switch.
+  - `project-sites-*`: "Coming soon".
+  - `project-tables-*`, `project-users-light`, `org-audit-light` and `org-import-dark`: rendering noise from the run, with no visible change I could see.
+
+### Concerns after fix round 1
+
+1. **Bundle size.** The main chunk is still 12 kB over the hint (see above).
+2. **Turkish catalogue fails to load.** If the chunk does not load at start-up, the app still renders, falling back to English strings. `<html lang>` and number formatting would still be Turkish in that state.
+3. **The 3 s cap on sign-out.** A DELETE slower than 3 s is still racing logout when it ends. That is the bound the coordinator asked for.
+4. **A delete committed by its timer just before sign-out** is not awaited: its toast has already closed, so it is no longer in `flushUndo`. Only windows still open at sign-out are waited for.
+5. **Lost detail in mapped errors.** Mapped codes drop the server's specific English sentence. One example: `weak_password` loses the minimum length, and the invite form does not show the minimum elsewhere. Detail codes keep their messages.
