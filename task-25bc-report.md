@@ -223,3 +223,77 @@ $ STUDIO_SHOTS=1 STUDIO_E2E_PORT=5293 npx playwright test e2e/screens.spec.ts
 3. **The 3 s cap on sign-out.** A DELETE slower than 3 s is still racing logout when it ends. That is the bound the coordinator asked for.
 4. **A delete committed by its timer just before sign-out** is not awaited: its toast has already closed, so it is no longer in `flushUndo`. Only windows still open at sign-out are waited for.
 5. **Lost detail in mapped errors.** Mapped codes drop the server's specific English sentence. One example: `weak_password` loses the minimum length, and the invite form does not show the minimum elsewhere. Detail codes keep their messages.
+
+## Fix round 2
+
+This round answers `task-25bc-rereview-1.md`: 1 Important and 5 Minors, handled as the coordinator directed. The commits are eaa79d1..539a298, plus this report update. Each code fix has a spec, and each spec was seen failing before its fix.
+
+| Finding | Commit | What changed | Spec |
+|---|---|---|---|
+| Important: the generic line replaced user-written refusals | d7bee04 | A code gets catalogue copy only when nothing is lost (see below). Every other code shows the server's own message with its code beside it in mono (`… (`hostname_taken`)`). `query_failed` keeps the bare database error. There is no generic line any more; `apiErr.other` is removed. The `org/projects.tsx` comment is corrected. Control is unchanged. | i18n "server errors: …" covers: `project_busy` gets copy; `hostname_taken` and an unknown code keep the server's words with the code; a `forbidden` with a non-standard message keeps the server's words; `weak_password` carries the minimum. "a full server refuses a new project…" checks that the Turkish `insufficient_memory` copy shows 412 and 1.024 MiB. "the reset screen shows the auth server rate limit in its own words" checks that `over_email_send_rate_limit` keeps the server's message and code. |
+| M1: two auth error boxes without `errText` | d7bee04 | The accept-while-signed-in and reset-request boxes use `errText`, and so does the "schemas failed" line in Tables. | The reset rate-limit spec above (it checks the `<code>`). |
+| M2: Turkish chunk fails or stalls | 08fd2b7 | `startLocale()` races the stored catalogue against 2 s. On failure or timeout the session is English throughout: `current = 'en'` and `lang = 'en'`, so `nf`, `fmtDate`, `upper` and `lower` follow. The choice is not saved, so the next visit tries again. `LangSelect` and the palette command go through `pickLocale`, which catches the failure and toasts "Could not load that language. Try again." / "Bu dil yüklenemedi. Yeniden dene." | i18n has three specs. "…fails to load starts the session wholly in English" aborts the chunk and checks the English heading, `lang="en"`, "2,336 MiB" and that `tr` is still stored. "…stalls holds the first paint about 2 seconds" uses a request that is never answered and expects the English page within 4 s. "picking Türkçe when its catalogue cannot load…" covers the select and the palette, which both toast and stay English. |
+| M3 spec on dev and build | 08fd2b7 | `TR_CHUNK` matches the pathname: `/src/i18n/tr.ts` on the dev server, `/assets/tr-<hash>.js` in the build. `STUDIO_E2E_PREVIEW=1` runs the specs against `vite build && vite preview`. | `STUDIO_E2E_PREVIEW=1 STUDIO_E2E_PORT=5294 npx playwright test e2e/i18n.spec.ts`: 13 passed. The dev server run also passes. |
+| M3 (rereview): second sign-out click; a delete its timer already sent | f00f5e8 | `ui.tsx` keeps an `inflight` set of committed requests, whether committed by the timer or by a flush, and removes each one when it settles. `flushUndo()` flushes the open windows, then awaits `inflight`. `signOut` ignores re-entry while it waits (`leaving` ref), so logout is sent once. | ux "a second sign-out click while the delete is out still waits, and logs out once": `delete, deleted, logout` with a single logout. ux "a delete its own timer sent just before sign-out is waited for too". |
+| M4: `weak_password` minimum | d7bee04 | Control's message is matched (`Password should be at least (?<n>\d+) characters.`), so the copy "The password needs at least {n} characters." / "Şifre en az {n} karakter olmalı." keeps the number. `weak_passphrase` works the same way. Core's reset-path message does not match, so it is shown as sent with its code and still states the minimum. Control was not changed, as instructed. | Part of the i18n "server errors" spec |
+| M5: copy leftovers | 7f44ed1 | `tokens.meta` (tr) reads "…CLI’ye kendi rollerinle erişirsin." and `tables.blankDefault` (en) now ends with a period. | Copy only |
+
+### Which codes get catalogue copy
+
+- **Exact message**, the one control sends:
+  - Session and access: `forbidden` ("Forbidden"), `admin_forbidden`, `unauthorized` ("Unauthorized"), `not_found` ("not found").
+  - Project state: `project_unreachable`, `project_busy`, `no_template_version`.
+  - Organization: `last_owner`, `ambiguous_membership`, `invalid_invitation`, `account_exists`.
+  - Paths and backups: `invalid_path`, `invalid_backup_dir` (the "not one of this organization's backups" message only).
+- **Message with a number carried over:** `weak_password {n}` and `weak_passphrase {n}`.
+- **Numbers from `details`**, which control already sends:
+  - `insufficient_memory {free, needed}` from `freeMb` / `neededMb`.
+  - `new_host_cap {cap, date}` from `cap` / `retryAfter`. The date is shown in the viewer's locale and time zone, not in UTC.
+- **Dropped from the catalogue,** because their messages vary or carry detail: `apiErr.other`, `conflict`, `payload_too_large`, `project_not_running` and `invalid_status`.
+- **Shown in the server's words with the code:** everything else, including all the hostname codes, `pool_exhausted`, the provisioner codes, core auth codes, `internal` and `http_error`.
+- The `insufficient_memory` copy says "this project", not the size name (micro/small/medium) that control's message includes. The size is the one the user just picked on the same form.
+
+### turkce-dogal
+
+The new and changed Turkish strings were checked against the skill's rules, and `lint.py` was re-run over all of `tr.ts`: 0 hits (508 values, 1,603 words). The new strings are:
+- `apiErr.insufficient_memory`, `apiErr.new_host_cap`, `apiErr.weak_password`, `apiErr.weak_passphrase` and `apiErr.account_exists`
+- `shell.languageFailed`
+- `tokens.meta`
+
+Two drafts changed in this pass:
+- `insufficient_memory` had two "or"s in one sentence. It is now split: "…ama bu proje {needed} MiB istiyor. Kullanmadığın bir projeyi duraklat ya da sil. Daha küçük bir boyut da seçebilirsin."
+- `new_host_cap` repeated "boşal-". It now reads "…bir adres hakkı açılır. … adresini serbest bırakabilirsin."
+
+### Commands and output (from `studio/`)
+
+```
+$ npx tsc --noEmit -p .
+TypeScript: No errors found
+
+$ npm run build
+dist/assets/index-BncPhUZz.css   55.67 kB │ gzip:  12.27 kB
+dist/assets/tr-BTi0rrbJ.js       21.87 kB │ gzip:   7.91 kB
+dist/assets/Sql-2YMMlXqC.js     430.93 kB │ gzip: 140.06 kB
+dist/assets/index-DLAUZTj9.js   514.39 kB │ gzip: 143.02 kB
+✓ built (Vite still warns: main chunk over 500 kB)
+
+$ STUDIO_E2E_PORT=5293 npx playwright test
+143 tests: 83 passed, 60 skipped, 0 failed (4.2 min)
+
+$ STUDIO_E2E_PREVIEW=1 STUDIO_E2E_PORT=5294 npx playwright test e2e/i18n.spec.ts
+13 passed (against the production build)
+
+$ STUDIO_SHOTS=1 STUDIO_E2E_PORT=5293 npx playwright test e2e/screens.spec.ts
+59 passed
+```
+
+- The main chunk is 514.4 kB (143.0 kB gzip), up 2 kB from round 1 because of the error rules and the new copy.
+- 14 screenshots changed (539a298). The visible change is the row sheet's placeholder. The rest is rendering noise.
+
+### Concerns after fix round 2
+
+1. **Brittle exact-message rules.** If control rewords one of those messages, Studio falls back to the server's words and code. That is safe, but the Turkish copy silently stops being used. A control-side `details` field or a stable message id would be sturdier. That is out of scope here, since control was not to change.
+2. **English refusals in the Turkish UI.** Unmapped refusals, such as the hostname codes and `pool_exhausted`, are shown in English. This follows the instruction. Turkish copy for them needs structured fields from control (the host and so on).
+3. **The 3 s sign-out cap still applies.** A request slower than that is still racing logout when the cap ends.
+4. **Preview mode is not in CI.** `STUDIO_E2E_PREVIEW=1` is opt-in. Only the i18n spec was run against the build in this round, not the full suite.
+5. **Bundle size.** The main chunk is still over the 500 kB hint.
