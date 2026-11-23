@@ -5,6 +5,7 @@ import { app } from '../src/app.ts'
 import { pool } from '../src/db.ts'
 import { resetRateLimits } from '../src/core.ts'
 import { hashToken } from '../src/ids.ts'
+import { cookieNames } from '../src/session.ts'
 import { ORIGIN, as, cookiesOf, login, resetDashboard, withToken } from './helpers.ts'
 
 const OWNER = 'owner@example.test'
@@ -52,15 +53,19 @@ describe('create-owner and login', () => {
     expect(JSON.parse(text)).toEqual({ email: OWNER })
     expect(text).not.toMatch(/token|eyJ/)
     const set = res.headers.getSetCookie()
-    const access = set.find((c) => c.startsWith('sb_studio='))!
-    const refresh = set.find((c) => c.startsWith('sb_studio_refresh='))!
+    const access = set.find((c) => c.startsWith('__Host-sb_studio='))!
+    const refresh = set.find((c) => c.startsWith('__Host-sb_studio_refresh='))!
     for (const c of [access, refresh]) {
       expect(c).toMatch(/HttpOnly/i)
       expect(c).toMatch(/SameSite=Strict/i)
       expect(c).toMatch(/Secure/i) // PUBLIC_URL is https in the tests
+      // __Host-: a sibling host under a shared parent domain cannot set or shadow them
+      expect(c).toMatch(/; Path=\/(;|$)/)
+      expect(c).not.toMatch(/Domain=/i)
     }
     expect(access).toMatch(/Max-Age=3600/)
-    expect(refresh).toMatch(/Path=\/platform\/refresh/)
+    // plain HTTP (local dev) cannot carry __Host- cookies: the bare names
+    expect(cookieNames(false)).toEqual({ access: 'sb_studio', refresh: 'sb_studio_refresh' })
   })
 
   test('wrong password is 400 {error,message}; the sixth attempt in the window is 429', async () => {
@@ -76,16 +81,16 @@ describe('create-owner and login', () => {
 
   test('refresh rotates the session from the refresh cookie; logout ends it', async () => {
     const cookie = await login(OWNER, PASSWORD)
-    const refreshCookie = cookie.split('; ').find((c) => c.startsWith('sb_studio_refresh='))!
+    const refreshCookie = cookie.split('; ').find((c) => c.startsWith('__Host-sb_studio_refresh='))!
     const r = await app.request('/platform/refresh', { method: 'POST', headers: { cookie: refreshCookie, origin: ORIGIN } })
     expect(r.status).toBe(200)
     expect(await r.json()).toEqual({ email: OWNER })
     const fresh = cookiesOf(r)
-    expect(fresh).toMatch(/sb_studio=/)
+    expect(fresh).toMatch(/__Host-sb_studio=/)
     expect((await as(fresh, 'GET', '/platform/me')).status).toBe(200)
     const out = await as(fresh, 'POST', '/platform/logout')
     expect(out.status).toBe(200)
-    expect(out.headers.getSetCookie().join()).toMatch(/sb_studio=;/)
+    expect(out.headers.getSetCookie().join()).toMatch(/__Host-sb_studio=;/)
     // the access token is still signed, but its session is gone
     expect((await as(fresh, 'GET', '/platform/me')).status).toBe(401)
   })
@@ -207,7 +212,7 @@ describe('sessions and tokens', () => {
     expect(res.status).toBe(401)
     expect(await res.json()).toEqual({ error: 'unauthorized', message: 'Unauthorized' })
     expect((await withToken('sbp_' + '0'.repeat(40), 'GET', '/v1/organizations')).status).toBe(401)
-    const jwt = cookie.match(/sb_studio=([^;]+)/)![1]
+    const jwt = cookie.match(/__Host-sb_studio=([^;]+)/)![1]
     expect((await withToken(jwt, 'GET', '/v1/organizations')).status).toBe(401)
   })
 
@@ -321,7 +326,7 @@ describe('password reset', () => {
   test('recover mails a /platform/auth/v1/verify link; it lands with the implicit-flow fragment; PUT user sets the password', async () => {
     // a session from before the reset (think: a stolen cookie pair)
     const old = await login(OWNER, PASSWORD)
-    const oldRefresh = old.split('; ').find((c) => c.startsWith('sb_studio_refresh='))!
+    const oldRefresh = old.split('; ').find((c) => c.startsWith('__Host-sb_studio_refresh='))!
     const recover = await app.request('/platform/auth/v1/recover', json({ email: OWNER }))
     expect(recover.status).toBe(200)
     // the mail goes out in the background (SMTP_HOST is empty: core writes it to selfbase.mail_log)

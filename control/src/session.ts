@@ -14,11 +14,15 @@ export type User = { id: string; email: string; via: 'cookie' | 'token' }
 export type AuditScope = { orgId?: string; projectId?: string; target?: string; path?: string }
 export type Env = { Variables: { user: User; audit: AuditScope } }
 
-export const ACCESS_COOKIE = 'sb_studio'
-export const REFRESH_COOKIE = 'sb_studio_refresh'
-const REFRESH_PATH = '/platform/refresh'
 const ORIGIN = new URL(config.publicUrl).origin
 const secure = new URL(config.publicUrl).protocol === 'https:'
+// sslip.io is not on the Public Suffix List, so a sibling host can set a same-named cookie for the parent domain
+// (fixing or shadowing ours). A __Host- cookie (Secure, Path=/, no Domain) cannot be set that way; plain HTTP (local
+// dev) cannot carry one, so it keeps the bare names. The refresh cookie is Path=/ too, as __Host- requires.
+export const cookieNames = (https: boolean) => https
+  ? { access: '__Host-sb_studio', refresh: '__Host-sb_studio_refresh' }
+  : { access: 'sb_studio', refresh: 'sb_studio_refresh' }
+export const { access: ACCESS_COOKIE, refresh: REFRESH_COOKIE } = cookieNames(secure)
 const TOKEN_RE = /^Bearer (sbp_[0-9a-f]{40})$/
 // reachable without a session: they start one, end one, or are core's own sign-in routes (which check the bearer)
 export const PUBLIC = /^\/platform\/(login|refresh|logout|invitations\/accept|auth\/v1\/.*)$/
@@ -39,12 +43,12 @@ export function setSessionCookies(c: Context, s: { access_token: string; refresh
   const base = { httpOnly: true, sameSite: 'Strict', secure } as const
   setCookie(c, ACCESS_COOKIE, s.access_token, { ...base, path: '/', maxAge: 3600 })
   // shortcut: 30 days, core's refresh tokens have no lifetime of their own; revisit with session timeboxes (8.2)
-  setCookie(c, REFRESH_COOKIE, s.refresh_token, { ...base, path: REFRESH_PATH, maxAge: 30 * 86400 })
+  setCookie(c, REFRESH_COOKIE, s.refresh_token, { ...base, path: '/', maxAge: 30 * 86400 })
 }
 
 export function clearSessionCookies(c: Context): void {
   deleteCookie(c, ACCESS_COOKIE, { path: '/', secure })
-  deleteCookie(c, REFRESH_COOKIE, { path: REFRESH_PATH, secure })
+  deleteCookie(c, REFRESH_COOKIE, { path: '/', secure })
 }
 
 /** The user behind a token: live, not expired, not banned. Bumps last_used_at at most once a minute. */
