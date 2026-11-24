@@ -268,10 +268,13 @@ describe('storage', () => {
   })
 
   it('resolveObjectPath rejects bad keys and stays under STORAGE_DIR', () => {
-    for (const [bucket, name] of [[PUB, '../x'], [PUB, 'a/../../b'], [PUB, '/abs'], [PUB, 'a\\b'], [PUB, 'a//b'], [PUB, 'a\0b'], [PUB, ''], ['..', 'x'], ['', 'x']]) {
+    for (const [bucket, name] of [[PUB, '../x'], [PUB, 'a/../../b'], [PUB, '/abs'], [PUB, 'a\\b'], [PUB, 'a//b'], [PUB, 'a\0b'], [PUB, ''], ['..', 'x'], ['', 'x'],
+      // the restore job's temp dir in the volume (job/restore.sh): no bucket may live there
+      ['.restoring-1', 'x'], ['.restoring-4242', 'a/b']]) {
       expect(() => resolveObjectPath(bucket, name), `${bucket}/${name}`).toThrow(StorageError)
     }
     expect(resolveObjectPath(PUB, 'a/b.txt')).toBe(join(storageDir, PUB, 'a', 'b.txt'))
+    expect(resolveObjectPath('.restoring-1x', 'a')).toBe(join(storageDir, '.restoring-1x', 'a'))
   })
 
   it('signed URLs serve the object until they expire and are not API tokens', async () => {

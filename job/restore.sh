@@ -10,8 +10,9 @@
 # Sequence:
 #   1. verifies the backup's MANIFEST (sizes and sha256); a missing or unlisted file or any mismatch is refused
 #      before anything changes (exit 1); so is a storage archive holding anything but plain files and directories
-#      (a link, device or fifo), a name that is absolute or has a .. part, or a top-level .restoring-* (the restore's
-#      own temp dir): an imported archive is foreign data
+#      (a link, device or fifo), a name that is absolute or has a .. part, or a top-level .restoring-<its pid> (the
+#      restore's own temp dir): an imported archive is foreign data. The .restoring-<n> dirs a restore killed outright
+#      (SIGKILL) left in the volume are removed first (backup.sh leaves them out; core serves no bucket of such a name)
 #   1b. adds up what the restore will write (the archive's files and the parent directories it implies, at least a
 #      block and an inode each, an estimate of the dump once restored) and refuses before anything changes (exit 6)
 #      when that would leave less than the floor free on the volume of the project's data (the floor:
@@ -75,6 +76,9 @@ while read -r f size sum; do
   fi
 done < "$dir/MANIFEST"
 [ -d "$storage" ] || { echo "restore: storage directory $storage not mounted" >&2; exit 1; }
+# the temp dirs of restores killed outright (SIGKILL runs no trap). Safe to remove: control's heavy lane has one
+# worker, so no other restore (or backup) of this project runs now, and core serves no bucket named so
+find "$storage" -mindepth 1 -maxdepth 1 -regextype posix-extended -regex '.*/\.restoring-[0-9]+' -exec rm -rf {} +
 # the MANIFEST only proves the archive is the one listed, not that it is safe to extract as root (R4)
 # numeric owners: a name with a space in it cannot shift the size column read in step 1b
 listing=$(tar --numeric-owner -tvzf "$dir/storage.tar.gz") || { echo "restore: $rel/storage.tar.gz cannot be read; refusing" >&2; exit 1; }
@@ -83,9 +87,10 @@ types=$(cut -c1 <<< "$listing" | sort -u | tr -d '\n')
 names=$(tar -tzf "$dir/storage.tar.gz")
 ! grep -qE '^/|(^|/)\.\.(/|$)' <<< "$names" ||
   { echo "restore: $rel/storage.tar.gz holds an absolute or .. path; refusing" >&2; exit 1; }
-# the restore's temp dir in the volume is .restoring-<pid>: the archive never brings one of its own
-! grep -qE '^(\./+)*\.restoring-' <<< "$names" ||
-  { echo "restore: $rel/storage.tar.gz holds a .restoring-* name, which the restore keeps for itself; refusing" >&2; exit 1; }
+# the restore's temp dir in the volume is .restoring-<pid>: the archive never brings that one (the swap in step 5
+# would move it onto the temp dir itself)
+! grep -qE "^(\./+)*\.restoring-$$(/|\$)" <<< "$names" ||
+  { echo "restore: $rel/storage.tar.gz holds .restoring-$$, the name of this restore's temp dir; refusing" >&2; exit 1; }
 echo "restore: $rel verified"
 
 # 1b. The room on the volume of the project's data, in KiB. The job sees only the storage volume; the database's

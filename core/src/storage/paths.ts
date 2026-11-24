@@ -24,6 +24,8 @@ export function resolveObjectPath(bucket: string, name: string): string {
     if (key.split('/').some((p) => p === '' || p === '.' || p === '..')) throw badKey()
   }
   if (bucket.includes('/')) throw badKey()
+  // .restoring-<pid> is the restore job's temp dir in the volume (job/restore.sh): it removes those and backups skip them
+  if (/^\.restoring-[0-9]+$/.test(bucket)) throw badKey()
   const root = path.resolve(config.storageDir)
   const file = path.resolve(root, bucket, name)
   if (!file.startsWith(root + path.sep)) throw badKey()

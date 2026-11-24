@@ -470,12 +470,27 @@ standin many 'cd "${@: -1}"; for i in $(seq 1900); do : > i$i; done; sleep 5'
 rc=0; out=$(cramped "$small" 1 2000 'export PATH=/backups/standin/many:$PATH') || rc=$?
 check 'E: an extraction that uses the inodes past the floor is stopped (exit 6)' [ "$rc" = 6 ]; [ "$rc" = 6 ] || echo "$out" >&2
 check 'E: the stop names the floor, and nothing is left' bash -c 'grep -q "^restore: REFUSED: the volume of the project.s data reached the floor" <<< "$1" && grep -qx entries=0 <<< "$1"' _ "$out"
-# a name the restore keeps for itself: .restoring-<pid> is its temp dir in the volume
-variant restoring 'mkdir .restoring-1 && echo x > .restoring-1/x && tar -czf $a .'
+# a name the restore keeps for itself: .restoring-<pid> is its temp dir in the volume; 300 of them, so one is the pid
+# the restore has in its new container
+variant restoring 'for i in $(seq 300); do mkdir .restoring-$i && echo x > .restoring-$i/x; done; tar -czf $a .'
 rc=0; out=$(cramped esmall/restoring) || rc=$?
-check 'E: an archive with a .restoring-* entry is refused (exit 1)' [ "$rc" = 1 ]; [ "$rc" = 1 ] || echo "$out" >&2
-check 'E: that refusal names it' grep -q "holds a .restoring-\* name" <<< "$out"
+check "E: an archive holding the name of the restore's own temp dir is refused (exit 1)" [ "$rc" = 1 ]; [ "$rc" = 1 ] || echo "$out" >&2
+check 'E: that refusal names it' grep -qE "holds \.restoring-[0-9]+, the name of this restore's temp dir" <<< "$out"
 check 'E: the database is unchanged by these' [ "$(emarker)" = after-backup ]
+# M3: a restore killed outright (SIGKILL) leaves its temp dir in the volume: the next backup leaves it out, and the
+# next restore removes it first, even one it then refuses
+leftover='mkdir -p /data/storage/.restoring-4242 && echo x > /data/storage/.restoring-4242/f'
+docker run --rm -v "$P-empty-storage:/data/storage" "$IMAGE" bash -c "$leftover"
+JOB_ENV=(-e BACKUP_SUBDIR=eleft)
+eleft=$(job db-empty "$P-empty-storage" bash /scripts/backup.sh | tail -n1); eleft=${eleft#backup: wrote }
+docker run --rm -v "$P-empty-storage:/data/storage" "$IMAGE" rm -rf /data/storage/.restoring-4242
+check 'M3: a leftover temp dir is not in the next backup' in_backups "! tar -tzf /backups/$eleft/storage.tar.gz | grep -q restoring-4242"
+rc=0; out=$(cramped "$eleft" 1 '' "$leftover") || rc=$?
+check 'M3: nor does a leftover in the volume block the next restore' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
+rc=0; out=$(cramped esmall/storage-bomb 1 '' "$leftover") || rc=$?
+check 'M3: a refused restore removes the leftover all the same' bash -c '[ "$1" = 6 ] && grep -qx entries=0 <<< "$2"' _ "$rc" "$out"
+[ "$rc" = 6 ] || echo "$out" >&2
+sql db-empty "update public.e_marker set v = 'after-backup'" > /dev/null
 # a writer that ended well as the stop reached it (pg_restore had committed) is no rollback: here a stand-in tar
 # extracts, fills the volume, and exits 0 when it is stopped (taking its filler with it); the restore goes on
 standin fills '/usr/bin/tar "$@" || exit; trap "rm -f /data/storage/.fill; exit 0" TERM
