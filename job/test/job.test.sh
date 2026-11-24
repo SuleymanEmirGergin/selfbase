@@ -367,10 +367,27 @@ check 'I1: a rotating restore of a dump without auth tables succeeds' [ "$rc" = 
 
 # ---- E: a restore is sized before anything changes: the volume of the project's data keeps its floor ----
 # cramped <RESTORE_DIR> [floor MiB]: a restore into db-empty with a 64 MiB storage volume; prints entries=<n> left on it
-# [inodes]: the volume's inode count (tmpfs nr_inodes)
+# and tars=<n>, the tar processes still running after it
+# [inodes]: the volume's inode count (tmpfs nr_inodes); [shell prefix]: run first (a stand-in on PATH, a signal)
 cramped() { docker run --rm --network "$NET" -e PGHOST=db-empty -e PGPASSWORD="$PW" -e "RESTORE_DIR=$1" -e "BACKUP_MIN_FREE_MIB=${2:-1}" \
-  -v "$P-backups:/backups:ro" --tmpfs "/data/storage:size=64m${3:+,nr_inodes=$3}" "$IMAGE" \
-  bash -c 'rc=0; bash /scripts/restore.sh || rc=$?; echo "entries=$(ls -A /data/storage | wc -l)"; exit $rc' 2>&1; }
+  -e "PREFIX=${4:-}" -v "$P-backups:/backups:ro" --tmpfs "/data/storage:size=64m${3:+,nr_inodes=$3}" "$IMAGE" \
+  bash -c 'eval "$PREFIX"; rc=0; bash /scripts/restore.sh || rc=$?; echo "entries=$(ls -A /data/storage | wc -l)"
+    echo "tars=$(pgrep -cx tar)"; exit $rc' 2>&1; }
+# variant <name> <script>: esmall/<name>, a copy of the small backup whose storage archive the script writes to $a,
+# run in a temp dir; its MANIFEST line is made to match
+variant() { in_backups "set -e; cp -a /backups/$small /backups/esmall/$1; a=/backups/esmall/$1/storage.tar.gz; w=\$(mktemp -d); cd \$w
+  $2
+  cd /backups/esmall/$1; rm -rf \$w
+  sed -i \"s|^storage.tar.gz .*|storage.tar.gz \$(stat -c %s storage.tar.gz) \$(sha256sum < storage.tar.gz | cut -d' ' -f1)|\" MANIFEST"; }
+# standin <name> <script>: /backups/standin/<name>/tar, a tar whose extraction (-x) runs the script first (tar's
+# arguments in "$@"); everything else, and the extraction when the script returns, is the real tar
+standin() { docker run --rm -i -v "$P-backups:/backups" "$IMAGE" bash -c \
+  "mkdir -p /backups/standin/$1 && cat > /backups/standin/$1/tar && chmod +x /backups/standin/$1/tar" <<EOF
+#!/bin/bash
+case " \$* " in *" -xzf "*) $2 ;; esac
+exec /usr/bin/tar "\$@"
+EOF
+}
 emarker() { sql db-empty 'select v from public.e_marker'; }
 sql db-empty "create table public.e_marker (v text); insert into public.e_marker values ('in-backup')" > /dev/null
 JOB_ENV=(-e BACKUP_SUBDIR=esmall)
@@ -413,6 +430,24 @@ rc=0; out=$(cramped esmall/empty-files 1 2000) || rc=$?
 check 'E: 1900 empty files on a volume of 2000 inodes are refused (exit 6)' [ "$rc" = 6 ]; [ "$rc" = 6 ] || echo "$out" >&2
 check 'E: that refusal names the inodes' grep -q "^restore: REFUSED: [0-9]* inodes free on the volume of the project's data" <<< "$out"
 check 'E: the database is unchanged by both' [ "$(emarker)" = after-backup ]
+# E: tar makes the parent directories an archive leaves out: each one costs a block and an inode too. 3000 files at
+# k<i>/a/b/c/d/e/f, no directory entries: 12 MiB of files listed, 70 MiB of directories not
+variant deep-blocks 'for i in $(seq 3000); do mkdir -p k$i/a/b/c/d/e && : > k$i/a/b/c/d/e/f; done
+  find . -type f | tar --no-recursion -czf $a -T -'
+rc=0; out=$(cramped esmall/deep-blocks) || rc=$?
+check 'E: an archive of deep paths without directory entries is refused (exit 6)' [ "$rc" = 6 ]; [ "$rc" = 6 ] || echo "$out" >&2
+check 'E: that refusal counts the implied directories' grep -qE "needed after this restore of about 8[0-9] MiB; free space first$" <<< "$out"
+# 300 such files are 2100 inodes, on a volume of 2000
+variant deep-inodes 'for i in $(seq 300); do mkdir -p k$i/a/b/c/d/e && : > k$i/a/b/c/d/e/f; done
+  find . -type f | tar --no-recursion -czf $a -T -'
+rc=0; out=$(cramped esmall/deep-inodes 1 2000) || rc=$?
+check 'E: their implied directories count against the inodes as well (exit 6)' [ "$rc" = 6 ]; [ "$rc" = 6 ] || echo "$out" >&2
+check 'E: that refusal names the inodes too' grep -q "^restore: REFUSED: [0-9]* inodes free on the volume of the project's data" <<< "$out"
+# the watchdog reads the free inodes as well: a stand-in tar makes 1900 files on a volume of 2000 before extracting
+standin many 'cd "${@: -1}"; for i in $(seq 1900); do : > i$i; done; sleep 5'
+rc=0; out=$(cramped "$small" 1 2000 'export PATH=/backups/standin/many:$PATH') || rc=$?
+check 'E: an extraction that uses the inodes past the floor is stopped (exit 6)' [ "$rc" = 6 ]; [ "$rc" = 6 ] || echo "$out" >&2
+check 'E: the stop names the floor, and nothing is left' bash -c 'grep -q "^restore: REFUSED: the volume of the project.s data reached the floor" <<< "$1" && grep -qx entries=0 <<< "$1"' _ "$out"
 # E: the watchdog. What the server writes counts too: a materialized view the dump refreshes is one short line in the
 # estimate, over a row count kept in a table (1 when it was refreshed, 2 million in the dump). The database and the
 # storage volume share one 512 MiB tmpfs, as Docker volumes share a disk; 100 MiB of room above the floor

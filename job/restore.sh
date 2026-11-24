@@ -11,16 +11,17 @@
 #   1. verifies the backup's MANIFEST (sizes and sha256); a missing or unlisted file or any mismatch is refused
 #      before anything changes (exit 1); so is a storage archive holding anything but plain files and directories
 #      (a link, device or fifo) or a name that is absolute or has a .. part: an imported archive is foreign data
-#   1b. adds up what the restore will write (the archive's files, at least a block each, an estimate of the dump once
-#      restored) and refuses before anything changes (exit 6) when that would leave less than the floor free on the
-#      volume of the project's data (the floor: BACKUP_MIN_FREE_MIB, the provisioner's node setting, else 10% or 5 GiB,
-#      whichever is larger), or less than 10% of its inodes: a dump that expands without bound must not fill the disk
-#      other projects share. The estimate is an early refusal only: the watchdog below is the bound
+#   1b. adds up what the restore will write (the archive's files and the parent directories it implies, at least a
+#      block and an inode each, an estimate of the dump once restored) and refuses before anything changes (exit 6)
+#      when that would leave less than the floor free on the volume of the project's data (the floor:
+#      BACKUP_MIN_FREE_MIB, the provisioner's node setting, else 10% or 5 GiB, whichever is larger), or less than 10%
+#      of its inodes: a dump that expands without bound must not fill the disk other projects share. The estimate is
+#      an early refusal only: the watchdog below is the bound
 #   1c. the storage archive is extracted into a temp dir inside the volume (owner: the volume's, modes from the umask,
 #      never the archive's) and checked again for anything but files and directories; a failure here changed nothing
 #      (exit 1; the temp dir is removed)
-#   watchdog: while tar (1c) and pg_restore (3) run, the free space is read every second; at the floor the writer is
-#      stopped (the database's client sessions are terminated, so pg_restore's one transaction rolls back), the temp
+#   watchdog: while tar (1c) and pg_restore (3) run, the free space and inodes are read every second; at the floor
+#      the writer is stopped (the database's client sessions are terminated, so pg_restore's one transaction rolls back), the temp
 #      dir removed, and the restore ends with exit 6, nothing changed: what the server writes for the dump (a
 #      materialized view it refreshes, an index it builds) is no line of the dump, so no estimate can bound it
 #   2. cron: every active job is set inactive (committed) and running job sessions are terminated, so no job runs
@@ -97,9 +98,16 @@ refused() { # <about|more than> <KiB>
 storage_k=$(LC_ALL=C awk 'NF == 0 { next } $3 !~ /^[0-9]+$/ { bad = 1 } { b = int(($3 + 4095) / 4096) * 4; k += b < 4 ? 4 : b }
   END { if (bad) print "bad"; else printf "%.0f\n", k }' <<< "$listing")
 [[ $storage_k =~ ^[0-9]{1,18}$ ]] || { echo "restore: the sizes in $rel/storage.tar.gz cannot be read; refusing" >&2; exit 1; }
+# tar makes every parent directory a name has, listed or not: each path the extraction makes, once (names
+# normalised: ./, //, /./ and a trailing / do not make another), and the directories among them the archive leaves
+# out, a block each on top of the listing's
+read -r entries implied < <(LC_ALL=C awk '{ p = $0; gsub(/\/+/, "/", p); while (sub(/^\.\//, "", p)) ; while (sub(/\/\.\//, "/", p)) ;
+    sub(/\/\.?$/, "", p); if (p == "" || p == ".") next
+    listed[p] = 1; while (p != "" && !(p in seen)) { seen[p] = 1; n++; if (!sub(/\/[^\/]*$/, "", p)) break } }
+  END { for (p in seen) if (!(p in listed)) m++; print n + 0, m + 0 }' <<< "$names")
+storage_k=$((storage_k + implied * 4))
 [ "$storage_k" -le "$room" ] || refused about "$storage_k"
-# and each entry takes an inode: 10% of the volume's inodes stay free (a filesystem without a fixed count reports 0)
-entries=$(grep -c . <<< "$listing") || true
+# and each path takes an inode: 10% of the volume's inodes stay free (a filesystem without a fixed count reports 0)
 read -r itotal ifree < <(df -Pi "$storage" | awk 'NR == 2 { print $2, $4 }')
 if [[ $itotal =~ ^[1-9][0-9]{0,17}$ && $ifree =~ ^[0-9]{1,18}$ ]] && [ $((ifree - entries)) -lt $((itotal / 10)) ]; then
   echo "restore: REFUSED: $ifree inodes free on the volume of the project's data, this restore makes $entries entries and $((itotal / 10)) (10%) must stay free; free inodes first" >&2
@@ -147,18 +155,25 @@ cleanup() {
   exit "$rc"
 }
 trap cleanup EXIT
-# watched <stop> <writer...>: runs the writer in a process group of its own (setsid) and reads the free space every
-# second; at the floor <stop> runs (empty: none), the writer's group is killed and the restore ends with exit 6. The
-# cleanup trap then removes the temp dir and undoes the cron and ledger steps.
+# at_floor: the volume is at the floor, in space or (where it counts them) in inodes: 10% of them, as in step 1b
+at_floor() {
+  local t i
+  [ "$(df -Pk "$storage" | awk 'NR == 2 { print $4 }')" -gt "$need" ] || return 0
+  read -r t i < <(df -Pi "$storage" | awk 'NR == 2 { print $2, $4 }')
+  [[ $t =~ ^[1-9][0-9]{0,17}$ && $i =~ ^[0-9]{1,18}$ ]] && [ "$i" -le $((t / 10)) ]
+}
+# watched <stop> <writer...>: runs the writer in a process group of its own (setsid) and reads the free space and
+# inodes every second; at the floor <stop> runs (empty: none), the writer's group is killed and the restore ends with
+# exit 6. The cleanup trap then removes the temp dir and undoes the cron and ledger steps.
 watched() {
   local stop=$1 w rc=0; shift
   setsid "$@" & w=$!
   while kill -0 "$w" 2> /dev/null; do
-    if [ "$(df -Pk "$storage" | awk 'NR == 2 { print $4 }')" -le "$need" ]; then
+    if at_floor; then
       [ -z "$stop" ] || "$stop" || true
       kill -TERM -- "-$w" 2> /dev/null || kill -TERM "$w" 2> /dev/null || true
       wait "$w" 2> /dev/null || true
-      echo "restore: REFUSED: the volume of the project's data reached the floor; at least $((need / 1024)) MiB ($rule) must stay free; the restore was stopped and rolled back, nothing was changed; free space first" >&2
+      echo "restore: REFUSED: the volume of the project's data reached the floor; at least $((need / 1024)) MiB ($rule) and 10% of its inodes must stay free; the restore was stopped and rolled back, nothing was changed; free space first" >&2
       exit 6
     fi
     sleep 1
