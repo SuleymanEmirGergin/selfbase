@@ -51,7 +51,7 @@ platformTransfer.get('/projects/:ref/backups', async (c) => {
 platformTransfer.post('/projects/:ref/backups', async (c) => {
   const p = await projectFor(c, 'project.manage')
   await checkBackupRate(p.id)
-  await checkProjectBackup(p)
+  await checkProjectBackup(pool, p)
   return c.json({ job_id: await lifecycle(c, p, 'project.backup', CAN_BACKUP) }, 202)
 })
 
@@ -68,7 +68,7 @@ platformTransfer.post('/projects/:ref/export', async (c) => {
     throw new ApiError(400, 'weak_passphrase', `the passphrase must be at least ${MIN_PASSPHRASE} characters`)
   }
   await checkBackupRate(p.id)
-  await checkProjectBackup(p)
+  await checkProjectBackup(pool, p)
   const secrets = await getSecrets(pool, p)
   const rows = (await pool.query('select section, data from control.project_config where project_id = $1 order by section', [p.id])).rows
   const sealed = await sealManifest({ config: Object.fromEntries(rows.map((r) => [r.section, r.data])),
@@ -130,10 +130,12 @@ platformTransfer.post('/projects/import', async (c) => {
   }
   // rotate_keys: the job generates a new JWT secret and keys, and deletes the sessions the backup brought
   if (rotate === 'true') for (const k of ROTATED) delete secrets[k]
+  // a JWT secret generated here (none carried) is a rotation whatever the caller sent: the restored sessions go too
+  const rotating = !secrets.JWT_SECRET
   await checkBackupSpace()
   const { project, jobId } = await createProject(pool, { orgId: org.id, name, size, pool: 'project', createdBy: c.get('user').id,
     reuseSecrets: secrets, config: sections,
-    job: { type: 'project.import', status: 'RESTORING', payload: { backup_dir: dir, ...(rotate === 'true' ? { rotate_keys: true } : {}) } } })
+    job: { type: 'project.import', status: 'RESTORING', payload: { backup_dir: dir, ...(rotating ? { rotate_keys: true } : {}) } } })
   c.set('audit', { ...c.get('audit'), projectId: project.id, target: project.ref })
   return c.json({ project: platformProject({ ...project, org_slug: org.slug, certificate: 'pending' } as ProjectRow), job_id: jobId,
     ignored, unknown }, 202)

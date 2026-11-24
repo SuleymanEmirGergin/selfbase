@@ -235,6 +235,40 @@ describe('auth core', () => {
     expect((await refresh(b.refresh_token)).status).toBe(200)
   })
 
+  // S4: a refresh rotating while logout revokes. The test trigger holds the rotation open after it inserted the child
+  // token, so logout starts while the child is not committed yet; logout must still revoke it.
+  for (const scope of ['local', 'global'] as const) {
+    it(`S4: a token rotated concurrently with logout (scope=${scope}) is revoked too`, async () => {
+      const s = await signUp()
+      await pool.query(`create table if not exists public.s4_hold (session_id uuid primary key)`)
+      await pool.query(`create or replace function public.s4_hold() returns trigger language plpgsql as $$
+        begin if exists (select 1 from public.s4_hold where session_id = new.session_id) then perform pg_sleep(1.5); end if;
+        return new; end $$`)
+      await pool.query(`create or replace trigger s4_hold after insert on auth.refresh_tokens for each row
+        when (new.parent is not null) execute function public.s4_hold()`)
+      try {
+        await pool.query('insert into public.s4_hold values ($1)', [(await verify(s.access_token)).session_id])
+        const rotating = refresh(s.refresh_token)
+        // until the rotation sits in the trigger: old token revoked and child inserted, neither committed
+        for (let i = 0; !(await pool.query(`select 1 from pg_stat_activity where wait_event = 'PgSleep'
+          and query like '%insert into auth.refresh_tokens%'`)).rowCount; i++) {
+          if (i > 100) throw new Error('the rotation never reached the trigger')
+          await new Promise((r) => setTimeout(r, 20))
+        }
+        const out = call('POST', `/logout?scope=${scope}`, undefined, s.access_token)
+        const [r, o] = await Promise.all([rotating, out])
+        expect(o.status).toBe(204)
+        // the rotation may win or wait: either way nothing it handed out outlives the logout
+        if (r.status === 200) expect((await refresh((await r.json()).refresh_token)).status).toBe(400)
+        expect((await pool.query('select 1 from auth.refresh_tokens where user_id = $1 and not revoked', [s.user.id])).rowCount).toBe(0)
+      } finally {
+        await pool.query('drop trigger if exists s4_hold on auth.refresh_tokens')
+        await pool.query('drop function if exists public.s4_hold()')
+        await pool.query('drop table if exists public.s4_hold')
+      }
+    })
+  }
+
   it('a banned user can still log out: 204 and the session is revoked', async () => {
     const s = await signUp()
     await pool.query(`update auth.users set banned_until = now() + interval '1 day' where id = $1`, [s.user.id])

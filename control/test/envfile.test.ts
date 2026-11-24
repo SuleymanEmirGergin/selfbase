@@ -50,6 +50,16 @@ describe('parseV1Env', () => {
       ignored: ['SMTP_HOST', 'GOOGLE_TOKEN_URL'] })
   })
 
+  test('I3: allow-list keys (which hosts core may reach, whose addresses it trusts) are stripped from an import', () => {
+    const r = parseV1Env('OUTBOUND_ALLOW_HOSTS=192.0.2.1\nNETQUEUE_ALLOW_HOSTS=192.0.2.2\nTRUSTED_PROXY_IPS=192.0.2.3\nSMTP_USER=mailer\n')
+    expect(r.ignored).toEqual(['OUTBOUND_ALLOW_HOSTS', 'NETQUEUE_ALLOW_HOSTS', 'TRUSTED_PROXY_IPS'])
+    expect(r.unknown).toEqual([])
+    expect(r.config).toEqual({ SMTP_USER: 'mailer' })
+    const out = stripImported({ auth: { OUTBOUND_ALLOW_HOSTS: '192.0.2.1', NETQUEUE_ALLOW_HOSTS: '192.0.2.2', TRUSTED_PROXY_IPS: '192.0.2.3',
+      SMTP_USER: 'mailer' } })
+    expect(out).toEqual({ sections: { auth: { SMTP_USER: 'mailer' } }, ignored: ['OUTBOUND_ALLOW_HOSTS', 'NETQUEUE_ALLOW_HOSTS', 'TRUSTED_PROXY_IPS'] })
+  })
+
   test('S7: stripImported drops prototype and endpoint keys at every depth', () => {
     const sections = JSON.parse('{"auth":{"__proto__":{"SMTP_HOST":"attacker.example"},"X":{"constructor":1,"prototype":2,"SMTP_PORT":25,"k":"v"},'
       + '"L":[{"GOOGLE_TOKEN_URL":"https://attacker.example/token","ok":1}]}}')

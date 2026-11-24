@@ -33,7 +33,7 @@ beforeAll(async () => {
   await join(acme.id, dev.id, 'developer')
   await join(acme.id, reader.id, 'read_only')
   await join(other.id, stranger.id, 'owner')
-  p = await project(acme.id, { name: 'corteqs' })
+  p = await project(acme.id, { name: 'shop' })
   fake.running(p.ref, 'test')
 })
 afterAll(() => core.close())
@@ -71,7 +71,7 @@ describe('/v1/projects', () => {
   test('get has the Management API fields with neutral values', async () => {
     const res = await withToken(reader.token, 'GET', `/v1/projects/${p.ref}`)
     expect(await res.json()).toEqual({
-      id: p.ref, ref: p.ref, organization_id: 'acme', organization_slug: 'acme', name: 'corteqs', region: 'main',
+      id: p.ref, ref: p.ref, organization_id: 'acme', organization_slug: 'acme', name: 'shop', region: 'main',
       status: 'ACTIVE_HEALTHY', created_at: expect.any(String),
       database: { host: 'db', version: '17', postgres_engine: '17', release_channel: 'ga' }, smtp_configured: false,
     })

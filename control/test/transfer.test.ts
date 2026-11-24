@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -11,15 +12,17 @@ import { createProject, enqueue, startWorkers } from '../src/jobs/index.ts'
 import { openManifest, sealManifest } from '../src/manifest.ts'
 import { ProvisionerError, setProvisioner } from '../src/provisioner.ts'
 import { reconcileOnce } from '../src/reconcile.ts'
-import { enqueueDailyBackups, msUntilNext } from '../src/schedule.ts'
+import { enqueueDailyBackups, enqueueExportPrunes, msUntilNext } from '../src/schedule.ts'
 import { backfillFingerprints, fingerprint, getSecrets, putSecret } from '../src/secrets.ts'
 import { forwardTarget } from '../src/forward.ts'
-import { disk } from '../src/disk.ts'
+import { disk, SIZE_SQL } from '../src/disk.ts'
 import { buildEnv, loadProjectEnv, projectConfig, SECRET_ENV } from '../src/project-env.ts'
 import { FakeProvisioner } from './fake-provisioner.ts'
 import { join, org, project, resetDashboard, user, v1Env, withToken } from './helpers.ts'
 
 const FOUR = ['core', 'rest', 'fn', 'pooler']
+// what restore.sh prints when ROTATE_KEYS=1 deleted the restored sessions
+const ROTATED_TAIL = 'restore: database restored\nrestore: the restored sessions are deleted (ROTATE_KEYS)\nrestore: storage restored\n'
 let fake: FakeProvisioner
 let acme: { id: string; slug: string }
 let owner: Awaited<ReturnType<typeof user>>
@@ -28,11 +31,14 @@ let cert: 'ok' | 'pending' = 'ok'
 const running: { stop(): Promise<void> }[] = []
 // core's API and admin listeners in one: records what the admin listener was sent
 const adminSeen: { url: string; body: string }[] = []
+// a hung core: the size query gets no answer until the test ends it
+const hung: { on: boolean; held: import('node:http').ServerResponse[] } = { on: false, held: [] }
 const stub = createServer(async (req, res) => {
   let body = ''
   for await (const chunk of req) body += chunk
   if (req.url?.startsWith('/admin/')) adminSeen.push({ url: req.url, body })
   const sized = req.url === '/admin/sql' && body.includes('pg_database_size')
+  if (sized && hung.on) return void hung.held.push(res)
   res.writeHead(200, { 'content-type': 'application/json' }).end(sized ? '{"columns":["bytes"],"rows":[["1000"]]}' : '{}')
 })
 const workers = (waits: Record<string, number> = {}) => {
@@ -64,7 +70,7 @@ const postForm = (token: string, f: FormData | ReadableStream, headers: Record<s
     ...(f instanceof ReadableStream ? { duplex: 'half' } : {}) } as RequestInit)
 const envBlob = (text: string) => new Blob([text], { type: 'text/plain' })
 const importFields = (over: Record<string, string | Blob> = {}) =>
-  ({ organization_slug: 'acme', name: 'imported', size: 'micro', backup_dir: 'import/acme/corteqs-v1', ...over })
+  ({ organization_slug: 'acme', name: 'imported', size: 'micro', backup_dir: 'import/acme/v1-dump', ...over })
 // helpers' project() has a default domain but no host slot; ensure needs one
 const slotted = async (o: Parameters<typeof project>[1]) => {
   const p = await project(acme.id, o)
@@ -121,7 +127,7 @@ describe('import', () => {
     expect(out.ignored).toEqual(expect.arrayContaining(['POSTGRES_PASSWORD', 'PANEL_ADMIN_PASSWORD_HASH']))
     const p = (await pool.query('select * from control.projects where ref = $1', [out.project.ref])).rows[0]
     expect((await pool.query('select type, payload from control.jobs where id = $1', [out.job_id])).rows[0])
-      .toEqual({ type: 'project.import', payload: { backup_dir: 'import/acme/corteqs-v1' } })
+      .toEqual({ type: 'project.import', payload: { backup_dir: 'import/acme/v1-dump', job_version: 2 } })
 
     workers()
     expect((await finished(out.job_id)).status).toBe('succeeded')
@@ -130,7 +136,7 @@ describe('import', () => {
     expect(fake.callsOf('stop')[0].args).toEqual([p.ref, FOUR])
     expect(fake.callsOf('start')[0].args).toEqual([p.ref, FOUR])
     const [ref, type, args, env] = fake.callsOf('runJob')[0].args
-    expect([ref, type, args]).toEqual([p.ref, 'restore', { dir: 'import/acme/corteqs-v1' }])
+    expect([ref, type, args]).toEqual([p.ref, 'restore', { dir: 'import/acme/v1-dump' }])
     const s = await getSecrets(pool, p)
     expect(env).toEqual({ PGHOST: 'db', PGPASSWORD: s.POSTGRES_PASSWORD })
     expect((await row(p.id)).status).toBe('ACTIVE_HEALTHY')
@@ -290,15 +296,16 @@ describe('S1: an import never shares live keys', () => {
     expect((await postForm(owner.token, fields())).status).toBe(202)
   })
 
-  test('rotate_keys: new JWT secret and keys, third-party secrets kept, sessions of the restored database deleted', async () => {
+  test('rotate_keys: new JWT secret and keys, third-party secrets kept, the restore job told to delete the sessions', async () => {
     const { text, vals } = v1Env({ JWT_SECRET: 'rotated-jwt-secret-value-0123456789abcdef' })
     expect((await postForm(owner.token, form({ ...importFields({ name: 'rot-1' }), env_file: envBlob(text) }))).status).toBe(202)
     const res = await postForm(owner.token, form({ ...importFields({ name: 'rot-2' }), env_file: envBlob(text), rotate_keys: 'true' }))
     expect(res.status).toBe(202)
     const out = await res.json()
     expect((await pool.query('select payload from control.jobs where id = $1', [out.job_id])).rows[0].payload)
-      .toEqual({ backup_dir: 'import/acme/corteqs-v1', rotate_keys: true })
+      .toEqual({ backup_dir: 'import/acme/v1-dump', rotate_keys: true, job_version: 2 })
     adminSeen.length = 0
+    fake.jobResult = () => ({ status: 'succeeded', exitCode: 0, tail: ROTATED_TAIL })
     workers()
     expect((await finished(out.job_id)).status).toBe('succeeded')
     const p = (await pool.query('select * from control.projects where ref = $1', [out.project.ref])).rows[0]
@@ -306,16 +313,10 @@ describe('S1: an import never shares live keys', () => {
     expect(s.JWT_SECRET).toBeTruthy()
     for (const k of ['JWT_SECRET', 'ANON_KEY', 'SERVICE_ROLE_KEY']) expect(s[k], k).not.toBe(vals[k])
     expect(s).toMatchObject({ SMTP_PASS: vals.SMTP_PASS, GOOGLE_CLIENT_SECRET: vals.GOOGLE_CLIENT_SECRET })
-    const sql = adminSeen.filter((r) => r.url === '/admin/sql')
-    expect(sql).toHaveLength(1)
-    const query = JSON.parse(sql[0].body).query as string
-    expect(query).toMatch(/delete from auth\.refresh_tokens/)
-    expect(query).toMatch(/auth\.sessions/)
-    // the sessions go before the project is warmed and activated
-    const steps = (await pool.query(`select step from control.job_events where job_id = $1 and status = 'succeeded' order by id`, [out.job_id]))
-      .rows.map((r) => r.step)
-    expect(steps.indexOf('sessions')).toBeGreaterThan(steps.indexOf('started'))
-    expect(steps.indexOf('sessions')).toBeLessThan(steps.indexOf('warm'))
+    // the restore job deletes them while core is stopped: control sends no SQL of its own
+    const env = fake.callsOf('runJob').find((c) => c.args[0] === p.ref)!.args[3]
+    expect({ ...env, PGPASSWORD: env.PGPASSWORD === s.POSTGRES_PASSWORD }).toEqual({ PGHOST: 'db', PGPASSWORD: true, ROTATE_KEYS: '1' })
+    expect(adminSeen.filter((r) => r.url === '/admin/sql')).toEqual([])
   })
 
   test('rotate_keys must be true or false', async () => {
@@ -329,6 +330,7 @@ describe('S1: an import never shares live keys', () => {
     workers()
     expect((await finished(out.job_id)).status).toBe('succeeded')
     expect(adminSeen.filter((r) => r.url === '/admin/sql')).toEqual([])
+    expect(fake.callsOf('runJob')[0].args[3]).not.toHaveProperty('ROTATE_KEYS')
   })
 
   test('the fingerprint is an HMAC under the master key, stored at create; backfill fills rows written before it', async () => {
@@ -355,7 +357,7 @@ describe('backup_dir belongs to the caller', () => {
       return { status: res.status, body: await res.json() }
     }
     const unknownRef = 'zzzzzzzzzzzzzzzzzzzz'
-    const refused404 = [`${theirs.ref}/20261121-031500`, `export-${theirs.ref}/20261121-031500`, 'import/other/corteqs-v1',
+    const refused404 = [`${theirs.ref}/20261121-031500`, `export-${theirs.ref}/20261121-031500`, 'import/other/v1-dump',
       `${unknownRef}/20261121-031500`, `export-${unknownRef}/20261121-031500`, 'import/nope/x']
     const bodies = []
     for (const d of refused404) {
@@ -370,7 +372,7 @@ describe('backup_dir belongs to the caller', () => {
       expect(r.status, d).toBe(400)
       expect(r.body.error).toBe('invalid_backup_dir')
     }
-    for (const d of [`${mine.ref}/20261121-031500`, `export-${mine.ref}/20261121-031500`, `${gone.ref}/20261121-031500`, 'import/acme/corteqs-v1']) {
+    for (const d of [`${mine.ref}/20261121-031500`, `export-${mine.ref}/20261121-031500`, `${gone.ref}/20261121-031500`, 'import/acme/v1-dump']) {
       expect((await status(d)).status, d).toBe(202)
     }
   })
@@ -401,7 +403,8 @@ describe('backup and export', () => {
     workers()
     expect((await finished(job_id)).status).toBe('succeeded')
     expect(fake.callsOf('runJob')[0].args).toEqual([p.ref, 'backup', {},
-      { PGHOST: 'db', PGPASSWORD: p.secrets.POSTGRES_PASSWORD, BACKUP_SUBDIR: p.ref, BACKUP_RETENTION_DAYS: String(config.backupRetentionDays) }])
+      { PGHOST: 'db', PGPASSWORD: p.secrets.POSTGRES_PASSWORD, BACKUP_SUBDIR: p.ref, BACKUP_RETENTION_DAYS: String(config.backupRetentionDays),
+        EXPORT_RETENTION_DAYS: String(config.exportRetentionDays), BACKUP_MAX_COUNT: String(config.backupMaxCount) }])
     const list = await (await withToken(dev.token, 'GET', `/platform/projects/${p.ref}/backups`)).json()
     expect(list).toEqual([expect.objectContaining({ kind: 'logical', status: 'succeeded', size_bytes: 1234,
       location: `${p.ref}/20261122-031500`, started_at: expect.any(String), finished_at: expect.any(String) })])
@@ -449,7 +452,8 @@ describe('backup and export', () => {
     expect((await finished(job_id)).status).toBe('succeeded')
     const [ref, type, args, env] = fake.callsOf('runJob')[0].args
     expect([ref, type, args]).toEqual([p.ref, 'backup', {}])
-    expect(env).toMatchObject({ PGHOST: 'db', PGPASSWORD: p.secrets.POSTGRES_PASSWORD, BACKUP_SUBDIR: `export-${p.ref}` })
+    expect(env).toMatchObject({ PGHOST: 'db', PGPASSWORD: p.secrets.POSTGRES_PASSWORD, BACKUP_SUBDIR: `export-${p.ref}`,
+      EXPORT_RETENTION_DAYS: String(config.exportRetentionDays), BACKUP_MAX_COUNT: String(config.backupMaxCount) })
     const opened = await openManifest(env.MANIFEST_B64, pass)
     expect(opened.secrets).toEqual({ JWT_SECRET: p.secrets.JWT_SECRET, ANON_KEY: p.secrets.ANON_KEY, SERVICE_ROLE_KEY: p.secrets.SERVICE_ROLE_KEY })
     expect(opened.config).toEqual({ auth: { SITE_URL: 'https://e.example' } })
@@ -480,7 +484,8 @@ describe('backup and export', () => {
     workers()
     expect((await finished(id)).status).toBe('succeeded')
     expect(fake.callsOf('runJob')[0].args).toEqual(['control', 'backup', {},
-      { PGHOST: config.dbHost, PGPASSWORD: config.dbPassword, BACKUP_SUBDIR: 'control', BACKUP_RETENTION_DAYS: String(config.backupRetentionDays) }])
+      { PGHOST: config.dbHost, PGPASSWORD: config.dbPassword, BACKUP_SUBDIR: 'control', BACKUP_RETENTION_DAYS: String(config.backupRetentionDays),
+        EXPORT_RETENTION_DAYS: String(config.exportRetentionDays), BACKUP_MAX_COUNT: String(config.backupMaxCount) }])
   })
 
   test('a jobStatus timeout fails the job at once: the result is not read again', async () => {
@@ -613,6 +618,39 @@ describe('carries', () => {
     expect(job.attempts).toBe(1)
     expect(job.error).toMatch(/env could not be rendered/)
   })
+
+  // the provisioner refuses to rebuild an old network while a job container is still on it (R1/R6): that passes
+  const busy = () => new ProvisionerError('network_busy', 'sb-x-job is on sb-x; retry when it is gone', 409)
+  const retries = async (id: string) => (await pool.query(`select count(*)::int as n from control.job_events where job_id = $1
+    and status = 'retry'`, [id])).rows[0].n
+
+  test('I3: 409 network_busy from ensure is retried, and the job goes on once the network is free', async () => {
+    const p = await slotted({ name: 'busy-once', status: 'INACTIVE' })
+    let left = 2
+    const real = fake.ensure.bind(fake)
+    fake.ensure = async (input) => { if (left-- > 0) throw busy(); return real(input) }
+    const id = await enqueue(pool, { type: 'project.restore', projectId: p.id, payload: {}, createdBy: null })
+    workers()
+    expect((await finished(id)).status).toBe('succeeded')
+    expect(await retries(id)).toBe(2)
+    expect(fake.callsOf('ensure')).toHaveLength(1)
+  })
+
+  test('I3: network_busy on every try fails the job after the bounded retries, saying why; never a success', async () => {
+    const restore = await slotted({ name: 'busy-restore', status: 'INACTIVE' })
+    const applied = await slotted({ name: 'busy-apply' })
+    fake.ensure = async () => { throw busy() }
+    const ids = [await enqueue(pool, { type: 'project.restore', projectId: restore.id, payload: {}, createdBy: null }),
+      await enqueue(pool, { type: 'project.apply', projectId: applied.id, payload: {}, createdBy: null })]
+    workers()
+    for (const id of ids) {
+      const job = await finished(id)
+      expect(job).toMatchObject({ status: 'failed', attempts: 3 })
+      expect(job.error).toMatch(/sb-x-job is on sb-x; retry when it is gone/)
+    }
+    expect((await row(restore.id)).status).toBe('RESTORE_FAILED')
+    expect((await row(applied.id)).status).toBe('ACTIVE_UNHEALTHY')
+  })
 })
 
 describe('S8: backups cannot fill the backup volume', () => {
@@ -689,16 +727,23 @@ describe('fix round 2', () => {
   const GiB = 2 ** 30
   afterEach(() => { vi.restoreAllMocks() })
 
-  test('S1: with rotate_keys, core never runs on the restored database with the stored JWT secret before its sessions are gone', async () => {
+  test('I1: with rotate_keys no core starts before the restore job ended the sessions; then a plain start with the stored keys', async () => {
     const order: string[] = []
-    const ensure = fake.ensure.bind(fake)
-    const start = fake.start.bind(fake)
-    const runJob = fake.runJob.bind(fake)
-    fake.ensure = async (input) => { order.push(`ensure:${input.env.JWT_SECRET}`); return ensure(input) }
-    fake.start = async (ref, services) => { order.push('start'); return start(ref, services) }
-    fake.runJob = async (ref, type, args, env) => { order.push(`job:${type}`); return runJob(ref, type, args, env) }
-    const push = adminSeen.push.bind(adminSeen)
-    adminSeen.push = (...r) => { order.push(`admin:${r[0].url}`); return push(...r) }
+    const saved = { ensure: fake.ensure, start: fake.start, runJob: fake.runJob, jobStatus: fake.jobStatus }
+    let polls = 0
+    adminSeen.length = 0
+    // a digest of the secret: never the value in a failure message
+    const tag = (secret: string) => `ensure:${createHash('sha256').update(secret).digest('hex').slice(0, 8)}`
+    fake.ensure = async (input) => { order.push(tag(input.env.JWT_SECRET)); return saved.ensure.call(fake, input) }
+    fake.start = async (ref, services) => { order.push('start'); return saved.start.call(fake, ref, services) }
+    fake.runJob = async (ref, type, args, env) => { order.push(`job:${type}:${env.ROTATE_KEYS ?? '-'}`); return saved.runJob.call(fake, ref, type, args, env) }
+    // the restore runs for two polls, then succeeds
+    fake.jobStatus = async (ref, type) => {
+      await saved.jobStatus.call(fake, ref, type)
+      const done = ++polls > 2
+      order.push(done ? 'restored' : 'restoring')
+      return done ? { status: 'succeeded', exitCode: 0, tail: ROTATED_TAIL } : { status: 'running', exitCode: null, tail: '' }
+    }
     try {
       const res = await postForm(owner.token, form({ ...importFields({ name: 'rot-window' }), env_file: envBlob(v1Env().text), rotate_keys: 'true' }))
       expect(res.status).toBe(202)
@@ -706,22 +751,109 @@ describe('fix round 2', () => {
       workers()
       expect((await finished(out.job_id)).status).toBe('succeeded')
       const p = (await pool.query('select * from control.projects where ref = $1', [out.project.ref])).rows[0]
-      const stored = `ensure:${(await getSecrets(pool, p)).JWT_SECRET}`
-      const restore = order.indexOf('job:restore')
-      const deleted = order.indexOf('admin:/admin/sql')
-      expect(restore).toBeGreaterThan(-1)
-      expect(deleted).toBeGreaterThan(restore)
-      // between the restore and the deletes: no start with the stored env, no ensure with the stored secret
-      const between = order.slice(restore + 1, deleted)
-      expect(between.length).toBeGreaterThan(0)
-      expect(between.filter((e) => e === 'start' || e === stored)).toEqual([])
-      // and the throwaway secret core ran with meanwhile is never used again
-      const throwaway = between.find((e) => e.startsWith('ensure:'))!
-      expect(order.slice(deleted)).not.toContain(throwaway)
-      expect(order.slice(deleted)).toContain(stored)
+      const stored = tag((await getSecrets(pool, p)).JWT_SECRET)
+      // the empty project comes up with the stored keys, the restore job deletes the sessions, then the plain start
+      expect(order).toEqual([stored, 'job:restore:1', 'restoring', 'restoring', 'restored', 'start'])
+      expect(adminSeen.filter((r) => r.url === '/admin/sql')).toEqual([])
     } finally {
-      adminSeen.push = push
+      Object.assign(fake, saved)
     }
+  })
+
+  test('I1: a rotating restore that could not delete the sessions (exit 5) never starts the project', async () => {
+    fake.jobResult = () => ({ status: 'failed', exitCode: 5, tail: 'restore: FAILED: the DATABASE WAS RESTORED' })
+    const out = await (await postForm(owner.token, form({ ...importFields({ name: 'rot-kept' }), env_file: envBlob(v1Env().text),
+      rotate_keys: 'true' }))).json()
+    workers()
+    const job = await finished(out.job_id)
+    expect(job).toMatchObject({ status: 'failed', error: expect.stringMatching(/sessions .*could not be deleted.*delete this project, then import again/) })
+    expect(fake.callsOf('start')).toEqual([])
+  })
+
+  test('I1: a rotating restore whose job does not confirm the deletes (an older job image) never starts the project', async () => {
+    const out = await (await postForm(owner.token, form({ ...importFields({ name: 'rot-old-image' }), env_file: envBlob(v1Env().text),
+      rotate_keys: 'true' }))).json()
+    workers()
+    const job = await finished(out.job_id)
+    expect(job).toMatchObject({ status: 'failed', error: expect.stringMatching(/did not confirm .*sessions.*delete this project, then import again/) })
+    expect(fake.callsOf('start')).toEqual([])
+  })
+
+  test('I1: an import an earlier control left in flight after its restore (the old rekey steps) fails instead of starting', async () => {
+    const p = await project(acme.id, { name: 'rot-inflight', status: 'RESTORING' })
+    // the old job had 16 steps: at index 8 it had started core on the throwaway secret and was waiting for it ('started')
+    const id = (await pool.query(`insert into control.jobs (type, lane, project_id, step, status, payload)
+      values ('project.import', 'heavy', $1, '8', 'running', $2) returning id`, [p.id, { backup_dir: 'import/acme/v1-dump', rotate_keys: true }])).rows[0].id
+    workers()
+    expect(await finished(id)).toMatchObject({ status: 'failed', error: expect.stringMatching(/earlier version of control.*delete this project, then import again/) })
+    expect(fake.calls.filter((c) => ['ensure', 'start'].includes(c.method))).toEqual([])
+    expect((await row(p.id)).status).toBe('INIT_FAILED')
+  })
+
+  // review Important 1: the job record, not the job's error message, decides whether a rotating import may start
+  const pauseRestore = async (ref: string) => {
+    const paused = await finished((await (await withToken(owner.token, 'POST', `/platform/projects/${ref}/pause`)).json()).job_id)
+    expect(paused.status).toBe('succeeded')
+    const r = await withToken(owner.token, 'POST', `/platform/projects/${ref}/restore`)
+    expect(r.status).toBe(202)
+    return finished((await r.json()).job_id)
+  }
+
+  test('R1: a rotating import that failed before its sessions were confirmed deleted: pause then restore is refused and starts nothing', async () => {
+    fake.jobResult = () => ({ status: 'failed', exitCode: 5, tail: 'restore: FAILED: the DATABASE WAS RESTORED' })
+    const out = await (await postForm(owner.token, form({ ...importFields({ name: 'rot-reopen' }), env_file: envBlob(v1Env().text),
+      rotate_keys: 'true' }))).json()
+    workers()
+    expect((await finished(out.job_id)).status).toBe('failed')
+    const p = (await pool.query('select * from control.projects where ref = $1', [out.project.ref])).rows[0]
+    expect(p.status).toBe('INIT_FAILED')
+    const ensures = fake.callsOf('ensure').length
+    expect(await pauseRestore(p.ref)).toMatchObject({ status: 'failed',
+      error: expect.stringMatching(/rotate_keys.*sessions.*delete this project, then import again/) })
+    expect(fake.callsOf('ensure').length).toBe(ensures)
+    expect(fake.callsOf('start')).toEqual([])
+    expect((await row(p.id)).status).toBe('RESTORE_FAILED')
+  })
+
+  test('R1: a rotating import that failed after its sessions were confirmed deleted may be paused and restored', async () => {
+    fake.jobResult = () => ({ status: 'succeeded', exitCode: 0, tail: ROTATED_TAIL })
+    fake.fail('start', 3)
+    const out = await (await postForm(owner.token, form({ ...importFields({ name: 'rot-reopen-ok' }), env_file: envBlob(v1Env().text),
+      rotate_keys: 'true' }))).json()
+    workers()
+    expect(await finished(out.job_id)).toMatchObject({ status: 'failed', error: expect.stringMatching(/fake start failure/) })
+    const ensures = fake.callsOf('ensure').length
+    expect((await pauseRestore(out.project.ref)).status).toBe('succeeded')
+    expect(fake.callsOf('ensure').length).toBe(ensures + 1)
+  })
+
+  test('FR2: a plain import whose env file carries no JWT secret gets new keys, so its restore deletes the sessions too', async () => {
+    const text = v1Env().text.split('\n').filter((l) => !/^(JWT_SECRET|ANON_KEY|SERVICE_ROLE_KEY)=/.test(l)).join('\n')
+    fake.jobResult = () => ({ status: 'succeeded', exitCode: 0, tail: ROTATED_TAIL })
+    const res = await postForm(owner.token, form({ ...importFields({ name: 'fresh-keys' }), env_file: envBlob(text) }))
+    expect(res.status).toBe(202)
+    const out = await res.json()
+    workers()
+    expect((await finished(out.job_id)).status).toBe('succeeded')
+    expect(fake.callsOf('runJob').find((c) => c.args[1] === 'restore')?.args[3].ROTATE_KEYS).toBe('1')
+    expect((await pool.query('select payload from control.jobs where id = $1', [out.job_id])).rows[0].payload.rotate_keys).toBe(true)
+  })
+
+  test('FR2: a plain import that carries its keys stays plain (no ROTATE_KEYS)', async () => {
+    const out = await (await postForm(owner.token, form({ ...importFields({ name: 'kept-keys' }), env_file: envBlob(v1Env().text) }))).json()
+    workers()
+    expect((await finished(out.job_id)).status).toBe('succeeded')
+    expect(fake.callsOf('runJob').find((c) => c.args[1] === 'restore')?.args[3].ROTATE_KEYS).toBeUndefined()
+  })
+
+  test('R1: an import an earlier control left in flight fails with core, rest, fn and pooler stopped (it may have started core on the throwaway secret)', async () => {
+    const p = await project(acme.id, { name: 'rot-inflight-stop', status: 'RESTORING' })
+    const id = (await pool.query(`insert into control.jobs (type, lane, project_id, step, status, payload)
+      values ('project.import', 'heavy', $1, '8', 'running', $2) returning id`, [p.id, { backup_dir: 'import/acme/v1-dump', rotate_keys: true }])).rows[0].id
+    workers()
+    expect((await finished(id)).status).toBe('failed')
+    expect(fake.callsOf('stop').map((c) => c.args)).toEqual([[p.ref, ['core', 'rest', 'fn', 'pooler']]])
+    expect(fake.calls.filter((c) => ['ensure', 'start'].includes(c.method))).toEqual([])
   })
 
   test('S7: a manifest whose config.auth.__proto__ carries endpoints installs none of them', async () => {
@@ -789,5 +921,147 @@ describe('fix round 2', () => {
     expect(jobs.filter((j) => j.status === 'pending')).toHaveLength(1)
     expect(jobs.length).toBeGreaterThan(1)
     for (const j of jobs.filter((j) => j.status !== 'pending')) expect(j).toMatchObject({ status: 'failed', error: expect.stringMatching(/GiB/) })
+  })
+})
+
+describe('I2: backups are sized in the job, from what the dump reads', () => {
+  const GiB = 2 ** 30
+  afterEach(() => {
+    vi.restoreAllMocks()
+    hung.on = false
+    for (const r of hung.held.splice(0)) r.destroy()
+  })
+  const lastSize = (projectId: string, bytes: number) => pool.query(`insert into control.backups (project_id, kind, status, started_at,
+    finished_at, size_bytes, location) values ($1, 'logical', 'succeeded', now(), now(), $2, 'x/20261122-031500')`, [projectId, bytes])
+
+  test('zeroed, negative or missing storage metadata never lowers the size below the database', async () => {
+    const c = await pool.connect()
+    try {
+      await c.query('begin')
+      await c.query(`insert into storage.buckets (id, name) values ('i2', 'i2')`)
+      await c.query(`insert into storage.objects (bucket_id, name, metadata) values ('i2', 'neg', '{"size": -1000000000000000}'),
+        ('i2', 'zero', '{"size": 0}'), ('i2', 'none', '{}'), ('i2', 'real', '{"size": 5}')`)
+      const [size, db] = (await c.query(`select (${SIZE_SQL})::bigint as size, pg_database_size(current_database()) as db`)).rows.map((r) => [Number(r.size), Number(r.db)])[0]
+      expect(size).toBe(db + 5)
+    } finally {
+      await c.query('rollback')
+      c.release()
+    }
+  })
+
+  test('a project whose core is down is admitted with its last known size; refused only when no size is known', async () => {
+    const p = await project(acme.id, { name: 'i2-down', status: 'ACTIVE_UNHEALTHY' })
+    vi.spyOn(disk, 'space').mockResolvedValue({ free: 20 * GiB, total: 100 * GiB })
+    vi.spyOn(disk, 'projectBytes').mockRejectedValue(new Error('core down'))
+    const none = await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/backups`)
+    expect(none.status).toBe(503)
+    expect(await none.json()).toMatchObject({ error: 'project_size_unknown' })
+    // the newest succeeded backup's size stands in: too big for the headroom, then small enough
+    await lastSize(p.id, 12 * GiB)
+    expect((await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/backups`)).status).toBe(507)
+    await lastSize(p.id, 1 * GiB)
+    expect((await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/backups`)).status).toBe(202)
+  })
+
+  test('the nightly run sizes each project with a short timeout; a hung core neither stalls the others nor loses its backup', async () => {
+    await pool.query(`delete from control.jobs where type in ('project.backup', 'control.backup')`)
+    await pool.query(`update control.projects set status = 'REMOVED' where status = any($1)`, [['ACTIVE_HEALTHY', 'ACTIVE_UNHEALTHY', 'COMING_UP']])
+    const known = await project(acme.id, { name: 'i2-night-known' })
+    const unknown = await project(acme.id, { name: 'i2-night-unknown' })
+    await lastSize(known.id, 1 * GiB)
+    vi.spyOn(disk, 'space').mockResolvedValue({ free: 20 * GiB, total: 100 * GiB })
+    hung.on = true
+    const ms = disk.sizeMs
+    disk.sizeMs = 200
+    try {
+      const t = Date.now()
+      await enqueueDailyBackups(pool)
+      expect(Date.now() - t).toBeLessThan(5000)
+    } finally {
+      disk.sizeMs = ms
+    }
+    const jobOf = async (id: string) => (await pool.query(`select status, error from control.jobs where project_id = $1 and type = 'project.backup'`, [id])).rows
+    expect(await jobOf(known.id)).toEqual([{ status: 'pending', error: null }])
+    expect(await jobOf(unknown.id)).toEqual([{ status: 'failed', error: expect.stringMatching(/size could not be read/) }])
+  })
+
+  test('the job refusing for space (exit 4) fails as backup_volume_full with the numbers', async () => {
+    const p = await project(acme.id, { name: 'i2-refused' })
+    fake.jobResult = () => ({ status: 'failed', exitCode: 4,
+      tail: 'backup: REFUSED: 900 MiB free on the backup volume, at least 100 MiB (BACKUP_MIN_FREE_MIB) needed after this backup of up to 850 MiB; free space first\n' })
+    const { job_id } = await (await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/backups`)).json()
+    workers()
+    const job = await finished(job_id)
+    expect(job).toMatchObject({ status: 'failed', attempts: 1 })
+    expect(job.error).toBe('backup_volume_full: the backup volume has 900 MiB free; this backup needs up to 850 MiB and 100 MiB '
+      + '(BACKUP_MIN_FREE_MIB) must stay free. Remove old backups or exports, or grow the volume, then try again.')
+    expect((await row(p.id)).status).toBe('ACTIVE_HEALTHY')
+  })
+
+  test("BACKUP_MIN_FREE_MIB, the jobs' floor, is control's floor too", async () => {
+    const p = await project(acme.id, { name: 'i2-floor' })
+    vi.spyOn(disk, 'space').mockResolvedValue({ free: 1 * GiB, total: 4 * GiB })
+    vi.spyOn(disk, 'projectBytes').mockResolvedValue(0.5 * GiB)
+    expect((await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/backups`)).status).toBe(507)
+    const saved = config.backupMinFreeMib
+    config.backupMinFreeMib = 100
+    try {
+      expect((await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/backups`)).status).toBe(202)
+    } finally {
+      config.backupMinFreeMib = saved
+    }
+  })
+})
+
+describe("I3: exports past their window leave the disk, a deleted project's too", () => {
+  const stamp = (daysAgo: number) => new Date(Date.now() - daysAgo * 86_400_000).toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15)
+  const exportDir = (ref: string, ts: string) => mkdirSync(joinPath(dir, `export-${ref}`, ts), { recursive: true })
+  afterEach(async () => { await pool.query(`delete from control.jobs where type = 'project.prune'`) })
+
+  test('the nightly prune queues a prune-only job for each project with an expired export, any status', async () => {
+    const gone = await project(acme.id, { name: 'prune-gone', status: 'REMOVED' })
+    const stale = await project(acme.id, { name: 'prune-stale' })
+    const fresh = await project(acme.id, { name: 'prune-fresh' })
+    const none = await project(acme.id, { name: 'prune-none', status: 'REMOVED' })
+    exportDir(gone.ref, stamp(30))
+    exportDir(gone.ref, stamp(1))
+    exportDir(stale.ref, stamp(config.exportRetentionDays + 1))
+    exportDir(fresh.ref, stamp(1))
+    await enqueueExportPrunes(pool)
+    // a second night while they are queued: nothing twice
+    await enqueueExportPrunes(pool)
+    const jobs = (await pool.query(`select project_id from control.jobs where type = 'project.prune'`)).rows.map((r) => r.project_id)
+    expect(jobs.sort()).toEqual([gone.id, stale.id].sort())
+    expect(jobs).not.toContain(fresh.id)
+    expect(jobs).not.toContain(none.id)
+  })
+
+  test('the job prunes export-<ref> only, with the retention settings, and drops the rows of what it deleted', async () => {
+    const gone = await project(acme.id, { name: 'prune-run', status: 'REMOVED' })
+    const old = `export-${gone.ref}/${stamp(30)}`
+    const kept = `export-${gone.ref}/${stamp(1)}`
+    for (const location of [old, kept]) {
+      await pool.query(`insert into control.backups (project_id, kind, status, started_at, finished_at, location)
+        values ($1, 'logical', 'succeeded', now(), now(), $2)`, [gone.id, location])
+    }
+    fake.jobResult = (ref) => ({ status: 'succeeded', exitCode: 0, tail: `backup: deleted ${old} (older than 7 days)\nbackup: pruned export-${ref}\n` })
+    const id = await enqueue(pool, { type: 'project.prune', projectId: gone.id, payload: {}, createdBy: null })
+    workers()
+    expect((await finished(id)).status).toBe('succeeded')
+    // no database password: the job reaches no database
+    expect(fake.callsOf('runJob')[0].args).toEqual([gone.ref, 'backup', {}, { BACKUP_SUBDIR: `export-${gone.ref}`, BACKUP_PRUNE_ONLY: '1',
+      BACKUP_RETENTION_DAYS: String(config.backupRetentionDays), EXPORT_RETENTION_DAYS: String(config.exportRetentionDays),
+      BACKUP_MAX_COUNT: String(config.backupMaxCount) }])
+    expect((await pool.query('select location from control.backups where project_id = $1', [gone.id])).rows).toEqual([{ location: kept }])
+  })
+
+  test("another job's result is never taken for the prune's", async () => {
+    const gone = await project(acme.id, { name: 'prune-crossed', status: 'REMOVED' })
+    fake.jobResult = (ref) => ({ status: 'succeeded', exitCode: 0, tail: `backup: size 7 bytes\nbackup: wrote ${ref}/20261122-031500\n` })
+    const id = await enqueue(pool, { type: 'project.prune', projectId: gone.id, payload: {}, createdBy: null })
+    workers()
+    const job = await finished(id)
+    expect(job.status).toBe('failed')
+    expect(job.error).toMatch(/did not confirm/)
   })
 })

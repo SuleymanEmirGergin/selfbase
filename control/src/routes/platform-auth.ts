@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto'
 import { pool } from '../db.ts'
 import type { Db } from '../db.ts'
 import { resetPasswordUrl } from '../core-env.ts'
-import { coreAuth, hashPassword, revokeSession, verify } from '../core.ts'
+import { coreAuth, hashPassword, revokeSession, revokeUserSessions, verify } from '../core.ts'
 import { ApiError } from '../errors.ts'
 import { newAccessToken } from '../ids.ts'
 import { ACCESS_COOKIE, REFRESH_COOKIE, checkOrigin, clearSessionCookies, endIfExpired, sessionOfRefresh, setSessionCookies } from '../session.ts'
@@ -136,10 +136,8 @@ platformAuth.put('/auth/v1/user', async (c) => {
   const res = await passOn(await callCore(c, 'PUT', '/user', { body: JSON.stringify({ password: b.password }), bearer }))
   // core accepted the bearer, so its claims are valid
   const claims = await verify(bearer!.replace(/^Bearer\s+/i, ''))
-  await pool.query(
-    `update auth.refresh_tokens set revoked = true, updated_at = now() where user_id = $1 and not revoked and session_id <> $2`,
-    [claims.sub, claims.session_id],
-  )
+  // under core's per-user lock: a refresh rotating at this moment cannot keep a token alive past the reset (S4)
+  await revokeUserSessions(claims.sub!, claims.session_id ?? null)
   return res
 })
 

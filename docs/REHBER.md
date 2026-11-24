@@ -951,7 +951,7 @@ kurar: yeni ref, yeni adres. Studio → **Projects** → **Import a project**:
 |---|---|
 | Ad, boyut | Yeni projenin |
 | Yedek dizini (`backup_dir`) | Bu sunucudaki bir projenin yedeği (`<ref>/<ts>` ya da `export-<ref>/<ts>`, ref bu organizasyonda ve bu sunucunun control-db'sinde olmalı) ya da içe aktarma alanından `import/<org slug>/<ad>` (başka sunucudan ya da v1'den gelenler) |
-| Anahtarlar: şifre **ya da** env dosyası, ikisinden sadece biri | Dışa aktarma için şifresi. v1 yedeği için v1 kurulumunun env dosyası (en fazla 64 KiB). Planlı yedek için de bir env dosyası: içinde verdiğin anahtarlar (`JWT_SECRET`, `ANON_KEY`, `SERVICE_ROLE_KEY`) kullanılır, vermediklerin yeni üretilir. |
+| Anahtarlar: şifre **ya da** env dosyası, ikisinden sadece biri | Dışa aktarma için şifresi. v1 yedeği için v1 kurulumunun env dosyası (en fazla 64 KiB). Planlı yedek için de bir env dosyası: içinde verdiğin anahtarlar (`JWT_SECRET`, `ANON_KEY`, `SERVICE_ROLE_KEY`) kullanılır. Üçü birlikte verilir ya da hiçbiri verilmez. Hiçbiri yoksa yeni anahtarlar üretilir ve yedekle gelen oturumlar silinir: kopyada bütün kullanıcıların yeniden giriş yapması gerekir. |
 
 control env dosyasını ya da şifreyi saklamaz. Sırları şifreleyip kaydeder, sonra hangi anahtarları yok
 saydığını ve hangilerini tanımadığını adlarıyla gösterir. Proje yeni bir adres ister: sertifika
@@ -1228,6 +1228,11 @@ yeni bir projeye `--from-empty` ile bir migration uygulandı, tablo oluştu, Pos
   sunucuya çıkabiliyor. fn'in ise dışarı çıkması gerekiyor, bu yüzden sunucunun kendi portlarına da
   ulaşabiliyor. Bunu kapatmak istersen sunucuya eklenecek iki güvenlik duvarı kuralı
   `docs/network-isolation.md`'de. selfbase sunucunun güvenlik duvarına dokunmuyor.
+- **`rotate_keys` güvenilmeyen bir dökümü temizlemez** (kalıcı sınır, dalga 2'de değişmeyecek). Kaynaktan sızmış bir anahtara ya da oturuma karşı
+  korur: kopya yeni anahtarlarla açılır, dökümle gelen oturumlar silinir. Dökümün sahibi kötü niyetliyse
+  korumaz. Örneğin dökümle gelen bir pg_cron işi, geri yüklemenin kontrolünden sonra
+  `auth.refresh_tokens`'ı yeniden doldurabilir. Güvenmediğin bir dökümü içe aktarmadan önce cron işlerine,
+  trigger'larına ve event trigger'larına bak.
 - **`/rest/v1/` `apikey` olmadan 200 dönüyor.** PostgREST'in kök adresi (şemanın OpenAPI açıklaması)
   anahtarsız isteğe de cevap veriyor. Tablolardaki veri yine RLS ile korunur.
 - **Yeni bir micro projede `/rest/v1/` kökü 500 dönüyor** (`canceling statement due to statement

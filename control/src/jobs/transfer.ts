@@ -5,18 +5,26 @@
 import { config } from '../config.ts'
 import type { Db } from '../db.ts'
 import { ApiError } from '../errors.ts'
-import { adminRequest } from '../forward.ts'
 import { ProvisionerError } from '../provisioner.ts'
 import { getSecrets } from '../secrets.ts'
 import { defineJob, type JobCtx } from './engine.ts'
-import { randomBytes } from 'node:crypto'
-import { activate, certificate, createSteps, ensure, failTo, healthy, healthySteps, need, setStatus, step } from './project.ts'
+import { activate, certificate, createSteps, failTo, healthy, healthySteps, need, sessionsUnconfirmed, setStatus, step } from './project.ts'
 
 // what an import stops for the restore; db keeps running (the restore job connects to it)
 export const RESTORE_STOPS = ['core', 'rest', 'fn', 'pooler']
 // shortcut: a fixed budget for one backup or restore; make it a setting when a project's dump takes hours
 const JOB_MS = 6 * 3600_000
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+// backup.sh's exit 4: the volume would keep less than the floor free after this backup (it measured the database and
+// the storage files at its start). Only the numbers and the rule's name are taken from its line, nothing else
+const REFUSED = /^backup: REFUSED: (\d+) MiB free on the backup volume, at least (\d+) MiB \((BACKUP_MIN_FREE_MIB|10% or 5 GiB, whichever is larger)\) needed after this backup of up to (\d+) MiB; free space first$/m
+function volumeFull(tail: string): string {
+  const m = REFUSED.exec(tail)
+  const numbers = m ? `the backup volume has ${m[1]} MiB free; this backup needs up to ${m[4]} MiB and ${m[2]} MiB (${m[3]}) must stay free`
+    : 'the backup volume would keep less than its floor free after this backup'
+  return `backup_volume_full: ${numbers}. Remove old backups or exports, or grow the volume, then try again.`
+}
 
 /** Waits for the provisioner job of `type` to end; its output tail when it succeeded, else an error saying what changed. */
 async function waitFor(ctx: JobCtx, ref: string, type: 'backup' | 'restore'): Promise<string> {
@@ -47,7 +55,11 @@ async function waitFor(ctx: JobCtx, ref: string, type: 'backup' | 'restore'): Pr
     const tail = s.tail.trim().split('\n').slice(-10).join('\n')
     if (tail && s.status === 'succeeded') await ctx.log(`${type}_output`, { tail })
     if (s.status === 'succeeded') return s.tail
+    if (type === 'backup' && s.exitCode === 4) throw new Error(volumeFull(s.tail))
     if (type === 'restore' && s.exitCode === 10) throw new Error('the restore failed and rolled back: the database was not changed')
+    if (type === 'restore' && s.exitCode === 5) {
+      throw new Error('the database was restored but its sessions could not be deleted (rotate_keys): delete this project, then import again')
+    }
     if (type === 'restore' && s.exitCode === 3) {
       throw new Error('the database was restored but the storage files were not (or only partly): delete this project, then import again')
     }
@@ -86,13 +98,15 @@ async function startJob(ctx: JobCtx, ref: string, type: 'backup' | 'restore', ar
 }
 
 const lastMatch = (re: RegExp, text: string) => [...text.matchAll(re)].at(-1)?.[1] ?? null
-const retention = () => String(config.backupRetentionDays)
+// every backup job prunes its own subdirectory by these (job/backup.sh)
+const retention = () => ({ BACKUP_RETENTION_DAYS: String(config.backupRetentionDays),
+  EXPORT_RETENTION_DAYS: String(config.exportRetentionDays), BACKUP_MAX_COUNT: String(config.backupMaxCount) })
 const dbPassword = async (ctx: JobCtx) => (await getSecrets(ctx.db, need(ctx))).POSTGRES_PASSWORD
 
 /** project.backup and project.export: one backup job into `subdir`, then its backups row. */
 const backupSteps = (subdir: (ctx: JobCtx) => string, extra: (ctx: JobCtx) => Record<string, string> = () => ({})) => [
   step('backup', async (ctx) => startJob(ctx, need(ctx).ref, 'backup', {},
-    { PGHOST: 'db', PGPASSWORD: await dbPassword(ctx), BACKUP_SUBDIR: subdir(ctx), BACKUP_RETENTION_DAYS: retention(), ...extra(ctx) })),
+    { PGHOST: 'db', PGPASSWORD: await dbPassword(ctx), BACKUP_SUBDIR: subdir(ctx), ...retention(), ...extra(ctx) })),
   step('record', async (ctx) => {
     const tail = await waitFor(ctx, need(ctx).ref, 'backup')
     const size = lastMatch(/^backup: size (\d+) bytes$/gm, tail)
@@ -121,32 +135,36 @@ defineJob('project.export', 'heavy', [...backupSteps((ctx) => `export-${need(ctx
   (ctx) => ({ MANIFEST_B64: (ctx.job.payload.manifest as string[]).join(''), CONTROL_GID: String(process.getgid?.() ?? 1000) })),
   step('forget', forgetManifest)], { onFail: async (ctx) => { await forgetManifest(ctx) } })
 
+// The exports past EXPORT_RETENTION_DAYS (and beyond BACKUP_MAX_COUNT) of a project, a deleted one too: the backup
+// job's retention alone over export-<ref> (BACKUP_PRUNE_ONLY), on no network and with no database; then the rows of
+// what it deleted go, as the files did (reconcile drops the rows of expired exports by their age too).
+const PRUNED = (ref: string) => new RegExp(`^backup: pruned export-${ref}$`, 'm')
+defineJob('project.prune', 'heavy', [
+  step('prune', (ctx) => startJob(ctx, need(ctx).ref, 'backup', {},
+    { BACKUP_SUBDIR: `export-${need(ctx).ref}`, BACKUP_PRUNE_ONLY: '1', ...retention() })),
+  step('record', async (ctx) => {
+    const { id, ref } = need(ctx)
+    const tail = await waitFor(ctx, ref, 'backup')
+    // a lost result followed by another job of this ref: never taken for this one
+    if (!PRUNED(ref).test(tail)) throw new Error(`the prune job did not confirm that it pruned export-${ref}: another job's result`)
+    const gone = [...tail.matchAll(/^backup: deleted (\S+)/gm)].map((m) => m[1]).filter((l) => l.startsWith(`export-${ref}/`))
+    if (gone.length) await ctx.db.query('delete from control.backups where project_id = $1 and location = any($2)', [id, gone])
+  }, false),
+])
+
 defineJob('control.backup', 'heavy', [
   step('backup', (ctx) => startJob(ctx, 'control', 'backup', {},
-    { PGHOST: config.dbHost, PGPASSWORD: config.dbPassword, BACKUP_SUBDIR: 'control', BACKUP_RETENTION_DAYS: retention() })),
+    { PGHOST: config.dbHost, PGPASSWORD: config.dbPassword, BACKUP_SUBDIR: 'control', ...retention() })),
   step('wait', async (ctx) => {
     await ctx.log('backed_up', { location: lastMatch(/^backup: wrote (\S+)$/gm, await waitFor(ctx, 'control', 'backup')) })
   }, false),
 ])
 
-// rotate_keys: the restored refresh tokens would mint access tokens signed with the new secret, and core is publicly
-// routed as soon as it runs (it has to run to take the deletes). So core first comes up on the restored database with a
-// throwaway JWT secret, never stored: whatever it signs before the sessions are gone dies with that secret. Only then
-// is it recreated with the project's real secret, on a database without the restored sessions.
+// rotate_keys: the restored refresh tokens would mint access tokens signed with the new secret. The restore job deletes
+// them (ROTATE_KEYS=1) while core, rest, fn and pooler are stopped, so the plain start brings up a database without them.
 const rotating = (ctx: JobCtx) => ctx.job.payload.rotate_keys === true
-const END_SESSIONS = `do $$ begin
-  if to_regclass('auth.refresh_tokens') is not null then delete from auth.refresh_tokens; end if;
-  if to_regclass('auth.sessions') is not null then delete from auth.sessions; end if;
-end $$`
-async function endSessions(ctx: JobCtx) {
-  if (!rotating(ctx)) return
-  const res = await adminRequest(need(ctx), 'selfbase-control', '/admin/sql', {
-    method: 'POST', headers: new Headers({ 'content-type': 'application/json' }), body: JSON.stringify({ query: END_SESSIONS }) })
-  const out = await res.json().catch(() => null)
-  // the message only: a SQL error here names tables, never a value
-  if (!res.ok || out?.error) throw new Error(`deleting the restored sessions failed: ${out?.error?.message ?? `status ${res.status}`}`)
-  await ctx.log('sessions_deleted')
-}
+const SESSIONS_DELETED = /^restore: the restored sessions are deleted \(ROTATE_KEYS\)$/m
+const importFailed = failTo('INIT_FAILED', ['certificate'])
 
 // The project comes up empty as a create would (status RESTORING until the data is back), then the backup replaces its
 // database and storage with core, rest, fn and pooler stopped; core applies the platform migrations when it starts
@@ -163,19 +181,26 @@ defineJob('project.import', 'heavy', [
     if (!org || (await backupDirOf(ctx.db, org, String(ctx.job.payload.backup_dir))) !== 'ok') {
       throw new ApiError(400, 'invalid_backup_dir', "backup_dir is not one of this organization's backups")
     }
-    await startJob(ctx, p.ref, 'restore', { dir: ctx.job.payload.backup_dir }, { PGHOST: 'db', PGPASSWORD: await dbPassword(ctx) })
+    await startJob(ctx, p.ref, 'restore', { dir: ctx.job.payload.backup_dir },
+      { PGHOST: 'db', PGPASSWORD: await dbPassword(ctx), ...(rotating(ctx) ? { ROTATE_KEYS: '1' } : {}) })
   }),
-  step('restored', (ctx) => waitFor(ctx, need(ctx).ref, 'restore'), false),
-  step('start', (ctx) => rotating(ctx)
-    ? ensure(ctx, [], { JWT_SECRET: randomBytes(32).toString('base64url') })
-    : ctx.provisioner.start(need(ctx).ref, RESTORE_STOPS)),
+  step('restored', async (ctx) => {
+    const tail = await waitFor(ctx, need(ctx).ref, 'restore')
+    // a job image that ignores ROTATE_KEYS would leave them: never start on its word alone
+    if (rotating(ctx) && !SESSIONS_DELETED.test(tail)) {
+      throw new Error('the restore job did not confirm that it deleted the restored sessions (rotate_keys): delete this project, then import again')
+    }
+  }, false),
+  step('start', (ctx) => ctx.provisioner.start(need(ctx).ref, RESTORE_STOPS)),
   step('started', healthy, false),
-  step('sessions', endSessions),
-  // the real secret: core, rest and fn are recreated with it
-  step('rekey', async (ctx) => { if (rotating(ctx)) await ensure(ctx) }),
-  step('rekeyed', async (ctx) => { if (rotating(ctx)) await healthy(ctx) }, false),
   healthySteps[1], // warm
   step('coming_up', (ctx) => setStatus(ctx, 'COMING_UP')),
   step('certificate', certificate, false),
   activate,
-], failTo('INIT_FAILED', ['certificate']))
+// version 2: the sessions moved into the restore job; an import an earlier control left past its restore fails (I1)
+], { version: 2, onFail: async (ctx) => {
+  await importFailed.onFail(ctx)
+  // not past a confirmed 'restored' (an earlier control's job may have started core on its throwaway secret): the four
+  // stop, and ensure refuses to start them again
+  if (ctx.project && rotating(ctx) && await sessionsUnconfirmed(ctx.db, ctx.project.id)) await ctx.provisioner.stop(ctx.project.ref, RESTORE_STOPS)
+} })

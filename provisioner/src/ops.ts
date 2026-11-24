@@ -1,7 +1,7 @@
 // The typed operations (spec 7.5, AC-11). Every container body comes from spec.ts; nothing here takes a
 // container spec from the caller. Objects are only ever addressed by sb-* names built in names.ts.
 import { assertRef, containerName, ctlNetworkName, egressNetworkName, networkName, ProvisionError, REF_RE, volumeName } from './names.ts'
-import { assertJobRef, buildJob, buildProject, type EnsureInput, type JobType, type Sizes } from './spec.ts'
+import { assertJobRef, buildJob, buildProject, isPruneOnly, type EnsureInput, type JobType, type Sizes } from './spec.ts'
 import { isObj, startOrder, type Template } from './template.ts'
 import type { NodeSettings } from './settings.ts'
 import { containerLogs, docker, ensureImage } from './docker.ts'
@@ -245,8 +245,10 @@ export async function runJob(ctx: Ctx, ref: string, body: unknown) {
   if (!isObj(body)) refuse(400, 'invalid_body', 'body must be a JSON object')
   const b = body as Record<string, unknown>
   const spec = buildJob({ ref, type: b.type as JobType, args: (b.args ?? {}) as { dir?: string }, env: (b.env ?? {}) as Record<string, string> }, ctx.node)
-  // a deleted project gets no job (server.ts runs jobs under the ref's lock too, so a delete cannot overlap)
-  if (ref !== 'control' && !(await inspectNetwork(networkName(ref)))) refuse(404, 'project_not_found', `${ref} has no network; run ensure`)
+  // a deleted project gets no job (server.ts runs jobs under the ref's lock too, so a delete cannot overlap), except
+  // the prune of its expired exports, which runs on no network and touches nothing of the project but export-<ref>
+  if (ref !== 'control' && !isPruneOnly({ type: b.type as JobType, env: b.env as Record<string, string> })
+    && !(await inspectNetwork(networkName(ref)))) refuse(404, 'project_not_found', `${ref} has no network; run ensure`)
   const running = await listContainers({ status: ['running'] }, false)
   if (running.some((c) => (c.Names as string[]).some((n) => JOB_NAME_RE.test(n)))) refuse(409, 'job_running', 'another job is running')
   // an earlier finished job of this type whose result was never read

@@ -100,11 +100,25 @@ export const need = (ctx: JobCtx): Project => ctx.project ?? (() => { throw new 
 export const setStatus = (ctx: JobCtx, status: string) => ctx.db.query('update control.projects set status = $2 where id = $1', [need(ctx).id, status])
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-/** `override` replaces env values for this ensure only (never stored): project.import's throwaway JWT secret. */
-export async function ensure(ctx: JobCtx, recreate: string[] = [], override: Record<string, string> = {}) {
+/**
+ * A rotating import (rotate_keys) that neither succeeded nor passed its 'restored' step under the current steps may
+ * have left the restored sessions in the database (I1): its project must not start on the new keys. Read from the job
+ * record (a 'succeeded' event of 'restored' means the restore job confirmed the deletes), never from a flag.
+ */
+export async function sessionsUnconfirmed(db: pg.Pool, projectId: string, exceptJobId?: string): Promise<boolean> {
+  return !!(await db.query(`select 1 from control.jobs j where j.project_id = $1 and j.type = 'project.import'
+      and j.payload->>'rotate_keys' = 'true' and j.status <> 'succeeded' and j.id is distinct from $2
+      and not (coalesce((j.payload->>'job_version')::int, 1) >= 2 and exists (select 1 from control.job_events e
+        where e.job_id = j.id and e.status = 'succeeded' and e.step = 'restored'))`, [projectId, exceptJobId ?? null])).rowCount
+}
+
+export async function ensure(ctx: JobCtx, recreate: string[] = []) {
   const p = need(ctx)
-  const { env: stored, hosts } = await loadProjectEnv(ctx.db, p)
-  const env = { ...stored, ...override }
+  if (await sessionsUnconfirmed(ctx.db, p.id, ctx.job.id)) {
+    throw new ApiError(409, 'sessions_not_deleted', 'This project was imported with rotate_keys and the import failed before the restored '
+      + 'sessions were confirmed deleted, so it cannot start: delete this project, then import again')
+  }
+  const { env, hosts } = await loadProjectEnv(ctx.db, p)
   // every host gets the resolver: only counted ones (a slot, an issued host) or LEGACY_HOSTNAMES may route
   await assertRoutable(ctx.db, p.id, hosts)
   await ctx.provisioner.ensure({ ref: p.ref, templateVersion: p.template_version ?? config.templateVersion, size: p.size,

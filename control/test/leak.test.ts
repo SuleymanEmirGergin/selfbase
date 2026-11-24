@@ -114,7 +114,7 @@ test('no secret value reaches jobs, events, audit rows, responses or logs', { ti
     // import whose restore exits 10
     fake.jobResult = () => ({ status: 'failed', exitCode: 10, tail: 'restore: FAILED: the database restore rolled back' })
     const f = new FormData()
-    for (const [k, v] of Object.entries({ organization_slug: 'acme', name: 'leak-import', size: 'micro', backup_dir: 'import/acme/corteqs-v1' })) f.set(k, v)
+    for (const [k, v] of Object.entries({ organization_slug: 'acme', name: 'leak-import', size: 'micro', backup_dir: 'import/acme/v1-dump' })) f.set(k, v)
     f.set('env_file', new Blob([text]))
     const imp = await request('POST', '/platform/projects/import', f)
     expect(imp.status).toBe(202)

@@ -6,9 +6,11 @@
 #   PGHOST, PGPASSWORD (PGUSER, PGDATABASE default to postgres), BACKUP_SUBDIR (one or two path segments),
 #   BACKUP_RETENTION_DAYS (default 7), EXPORT_RETENTION_DAYS (export-<ref>, default 7), BACKUP_MAX_COUNT (per
 #   subdirectory, default 14), MANIFEST_B64 (an export: base64 of project.json, sealed by control),
-#   CONTROL_GID (an export: control's group, default 1000)
-# The provisioner mounts only /backups/$BACKUP_SUBDIR (R5). The run is refused (exit 4, nothing written) while the
-# backup volume has less than 10% or 5 GiB free, whichever is larger: one project must never fill the shared disk.
+#   CONTROL_GID (an export: control's group, default 1000), BACKUP_PRUNE_ONLY (1: retention only, export-<ref> only;
+#   no database, storage or network needed; the last line is then `backup: pruned <subdir>`)
+# The provisioner mounts only /backups/$BACKUP_SUBDIR (R5). The run is refused (exit 4, nothing written) when the
+# backup volume would keep less than 10% or 5 GiB free, whichever is larger, after this backup (sized at its start
+# from the database and the storage files): one project must never fill the shared disk.
 # BACKUP_MIN_FREE_MIB (the provisioner's node setting, never a request's) replaces that floor, e.g. on a small test disk.
 # Writes /backups/$BACKUP_SUBDIR/<YYYYMMDD-HHMMSS UTC>/{db.dump (pg_dump -Fc), globals.sql (roles, without
 # passwords; for a disaster restore onto a fresh cluster only), storage.tar.gz, project.json (exports only),
@@ -37,6 +39,36 @@ max=${BACKUP_MAX_COUNT:-14}
 [[ $max =~ ^[1-9][0-9]*$ ]] || { echo "backup: BACKUP_MAX_COUNT must be a whole number from 1" >&2; exit 2; }
 min_free=${BACKUP_MIN_FREE_MIB:-}
 [[ -z $min_free || $min_free =~ ^[1-9][0-9]{0,7}$ ]] || { echo "backup: BACKUP_MIN_FREE_MIB must be a whole number of MiB from 1" >&2; exit 2; }
+
+# Retention by the name's timestamp, then by count (newest first); the backup just written always stays. Exports
+# (export-<ref>) too, by EXPORT_RETENTION_DAYS: an export is taken to be moved or imported within days (R3).
+retain() {
+  local days cutoff n=0 d why
+  [[ $sub == export-* ]] && days=$export_keep || days=$keep
+  cutoff=$(date -u -d "-$days days" +%Y%m%d-%H%M%S)
+  for d in $(ls "$backups" | grep -E '^[0-9]{8}-[0-9]{6}$' | sort -r || true); do
+    n=$((n + 1))
+    [ "$d" != "$ts" ] || continue
+    if [[ $d < $cutoff ]]; then why="older than $days days"
+    elif [ "$n" -gt "$max" ]; then why="beyond the newest $max"
+    else continue; fi
+    rm -rf "${backups:?}/$d"
+    echo "backup: deleted $sub/$d ($why)"
+  done
+}
+
+# BACKUP_PRUNE_ONLY=1: retention alone, for exports past their window (control's nightly run, a deleted project's
+# too): no database, storage or network; export-<ref> only, so it never empties a project's own backups
+prune_only=${BACKUP_PRUNE_ONLY:-0}
+[[ $prune_only =~ ^[01]$ ]] || { echo "backup: BACKUP_PRUNE_ONLY must be 0 or 1" >&2; exit 2; }
+if [ "$prune_only" = 1 ]; then
+  [[ $sub == export-* ]] || { echo "backup: BACKUP_PRUNE_ONLY takes an export-<ref> directory only" >&2; exit 2; }
+  [ -d "$backups" ] || { echo "backup: $sub is not mounted" >&2; exit 1; }
+  retain
+  echo "backup: pruned $sub"
+  exit 0
+fi
+
 files='db.dump globals.sql'
 if [ "$sub" != control ]; then
   [ -d "$storage" ] || { echo "backup: storage directory $storage not mounted" >&2; exit 1; }
@@ -49,7 +81,18 @@ mkdir -p "$backups"
 read -r total avail < <(df -Pk "$backups" | awk 'NR == 2 { print $2, $4 }')
 if [ -n "$min_free" ]; then need=$((min_free * 1024)) rule=BACKUP_MIN_FREE_MIB
 else need=$(( total / 10 > 5242880 ? total / 10 : 5242880 )) rule='10% or 5 GiB, whichever is larger'; fi
-[ "$avail" -ge "$need" ] || { echo "backup: REFUSED: $((avail / 1024)) MiB free on the backup volume, at least $((need / 1024)) MiB ($rule) needed; free space first" >&2; exit 4; }
+# what this backup will write, at most: the database as postgres stores it (the dump is smaller) and the storage
+# files as they are on disk, measured here and now (control's check before queueing is an early refusal only)
+db_bytes=$(psql -XAtq -v ON_ERROR_STOP=1 -c 'select pg_database_size(current_database())')
+[[ $db_bytes =~ ^[0-9]+$ ]] || { echo "backup: the database size could not be read" >&2; exit 1; }
+est=$((db_bytes / 1024))
+if [ "$sub" != control ]; then
+  # GNU du exits 1 when a file vanishes mid-walk (core deleting objects): the total it printed still counts
+  storage_k=$(du -sk "$storage" 2> /dev/null | cut -f1) || true
+  [[ $storage_k =~ ^[0-9]+$ ]] || { echo "backup: the storage size could not be read" >&2; exit 1; }
+  est=$((est + storage_k))
+fi
+[ $((avail - est)) -ge "$need" ] || { echo "backup: REFUSED: $((avail / 1024)) MiB free on the backup volume, at least $((need / 1024)) MiB ($rule) needed after this backup of up to $((est / 1024)) MiB; free space first" >&2; exit 4; }
 [ ! -e "$backups/$ts" ] || { echo "backup: $sub/$ts already exists" >&2; exit 1; }
 # leftovers of killed runs (a running backup's temp dir is never a day old)
 find "$backups" -mindepth 1 -maxdepth 1 -name '.tmp-*' -mmin +1440 -exec rm -rf {} +
@@ -79,20 +122,6 @@ for f in $files; do
   echo "$f $(stat -c %s "$tmp/$f") $(sha256sum "$tmp/$f" | cut -d' ' -f1)"
 done > "$tmp/MANIFEST"
 mv "$tmp" "$backups/$ts"
-
-# Retention by the name's timestamp, then by count (newest first); the backup just written always stays. Exports
-# (export-<ref>) too, by EXPORT_RETENTION_DAYS: an export is taken to be moved or imported within days (R3).
-[[ $sub == export-* ]] && days=$export_keep || days=$keep
-cutoff=$(date -u -d "-$days days" +%Y%m%d-%H%M%S)
-n=0
-for d in $(ls "$backups" | grep -E '^[0-9]{8}-[0-9]{6}$' | sort -r || true); do
-  n=$((n + 1))
-  [ "$d" != "$ts" ] || continue
-  if [[ $d < $cutoff ]]; then why="older than $days days"
-  elif [ "$n" -gt "$max" ]; then why="beyond the newest $max"
-  else continue; fi
-  rm -rf "${backups:?}/$d"
-  echo "backup: deleted $sub/$d ($why)"
-done
+retain
 echo "backup: size $(du -sb "$backups/$ts" | cut -f1) bytes"
 echo "backup: wrote $sub/$ts"

@@ -9,6 +9,7 @@ export type Config = ReturnType<typeof loadConfig>
 // organization slugs as platform-orgs.ts makes them
 const SLUG_RE = /^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$/
 export const HOSTNAME_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
+const LABELS_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
 
 export function loadConfig(input: Record<string, string | undefined> = process.env) {
   // secrets come from <KEY>_FILE (compose secrets: not in the container's Config.Env, which a socket proxy's inspect
@@ -30,7 +31,18 @@ export function loadConfig(input: Record<string, string | undefined> = process.e
     const n = Number(v)
     return Number.isFinite(n) && n >= 0 ? n : fail(`${k} must be a non-negative number`)
   }
-  const oneOf = <T extends string>(k: string, dflt: T, allowed: T[]) => {
+  const mib = (k: string) => {
+    const v = env[k]
+    if (v === undefined || v === '') return null
+    return /^[1-9]\d{0,7}$/.test(v) ? Number(v) : fail(`${k} must be a whole number of MiB from 1`)
+  }
+  // whole numbers only: backup.sh refuses anything else, and make_interval(days => 1.5) fails every reconcile pass
+  const whole = (k: string, dflt: number, min: 0 | 1, what: string) => {
+    const v = env[k]
+    if (v === undefined || v === '') return dflt
+    return (min ? /^[1-9]\d{0,5}$/ : /^\d{1,6}$/).test(v) ? Number(v) : fail(`${k} must be a whole number ${what}`)
+  }
+  const oneOf =<T extends string>(k: string, dflt: T, allowed: T[]) => {
     const v = (env[k] || dflt) as T
     return allowed.includes(v) ? v : fail(`${k} must be one of ${allowed.join(', ')}`)
   }
@@ -56,6 +68,12 @@ export function loadConfig(input: Record<string, string | undefined> = process.e
   const proxyMode = oneOf('PROXY_MODE', 'coolify', ['coolify', 'own'])
   const trustedProxyIps = (env.TRUSTED_PROXY_HOSTS || '').split(',').map((h) => h.trim()).filter(Boolean)
   if (trustedProxyIps.some((h) => !isIP(h))) fail('TRUSTED_PROXY_HOSTS takes IP addresses only (the proxy container is PROXY_CONTAINER)')
+  // core matches these exactly (core/src/config.ts): plain names (one label too) or addresses, never a pattern or URL
+  const outboundAllowHosts = (env.OUTBOUND_ALLOW_HOSTS || '').split(',').map((h) => h.trim().toLowerCase().replace(/^\[(.*)\]$/, '$1'))
+    .filter(Boolean)
+  if (outboundAllowHosts.some((h) => !isIP(h) && !LABELS_RE.test(h))) {
+    fail('OUTBOUND_ALLOW_HOSTS must be a comma-separated list of hostnames or IP addresses')
+  }
 
   return {
     port: num('PORT', 8080),
@@ -75,6 +93,8 @@ export function loadConfig(input: Record<string, string | undefined> = process.e
     // fixed proxy addresses whose X-Forwarded-For counts, besides the proxy container's (from the provisioner, which
     // reads PROXY_CONTAINER by exact name). Addresses only: a name would be resolved by DNS, which is steerable.
     trustedProxyIps,
+    // the private hosts every project's core may call (a mail relay on the operator's network); a node setting only
+    outboundAllowHosts,
     proxyNetwork: env.PROXY_NETWORK || 'coolify',
     templateVersion: need('TEMPLATE_VERSION'),
     memoryBudgetMb: num('MEMORY_BUDGET_MB', 16384),
@@ -91,9 +111,13 @@ export function loadConfig(input: Record<string, string | undefined> = process.e
     legacyOrgs,
     certProbe: oneOf('CERT_PROBE', 'on', ['on', 'off']),
     logsUrl: env.LOGS_URL || 'http://selfbase-logs:9428',
-    backupRetentionDays: num('BACKUP_RETENTION_DAYS', 7),
-    // days an export's backups row is listed; the job's retention removes its files (reconcile.ts)
-    exportRetentionDays: num('EXPORT_RETENTION_DAYS', 7),
+    backupRetentionDays: whole('BACKUP_RETENTION_DAYS', 7, 0, 'of days'),
+    // backups kept per subdirectory, the newest first (backup.sh)
+    backupMaxCount: whole('BACKUP_MAX_COUNT', 14, 1, 'from 1'),
+    // the backup volume's free-space floor in MiB, as the provisioner gives the backup jobs; null: 10% or 5 GiB (disk.ts)
+    backupMinFreeMib: mib('BACKUP_MIN_FREE_MIB'),
+    // days an export is kept: its backups row (reconcile.ts) and, through the backup jobs, its files
+    exportRetentionDays: whole('EXPORT_RETENTION_DAYS', 7, 0, 'of days'),
     // a Studio session ends this long after sign-in, or after this long without a refresh (session.ts)
     sessionMaxAgeDays: num('STUDIO_SESSION_MAX_AGE_DAYS', 7),
     sessionIdleHours: num('STUDIO_SESSION_IDLE_HOURS', 24),

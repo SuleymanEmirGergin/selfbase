@@ -88,6 +88,31 @@ test('a worker stopped after step 2 of 4 leaves the job; a new worker runs steps
   expect(count).toEqual({ s1: 1, s2: 1, s3: 1, s4: 1 })
 })
 
+test('I1: a job in flight from an earlier definition of its steps fails cleanly instead of resuming or spinning', async () => {
+  const type = uniq('upgraded')
+  const seen: string[] = []
+  const steps = (names: string[]): Step[] => names.map((name) => ({ name, run: async () => { seen.push(name) } }))
+  // an earlier control queued it and ran 2 of its 3 steps; this one defines 2 steps (version 2)
+  defineJob(type, 'light', steps(['a', 'b']), { version: 2 })
+  const inFlight = async (step: string, payload = {}) => (await pool.query(
+    `insert into control.jobs (type, lane, step, status, payload) values ($1, 'light', $2, 'running', $3) returning id`, [type, step, payload])).rows[0].id
+  const old = await inFlight('2')
+  // past its last step: claimed for ever before this, never ending
+  const beyond = await inFlight('5', { job_version: 2 })
+  // a job of this version resumes as usual
+  const current = await inFlight('1', { job_version: 2 })
+  // an old job that never started runs the current steps
+  const fresh = await enqueue(pool, { type, payload: {}, createdBy: null })
+  await pool.query(`update control.jobs set payload = '{}' where id = $1`, [fresh])
+  workers()
+  expect(await finished(old)).toMatchObject({ status: 'failed', error: expect.stringMatching(/earlier version of control.*cannot resume/) })
+  expect(await finished(beyond)).toMatchObject({ status: 'failed', error: expect.stringMatching(/cannot resume/) })
+  expect((await finished(current)).status).toBe('succeeded')
+  expect((await finished(fresh)).status).toBe('succeeded')
+  expect((await job(fresh)).payload).toEqual({ job_version: 2 })
+  expect(seen.sort()).toEqual(['a', 'b', 'b'])
+})
+
 test('a heavy job does not block a light one', async () => {
   let release!: () => void
   const gate = new Promise<void>((r) => { release = r })

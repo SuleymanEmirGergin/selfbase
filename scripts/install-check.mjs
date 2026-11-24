@@ -14,9 +14,9 @@ const REQUIRED = ['BASE_DOMAIN', 'REGISTRY', 'TEMPLATE_VERSION', 'PROXY_MODE', '
 // compose secrets (SECRETS_DIR/<file>), never env: a container's Config.Env is readable by a socket proxy's inspect
 const SECRET_FILES = { SELFBASE_MASTER_KEY: 'master_key', CONTROL_DB_PASSWORD: 'control_db_password',
   CONTROL_JWT_SECRET: 'control_jwt_secret', PROVISIONER_TOKEN: 'provisioner_token' }
-const OPTIONAL = ['PROJECT_SUBNET_POOL', 'CONTROL_NET_PREFIX', 'BACKUP_MIN_FREE_MIB', 'SECRETS_DIR', 'SECRETS_GID', 'TRUSTED_PROXY_HOSTS', 'PROXY_CONTAINER',
+const OPTIONAL = ['PROJECT_SUBNET_POOL', 'CONTROL_NET_PREFIX', 'BACKUP_MIN_FREE_MIB', 'OUTBOUND_ALLOW_HOSTS', 'SECRETS_DIR', 'SECRETS_GID', 'TRUSTED_PROXY_HOSTS', 'PROXY_CONTAINER',
   'PUBLIC_URL', 'TEST_HOST', 'NODE_NAME', 'LEGACY_HOSTNAMES', 'MEMORY_BUDGET_MB', 'OVERCOMMIT', 'SHARED_RESERVED_MB',
-  'JOB_SLOT_MB', 'MAX_NEW_HOSTS_PER_WEEK', 'BRANCH_HOST_SLOTS', 'CERT_PROBE', 'BACKUP_RETENTION_DAYS', 'SMTP_HOST', 'SMTP_PORT',
+  'JOB_SLOT_MB', 'MAX_NEW_HOSTS_PER_WEEK', 'BRANCH_HOST_SLOTS', 'CERT_PROBE', 'BACKUP_RETENTION_DAYS', 'EXPORT_RETENTION_DAYS', 'BACKUP_MAX_COUNT', 'STUDIO_SESSION_MAX_AGE_DAYS', 'STUDIO_SESSION_IDLE_HOURS', 'SMTP_HOST', 'SMTP_PORT',
   'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM', 'AUTH_RATE_LIMIT_SIGN_IN', 'PROXY_ENTRYPOINT_HTTP', 'PROXY_ENTRYPOINT_HTTPS',
   'PROXY_CERTRESOLVER', 'PROXY_TRAEFIK_MAJOR', 'LOG_SYSLOG_ADDR', 'CGROUP_PARENT', 'DOCKER_SOCKET_GID', 'PROXY_HTTP_PORT',
   'PROXY_HTTPS_PORT', 'ACME_EMAIL', 'COMPOSE_PROFILES', 'COMPOSE_FILE']
@@ -95,6 +95,10 @@ if (socketGid && socketGid !== '0' && v('DOCKER_SOCKET_GID') !== socketGid) bad(
 if (v('TRUSTED_PROXY_HOSTS').split(',').map((h) => h.trim()).filter(Boolean).some((h) => !isIP(h))) {
   bad('TRUSTED_PROXY_HOSTS', 'must be comma-separated IP addresses (the proxy container itself is PROXY_CONTAINER)')
 }
+// as control/src/config.ts reads it: names or addresses that core matches exactly
+const LABELS = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
+if (v('OUTBOUND_ALLOW_HOSTS').split(',').map((h) => h.trim().toLowerCase().replace(/^\[(.*)\]$/, '$1')).filter(Boolean)
+  .some((h) => !isIP(h) && !LABELS.test(h))) bad('OUTBOUND_ALLOW_HOSTS', 'must be comma-separated hostnames or IP addresses')
 if (v('PROXY_CONTAINER') && !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(v('PROXY_CONTAINER'))) bad('PROXY_CONTAINER', 'must be a plain container name [A-Za-z0-9_-]+')
 
 const pool = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(v('PROJECT_SUBNET_POOL'))
@@ -111,6 +115,8 @@ const cnp = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(v('CONTROL_NET_PREFIX'))
 if (v('CONTROL_NET_PREFIX') && (!cnp || cnp.slice(1).some((o) => Number(o) > 255) || !(cnp[1] === '10' || (cnp[1] === '172' && cnp[2] >= 16 && cnp[2] <= 31)
   || (cnp[1] === '192' && cnp[2] === '168')))) bad('CONTROL_NET_PREFIX', 'must be the first three octets of a private address, like 10.206.255')
 if (v('BACKUP_MIN_FREE_MIB') && !/^[1-9]\d{0,7}$/.test(v('BACKUP_MIN_FREE_MIB'))) bad('BACKUP_MIN_FREE_MIB', 'must be a whole number of MiB from 1')
+for (const k of ['BACKUP_RETENTION_DAYS', 'EXPORT_RETENTION_DAYS']) if (v(k) && !/^\d{1,6}$/.test(v(k))) bad(k, 'must be a whole number of days')
+if (v('BACKUP_MAX_COUNT') && !/^[1-9]\d{0,5}$/.test(v('BACKUP_MAX_COUNT'))) bad('BACKUP_MAX_COUNT', 'must be a whole number from 1')
 
 const base = v('BASE_DOMAIN').toLowerCase()
 const under = (host) => host === base || host.endsWith(`.${base}`)

@@ -13,7 +13,7 @@ import { CONFIG_DEFAULTS, projectConfig } from './project-env.ts'
 import { getSecrets } from './secrets.ts'
 import type { Env } from './session.ts'
 
-/** core's admin listener, by its address on sb-<ref> (core-addr.ts). Mutable so tests can point it at a stub. */
+/** core's admin listener, by its address on sb-<ref>-ctl (core-addr.ts). Mutable so tests can point it at a stub. */
 export const forwardTarget: { url: (ref: string) => string | Promise<string> } = {
   url: async (ref) => `http://${await coreIp(provisioner(), ref)}:8081`,
 }
@@ -39,14 +39,14 @@ export async function adminFetch(p: Target, actor: string, path: string, init: {
 
 /** adminFetch without the status check: for a job whose project is not running yet (an import's RESTORING). */
 export async function adminRequest(p: Omit<Target, 'status'>, actor: string, path: string,
-  init: { method: string; headers?: Headers; body?: BodyInit | null }) {
+  init: { method: string; headers?: Headers; body?: BodyInit | null }, headersMs = HEADERS_MS) {
   const url = new URL(path, await forwardTarget.url(p.ref))
   const headers = init.headers ?? new Headers()
   headers.set('authorization', `Bearer ${(await getSecrets(pool, p)).ADMIN_TOKEN}`)
   headers.set('x-selfbase-actor', actor)
   // the timer covers the wait for response headers only: a long download or upload is not cut off
   const ctl = new AbortController()
-  const timer = setTimeout(() => ctl.abort(), HEADERS_MS)
+  const timer = setTimeout(() => ctl.abort(), headersMs)
   try {
     return await fetch(url, { method: init.method, headers, body: init.body, redirect: 'manual', signal: ctl.signal, duplex: 'half' } as RequestInit)
   } catch (e) {
