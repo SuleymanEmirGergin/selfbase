@@ -120,6 +120,23 @@ describe('S6: anonymous requests cannot grow the audit log', () => {
     expect((await rows())).toHaveLength(5)
   })
 
+  test('login and refresh refused before core (bad Origin, no cookie) write no row, however often', async () => {
+    resetRateLimits()
+    await pool.query(`truncate control.audit_log`)
+    const post = (path: string, headers: Record<string, string>) => app.request(path, { method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers }, body: '{}' })
+    const shapes: [string, Record<string, string>, number][] = [
+      ['/platform/login', {}, 403],
+      ['/platform/login', { origin: 'https://elsewhere.example.test' }, 403],
+      ['/platform/refresh', {}, 403],
+      ['/platform/refresh', { origin: 'https://elsewhere.example.test' }, 403],
+      ['/platform/refresh', { origin: ORIGIN }, 401],
+    ]
+    for (const [path, headers, status] of shapes)
+      for (let i = 0; i < 20; i++) expect((await post(path, headers)).status, `${path} ${JSON.stringify(headers)}`).toBe(status)
+    expect(await rows()).toEqual([])
+  })
+
   test('the reconcile pass prunes audit rows older than 90 days', async () => {
     await pool.query(`truncate control.audit_log`)
     await pool.query(`insert into control.audit_log (actor, action, at) values ('a', 'old', now() - interval '91 days'), ('a', 'recent', now() - interval '89 days')`)

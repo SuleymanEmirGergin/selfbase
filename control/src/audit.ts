@@ -53,12 +53,11 @@ export const audit = createMiddleware<Env>(async (c, next) => {
       bodyKeys = Object.keys(body).slice(0, MAX_KEYS).map((k) => k.slice(0, MAX_KEY_LENGTH))
   }
   await next()
-  // Rows the internet could otherwise write at will: an anonymous caller gets none when authenticate refused it
-  // (no session, no token), when no route answers the path, or when a rate limit refused it.
-  if (!c.get('user')) {
-    if (c.res.status === 401 && !PUBLIC.test(c.req.path)) return
-    if (!apiRoute(c) || c.res.status === 429) return
-  }
+  // Rows the internet could otherwise write at will: an anonymous caller gets none when it was refused before anything
+  // ran (401 or 403: no session or token, a foreign Origin, a refresh without its cookie; login and refresh are outside
+  // publicLimit, so these refusals are unlimited), when no route answers the path, or when a rate limit refused it.
+  // Failed sign-ins (400 from core) keep their row: core's signIn bucket bounds them.
+  if (!c.get('user') && ([401, 403, 429].includes(c.res.status) || !apiRoute(c))) return
   const path = c.get('audit')?.path
   await writeAudit(c, { status: c.res.status, body_keys: bodyKeys, ...(path ? { path } : {}) })
 })
