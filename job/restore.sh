@@ -171,6 +171,8 @@ HOLD=selfbase_restore_hold
 committed() { db_done=1 held=0 jobs='' contained=1; }
 cleanup() {
   local rc=$?
+  # the cleanup runs to its end: a second signal would end it halfway (temp dir left, nothing said)
+  trap '' HUP INT TERM
   # a signal ended the script while a writer ran: it is stopped and reaped before its temp dir goes, so nothing writes
   # there after (reap records a pg_restore that still exited 0 as committed)
   [ -z "$w" ] || reap
@@ -180,7 +182,7 @@ cleanup() {
   [ -z "$plog" ] || rm -f "$plog"
   [ "$rc" != 0 ] || return 0
   if [ "$contained" = 0 ]; then
-    echo "restore: STOPPED, STATE UNKNOWN (exit $rc): the restore of $rel could not be shown to have rolled back (its sessions may not have ended, or its transaction may have committed), so the database may be in either state; nothing was undone; stop the project's database, then delete this project and import again" >&2
+    echo "restore: STOPPED, STATE UNKNOWN (exit $rc): the transaction of the restore of $rel is not shown aborted (its sessions may not have ended, or it may have committed), so the database may be in either state; nothing was undone; stop the project's database, then delete this project and import again" >&2
     exit 8
   fi
   if [ "$db_done" = 1 ] && [ "$swapped" = 1 ]; then
