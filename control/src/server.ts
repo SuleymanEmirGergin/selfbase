@@ -4,6 +4,7 @@ import { config } from './config.ts'
 import { closeDb, migrate, pool } from './db.ts'
 import { app } from './app.ts'
 import { trustProxies } from './core.ts'
+import { evictStaleLegacyNames } from './hosts.ts'
 import { startWorkers } from './jobs/index.ts'
 import { httpProvisioner, setProvisioner } from './provisioner.ts'
 import { startReconcile } from './reconcile.ts'
@@ -12,6 +13,11 @@ import { startSchedule } from './schedule.ts'
 // Schema first; a failure names the migration file only (never SQL or secrets)
 await migrate().catch((e: Error) => {
   console.error(`startup: ${e.message}`)
+  process.exit(1)
+})
+// a legacy name LEGACY_HOSTNAMES no longer gives its project's org leaves the router before any job runs
+await evictStaleLegacyNames(pool).catch((e: Error) => {
+  console.error(`startup: stale legacy names could not be removed: ${e.message}`)
   process.exit(1)
 })
 // jobs left running by the previous process resume at their recorded step
