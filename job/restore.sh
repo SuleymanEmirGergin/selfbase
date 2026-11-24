@@ -119,17 +119,23 @@ fi
 if [ "$rotate" = 1 ]; then
   # step 3 is committed: the cleanup trap must neither undo the cron or ledger steps nor call this a storage failure
   # every credential row (sessions, pending links and codes); users, identities and MFA factors are the data moved
-  # then counted: a trigger returning NULL or a DO INSTEAD rule the dump carries would make the delete a silent no-op
-  q -c "do \$\$ declare t text; remains boolean; begin
-    foreach t in array array['refresh_tokens', 'sessions', 'mfa_amr_claims', 'one_time_tokens', 'flow_state',
-        'mfa_challenges', 'saml_relay_states', 'oauth_authorizations'] loop
-      if to_regclass('auth.' || t) is not null then
-        execute format('delete from auth.%I', t);
-        execute format('select exists (select 1 from auth.%I)', t) into remains;
-        if remains then raise exception 'auth.% still has rows after the delete', t; end if;
-      end if;
-    end loop;
-  end \$\$" || { trap - EXIT
+  # then counted in a second statement, after the delete committed: a trigger returning NULL, a DO INSTEAD rule or a
+  # deferred constraint trigger re-inserting at COMMIT (all of which the dump can carry) would undo it unseen
+  creds="array['refresh_tokens', 'sessions', 'mfa_amr_claims', 'one_time_tokens', 'flow_state', 'mfa_challenges',
+    'saml_relay_states', 'oauth_authorizations']"
+  { q -c "do \$\$ declare t text; begin
+      foreach t in array $creds loop
+        if to_regclass('auth.' || t) is not null then execute format('delete from auth.%I', t); end if;
+      end loop;
+    end \$\$" &&
+    q -c "do \$\$ declare t text; remains boolean; begin
+      foreach t in array $creds loop
+        if to_regclass('auth.' || t) is not null then
+          execute format('select exists (select 1 from auth.%I)', t) into remains;
+          if remains then raise exception 'auth.% still has rows after the delete', t; end if;
+        end if;
+      end loop;
+    end \$\$"; } || { trap - EXIT
     echo "restore: FAILED: the DATABASE WAS RESTORED from $rel but its sessions could not be deleted (ROTATE_KEYS); delete this project, then import again" >&2
     exit 5; }
   echo "restore: the restored sessions are deleted (ROTATE_KEYS)"

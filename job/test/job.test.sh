@@ -280,6 +280,12 @@ silent rule "create rule keep_links as on delete to auth.one_time_tokens do inst
   "drop rule if exists keep_links on auth.one_time_tokens"
 check 'R2: a delete a DO INSTEAD rule swallows fails the restore with exit 5' [ "$rc" = 5 ]
 check 'R2: the count caught it (names auth.one_time_tokens)' grep -q 'auth.one_time_tokens still has rows after the delete' <<< "$out"
+silent deferred "create function public.put_back() returns trigger language plpgsql as \$\$ begin insert into auth.refresh_tokens values (OLD.*); return null; end \$\$;
+  create constraint trigger put_back after delete on auth.refresh_tokens deferrable initially deferred for each row execute function public.put_back()" \
+  "drop trigger if exists put_back on auth.refresh_tokens; drop function if exists public.put_back()"
+check 'FR2: a deferred constraint trigger that puts the rows back at commit fails the restore with exit 5' [ "$rc" = 5 ]
+check 'FR2: and does not say the sessions are deleted' bash -c '! grep -q "sessions are deleted" <<< "$1"' _ "$out"
+check 'FR2: the count after the commit caught it (names auth.refresh_tokens)' grep -q 'auth.refresh_tokens still has rows after the delete' <<< "$out"
 # a foreign dump with neither table: nothing to delete, no error (into a database with pg_cron, as every project's is)
 sql db-empty "create extension if not exists pg_cron" > /dev/null
 JOB_ENV=(-e BACKUP_SUBDIR=empty)
