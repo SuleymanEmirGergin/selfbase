@@ -160,10 +160,10 @@ HOLD=selfbase_restore_hold
 # committed: pg_restore exited 0, the database is the backup's; the cron and ledger steps are never undone over it
 committed() { db_done=1 held=0 jobs='' contained=1; }
 cleanup() {
-  local rc=$? was=$wstop
+  local rc=$?
   # a signal ended the script while a writer ran: it is stopped and reaped before its temp dir goes, so nothing writes
-  # there after; a pg_restore that still exited 0 had committed
-  if [ -n "$w" ]; then reap; [ "$was" != stop_restore ] || [ "$wrc" != 0 ] || committed; fi
+  # there after (reap records a pg_restore that still exited 0 as committed)
+  [ -z "$w" ] || reap
   [ -z "$t" ] || rm -rf "$t"
   [ "$rc" != 0 ] || return 0
   if [ "$contained" = 0 ]; then
@@ -205,7 +205,7 @@ at_floor() {
 # inodes every second; at the floor <stop> runs (empty: none), the writer's group is killed and the restore ends with
 # exit 6. The cleanup trap then removes the temp dir and undoes the cron and ledger steps.
 # reap: stops the running writer (its <stop> first: one that fails leaves the state unknown), kills its process group
-# and waits for it; wrc: its exit status
+# and waits for it; wrc: its exit status. A pg_restore that exited 0 had committed
 reap() {
   [ -z "$wstop" ] || "$wstop" || contained=0
   kill -TERM -- "-$w" 2> /dev/null || kill -TERM "$w" 2> /dev/null || true
@@ -213,6 +213,8 @@ reap() {
   # 127: watched's own wait had already reaped it when the signal came, and its status is lost with it: a pg_restore
   # not yet recorded as committed may have committed
   [ "$wrc" != 127 ] || [ "$wstop" != stop_restore ] || [ "$db_done" = 1 ] || contained=0
+  # recorded before w is cleared: a signal between the two finds the commit
+  [ "$wrc" != 0 ] || [ "$wstop" != stop_restore ] || committed
   w=''
 }
 watched() {
@@ -221,8 +223,8 @@ watched() {
   while kill -0 "$w" 2> /dev/null; do
     if at_floor; then
       reap
-      # a writer that exited 0 had finished before the stop reached it (pg_restore committed): nothing to roll back
-      [ "$wrc" != 0 ] || { contained=1; return 0; }
+      # a writer that exited 0 had finished before the stop reached it (pg_restore committed, as reap recorded)
+      [ "$wrc" != 0 ] || return 0
       [ "$contained" = 1 ] || exit 8
       echo "restore: REFUSED: the volume of the project's data reached the floor; at least $((need / 1024)) MiB ($rule) and 10% of its inodes must stay free; the restore was stopped and rolled back, nothing was changed; free space first" >&2
       exit 6

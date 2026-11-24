@@ -54,8 +54,13 @@ shadows() {
   { sed -nE 's/^[[:space:]]*local[[:space:]]+//p' "job/$f" | tr ' ' '\n' | sed -E 's/=.*//' | grep -xF -f <(printf '%s\n' "$@") || true; } |
     sort -u | tr '\n' ' '
 }
-s=$(shadows restore.sh t w wstop wrc jobs db_done held swapped contained rel HOLD storage need rule PGOPTIONS)
+s=$(shadows restore.sh t w wstop wrc jobs db_done held swapped contained rel HOLD storage need rule PGOPTIONS \
+  xids blind rs wnat plog stop_by)
 check 'M2: no function of restore.sh shadows a global its cleanup reads' [ -z "$s" ]; [ -z "$s" ] || echo "shadowed: $s" >&2
+# 1: a writer reaped with status 0 had committed: reap records that before it clears w, or a signal between the two
+# finds neither (the window is a few builtins wide, too narrow to hit from a test: the order is checked here)
+first=$(sed -n '/^reap() {/,/^}/p' job/restore.sh | grep -v '^[[:space:]]*#' | grep -oE "committed|^  w=''" | head -n1)
+check '1: reap records the commit before it clears the writer' [ "$first" = committed ]
 s=$(shadows backup.sh rc w tmp sub ts)
 check 'M2: no function of backup.sh shadows a global its trap reads' [ -z "$s" ]; [ -z "$s" ] || echo "shadowed: $s" >&2
 
@@ -410,6 +415,15 @@ case " \$* " in *" -xzf "*) $2 ;; esac
 exec /usr/bin/tar "\$@"
 EOF
 }
+# pgrstandin <name> <script>: /backups/standin/<name>/pg_restore, a pg_restore whose restore (--single-transaction)
+# runs the script instead (its arguments in "$@"; real runs the real pg_restore); every other call is the real one
+pgrstandin() { docker run --rm -i -v "$P-backups:/backups" "$IMAGE" bash -c \
+  "mkdir -p /backups/standin/$1 && cat > /backups/standin/$1/pg_restore && chmod +x /backups/standin/$1/pg_restore" <<EOF
+#!/bin/bash
+real() { PATH=\${PATH#*:} pg_restore "\$@"; }
+case " \$* " in *" --single-transaction "*) $2 ;; *) real "\$@" ;; esac
+EOF
+}
 emarker() { sql db-empty 'select v from public.e_marker'; }
 sql db-empty "create table public.e_marker (v text); insert into public.e_marker values ('in-backup')" > /dev/null
 JOB_ENV=(-e BACKUP_SUBDIR=esmall)
@@ -564,6 +578,15 @@ check '2: it says the state is unknown and claims no rollback' \
   bash -c 'grep -q "STATE UNKNOWN" <<< "$1" && ! grep -qE "rolled back|unchanged|set active again" <<< "$1"' _ "$out"
 sql db-empty "select pg_terminate_backend(pid) from pg_stat_activity where backend_type = 'client backend' and pid <> pg_backend_pid()" > /dev/null
 sql db-empty "update cron.job set active = true where jobname = 'e_job'" > /dev/null
+# 1: a pg_restore that committed and exits 0 as the floor stop reaches it, signalling the restore as it goes: the
+# commit is kept (exit 7: database restored, storage not replaced), never reported as nothing changed
+pgrstandin zero 'real "$@" || exit; trap "kill -TERM $PPID; exit 0" TERM; head -c 100M /dev/zero > /data/storage/.fill 2> /dev/null
+  sleep 30 & wait; exit 0'
+rc=0; out=$(cramped "$small" 1 '' 'export PATH=/backups/standin/zero:$PATH') || rc=$?
+check '1: a commit reaped at the floor stop, then a signal, exits 7' [ "$rc" = 7 ]; [ "$rc" = 7 ] || echo "$out" >&2
+check '1: and never says nothing changed' bash -c '! grep -qE "unchanged|rolled back" <<< "$1"' _ "$out"
+check '1: (the database is the backup'"'"'s)' [ "$(emarker)" = in-backup ]
+sql db-empty "update public.e_marker set v = 'after-backup'" > /dev/null
 # E: the watchdog. What the server writes counts too: a materialized view the dump refreshes is one short line in the
 # estimate, over a row count kept in a table (1 when it was refreshed, 2 million in the dump). The database and the
 # storage volume share one 512 MiB tmpfs, as Docker volumes share a disk; 100 MiB of room above the floor
