@@ -130,10 +130,12 @@ platformTransfer.post('/projects/import', async (c) => {
   }
   // rotate_keys: the job generates a new JWT secret and keys, and deletes the sessions the backup brought
   if (rotate === 'true') for (const k of ROTATED) delete secrets[k]
+  // a JWT secret generated here (none carried) is a rotation whatever the caller sent: the restored sessions go too
+  const rotating = !secrets.JWT_SECRET
   await checkBackupSpace()
   const { project, jobId } = await createProject(pool, { orgId: org.id, name, size, pool: 'project', createdBy: c.get('user').id,
     reuseSecrets: secrets, config: sections,
-    job: { type: 'project.import', status: 'RESTORING', payload: { backup_dir: dir, ...(rotate === 'true' ? { rotate_keys: true } : {}) } } })
+    job: { type: 'project.import', status: 'RESTORING', payload: { backup_dir: dir, ...(rotating ? { rotate_keys: true } : {}) } } })
   c.set('audit', { ...c.get('audit'), projectId: project.id, target: project.ref })
   return c.json({ project: platformProject({ ...project, org_slug: org.slug, certificate: 'pending' } as ProjectRow), job_id: jobId,
     ignored, unknown }, 202)

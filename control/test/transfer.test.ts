@@ -827,6 +827,25 @@ describe('fix round 2', () => {
     expect(fake.callsOf('ensure').length).toBe(ensures + 1)
   })
 
+  test('FR2: a plain import whose env file carries no JWT secret gets new keys, so its restore deletes the sessions too', async () => {
+    const text = v1Env().text.split('\n').filter((l) => !/^(JWT_SECRET|ANON_KEY|SERVICE_ROLE_KEY)=/.test(l)).join('\n')
+    fake.jobResult = () => ({ status: 'succeeded', exitCode: 0, tail: ROTATED_TAIL })
+    const res = await postForm(owner.token, form({ ...importFields({ name: 'fresh-keys' }), env_file: envBlob(text) }))
+    expect(res.status).toBe(202)
+    const out = await res.json()
+    workers()
+    expect((await finished(out.job_id)).status).toBe('succeeded')
+    expect(fake.callsOf('runJob').find((c) => c.args[1] === 'restore')?.args[3].ROTATE_KEYS).toBe('1')
+    expect((await pool.query('select payload from control.jobs where id = $1', [out.job_id])).rows[0].payload.rotate_keys).toBe(true)
+  })
+
+  test('FR2: a plain import that carries its keys stays plain (no ROTATE_KEYS)', async () => {
+    const out = await (await postForm(owner.token, form({ ...importFields({ name: 'kept-keys' }), env_file: envBlob(v1Env().text) }))).json()
+    workers()
+    expect((await finished(out.job_id)).status).toBe('succeeded')
+    expect(fake.callsOf('runJob').find((c) => c.args[1] === 'restore')?.args[3].ROTATE_KEYS).toBeUndefined()
+  })
+
   test('R1: an import an earlier control left in flight fails with core, rest, fn and pooler stopped (it may have started core on the throwaway secret)', async () => {
     const p = await project(acme.id, { name: 'rot-inflight-stop', status: 'RESTORING' })
     const id = (await pool.query(`insert into control.jobs (type, lane, project_id, step, status, payload)
