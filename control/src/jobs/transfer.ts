@@ -85,9 +85,10 @@ async function waitFor(ctx: JobCtx, ref: string, type: 'backup' | 'restore'): Pr
         + 'delete this project, then run the import again')
     }
     if (type === 'restore' && s.exitCode === 8) {
-      // the import's onFail stops the database with the four (as for every failure past the restore's start)
-      throw new Error('the restore could not be shown to have rolled back (its sessions may not have ended, or its transaction may have '
-        + 'committed), so the database may be in either state: its database is stopped as well; delete this project, then import again')
+      // the import's onFail stops the database with the four (as for every failure past the restore's start); that stop
+      // can fail too (reconcile then retries it), so the message says it is attempted, not done
+      throw new Error('the restore was stopped after pg_restore started and before it finished, so the database may hold the whole backup '
+        + 'or none of it, and the storage files were not replaced: control tries to stop its database as well; delete this project, then import again')
     }
     throw new Error(`the ${type} job failed (${s.exitCode === null ? 'it never started' : `exit ${s.exitCode}`})`)
   }
