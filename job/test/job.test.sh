@@ -16,7 +16,7 @@ NET=${P}_default
 compose() { docker compose -p "$P" -f template/compose.test.yml "$@"; }
 cleanup() {
   compose down -v --remove-orphans > /dev/null 2>&1 || true
-  docker volume rm -f "$P-backups" "$P-storage" "$P-v1-storage" "$P-empty-storage" > /dev/null 2>&1 || true
+  docker volume rm -f "$P-backups" "$P-storage" "$P-v1-storage" "$P-empty-storage" "$P-big-storage" > /dev/null 2>&1 || true
 }
 trap cleanup EXIT
 fails=0
@@ -95,15 +95,43 @@ check 'R3: a nearly full backup volume is refused (exit 4)' [ "$rc" = 4 ]
 check 'R3: the refusal says how much is free and needed' grep -q 'backup: REFUSED: .* MiB free on the backup volume, at least 5120 MiB' <<< "$out"
 check 'R3: nothing is written on a refused run' grep -qx 'entries=0' <<< "$out"
 # the provisioner's node floor (BACKUP_MIN_FREE_MIB) replaces the default, e.g. on a small test disk
+# 64 MiB: room for the test database (I2 counts it against the floor)
 small() { docker run --rm --network "$NET" -e PGHOST=db -e PGPASSWORD="$PW" -e BACKUP_SUBDIR=t -e "BACKUP_MIN_FREE_MIB=$1" \
-  --mount type=tmpfs,destination=/backups,tmpfs-size=16m -v "$P-storage:/data/storage:ro" "$IMAGE" bash /scripts/backup.sh 2>&1; }
+  --mount type=tmpfs,destination=/backups,tmpfs-size=64m -v "$P-storage:/data/storage:ro" "$IMAGE" bash /scripts/backup.sh 2>&1; }
 rc=0; out=$(small 1) || rc=$?
-check 'R3: BACKUP_MIN_FREE_MIB=1 lets a backup run on a 16 MiB volume' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
+check 'R3: BACKUP_MIN_FREE_MIB=1 lets a backup run on a 64 MiB volume' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
 rc=0; out=$(small 64) || rc=$?
 check 'R3: BACKUP_MIN_FREE_MIB=64 refuses it, naming the setting' [ "$rc" = 4 ]
 check 'R3: the refusal names BACKUP_MIN_FREE_MIB' grep -q 'at least 64 MiB (BACKUP_MIN_FREE_MIB) needed' <<< "$out"
 rc=0; out=$(small 1x) || rc=$?
 check 'R3: a BACKUP_MIN_FREE_MIB that is not a number is refused (exit 2)' [ "$rc" = 2 ]
+
+# ---- I2: the job sizes the backup at its start, from the database and the storage files themselves ----
+# a 256 MiB volume whose floor leaves 64 MiB of headroom for this database (and the small storage)
+dbm=$(( $(sql db "select pg_database_size(current_database())") / 1048576 ))
+floor=$((256 - dbm - 64))
+sized() { docker run --rm --network "$NET" -e PGHOST=db -e PGPASSWORD="$PW" -e BACKUP_SUBDIR=t -e "BACKUP_MIN_FREE_MIB=$floor" \
+  --mount type=tmpfs,destination=/backups,tmpfs-size=256m -v "$1:/data/storage:ro" "$IMAGE" \
+  bash -c 'bash /scripts/backup.sh; rc=$?; echo "entries=$(ls -A /backups/t 2>/dev/null | wc -l)"; exit $rc' 2>&1; }
+rc=0; out=$(sized "$P-storage") || rc=$?
+check 'I2: with 64 MiB of headroom above the floor the backup runs' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
+# 100 MiB of storage files whose rows say nothing, or a negative size: the job counts the files
+sql db "insert into storage.buckets (id, name) values ('i2', 'i2');
+  insert into storage.objects (bucket_id, name, metadata) values ('i2', 'big', '{\"size\": -1000000000000000}')" > /dev/null
+docker volume create "$P-big-storage" > /dev/null
+docker run --rm -v "$P-big-storage:/s" "$IMAGE" bash -c 'head -c 100M /dev/urandom > /s/big'
+rc=0; out=$(sized "$P-big-storage") || rc=$?
+check 'I2: storage files beyond the headroom are refused (exit 4) whatever the storage rows say' [ "$rc" = 4 ]
+check 'I2: the refusal names the size it measured' grep -qE 'needed after this backup of up to 1[0-9]{2} MiB; free space first' <<< "$out"
+check 'I2: nothing is written on that refused run' grep -qx 'entries=0' <<< "$out"
+sql db "delete from storage.objects where bucket_id = 'i2'; delete from storage.buckets where id = 'i2'" > /dev/null
+# a database that grew after control admitted the backup: refused when the job starts
+sql db "create table public.grow (b text);
+  insert into public.grow select string_agg(md5(random()::text), '') from generate_series(1, 98304) g, generate_series(1, 32) h group by g" > /dev/null
+rc=0; out=$(sized "$P-storage") || rc=$?
+check 'I2: a database grown beyond the headroom is refused (exit 4) at the job start' [ "$rc" = 4 ]
+check 'I2: nothing is written on that refused run either' grep -qx 'entries=0' <<< "$out"
+sql db "drop table public.grow" > /dev/null
 
 # ---- with MANIFEST_B64: project.json is written and listed ----
 JOB_ENV=(-e BACKUP_SUBDIR=export-t -e CONTROL_GID=1234 -e "MANIFEST_B64=$(printf '{"v":1}' | base64 | tr -d '\n')")

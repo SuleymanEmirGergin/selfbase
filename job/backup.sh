@@ -7,8 +7,9 @@
 #   BACKUP_RETENTION_DAYS (default 7), EXPORT_RETENTION_DAYS (export-<ref>, default 7), BACKUP_MAX_COUNT (per
 #   subdirectory, default 14), MANIFEST_B64 (an export: base64 of project.json, sealed by control),
 #   CONTROL_GID (an export: control's group, default 1000)
-# The provisioner mounts only /backups/$BACKUP_SUBDIR (R5). The run is refused (exit 4, nothing written) while the
-# backup volume has less than 10% or 5 GiB free, whichever is larger: one project must never fill the shared disk.
+# The provisioner mounts only /backups/$BACKUP_SUBDIR (R5). The run is refused (exit 4, nothing written) when the
+# backup volume would keep less than 10% or 5 GiB free, whichever is larger, after this backup (sized at its start
+# from the database and the storage files): one project must never fill the shared disk.
 # BACKUP_MIN_FREE_MIB (the provisioner's node setting, never a request's) replaces that floor, e.g. on a small test disk.
 # Writes /backups/$BACKUP_SUBDIR/<YYYYMMDD-HHMMSS UTC>/{db.dump (pg_dump -Fc), globals.sql (roles, without
 # passwords; for a disaster restore onto a fresh cluster only), storage.tar.gz, project.json (exports only),
@@ -49,7 +50,13 @@ mkdir -p "$backups"
 read -r total avail < <(df -Pk "$backups" | awk 'NR == 2 { print $2, $4 }')
 if [ -n "$min_free" ]; then need=$((min_free * 1024)) rule=BACKUP_MIN_FREE_MIB
 else need=$(( total / 10 > 5242880 ? total / 10 : 5242880 )) rule='10% or 5 GiB, whichever is larger'; fi
-[ "$avail" -ge "$need" ] || { echo "backup: REFUSED: $((avail / 1024)) MiB free on the backup volume, at least $((need / 1024)) MiB ($rule) needed; free space first" >&2; exit 4; }
+# what this backup will write, at most: the database as postgres stores it (the dump is smaller) and the storage
+# files as they are on disk, measured here and now (control's check before queueing is an early refusal only)
+db_bytes=$(psql -XAtq -v ON_ERROR_STOP=1 -c 'select pg_database_size(current_database())')
+[[ $db_bytes =~ ^[0-9]+$ ]] || { echo "backup: the database size could not be read" >&2; exit 1; }
+est=$((db_bytes / 1024))
+[ "$sub" = control ] || est=$((est + $(du -sk "$storage" | cut -f1)))
+[ $((avail - est)) -ge "$need" ] || { echo "backup: REFUSED: $((avail / 1024)) MiB free on the backup volume, at least $((need / 1024)) MiB ($rule) needed after this backup of up to $((est / 1024)) MiB; free space first" >&2; exit 4; }
 [ ! -e "$backups/$ts" ] || { echo "backup: $sub/$ts already exists" >&2; exit 1; }
 # leftovers of killed runs (a running backup's temp dir is never a day old)
 find "$backups" -mindepth 1 -maxdepth 1 -name '.tmp-*' -mmin +1440 -exec rm -rf {} +

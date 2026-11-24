@@ -15,7 +15,7 @@ import { reconcileOnce } from '../src/reconcile.ts'
 import { enqueueDailyBackups, msUntilNext } from '../src/schedule.ts'
 import { backfillFingerprints, fingerprint, getSecrets, putSecret } from '../src/secrets.ts'
 import { forwardTarget } from '../src/forward.ts'
-import { disk } from '../src/disk.ts'
+import { disk, SIZE_SQL } from '../src/disk.ts'
 import { buildEnv, loadProjectEnv, projectConfig, SECRET_ENV } from '../src/project-env.ts'
 import { FakeProvisioner } from './fake-provisioner.ts'
 import { join, org, project, resetDashboard, user, v1Env, withToken } from './helpers.ts'
@@ -31,11 +31,14 @@ let cert: 'ok' | 'pending' = 'ok'
 const running: { stop(): Promise<void> }[] = []
 // core's API and admin listeners in one: records what the admin listener was sent
 const adminSeen: { url: string; body: string }[] = []
+// a hung core: the size query gets no answer until the test ends it
+const hung: { on: boolean; held: import('node:http').ServerResponse[] } = { on: false, held: [] }
 const stub = createServer(async (req, res) => {
   let body = ''
   for await (const chunk of req) body += chunk
   if (req.url?.startsWith('/admin/')) adminSeen.push({ url: req.url, body })
   const sized = req.url === '/admin/sql' && body.includes('pg_database_size')
+  if (sized && hung.on) return void hung.held.push(res)
   res.writeHead(200, { 'content-type': 'application/json' }).end(sized ? '{"columns":["bytes"],"rows":[["1000"]]}' : '{}')
 })
 const workers = (waits: Record<string, number> = {}) => {
@@ -816,5 +819,94 @@ describe('fix round 2', () => {
     expect(jobs.filter((j) => j.status === 'pending')).toHaveLength(1)
     expect(jobs.length).toBeGreaterThan(1)
     for (const j of jobs.filter((j) => j.status !== 'pending')) expect(j).toMatchObject({ status: 'failed', error: expect.stringMatching(/GiB/) })
+  })
+})
+
+describe('I2: backups are sized in the job, from what the dump reads', () => {
+  const GiB = 2 ** 30
+  afterEach(() => {
+    vi.restoreAllMocks()
+    hung.on = false
+    for (const r of hung.held.splice(0)) r.destroy()
+  })
+  const lastSize = (projectId: string, bytes: number) => pool.query(`insert into control.backups (project_id, kind, status, started_at,
+    finished_at, size_bytes, location) values ($1, 'logical', 'succeeded', now(), now(), $2, 'x/20261122-031500')`, [projectId, bytes])
+
+  test('zeroed, negative or missing storage metadata never lowers the size below the database', async () => {
+    const c = await pool.connect()
+    try {
+      await c.query('begin')
+      await c.query(`insert into storage.buckets (id, name) values ('i2', 'i2')`)
+      await c.query(`insert into storage.objects (bucket_id, name, metadata) values ('i2', 'neg', '{"size": -1000000000000000}'),
+        ('i2', 'zero', '{"size": 0}'), ('i2', 'none', '{}'), ('i2', 'real', '{"size": 5}')`)
+      const [size, db] = (await c.query(`select (${SIZE_SQL})::bigint as size, pg_database_size(current_database()) as db`)).rows.map((r) => [Number(r.size), Number(r.db)])[0]
+      expect(size).toBe(db + 5)
+    } finally {
+      await c.query('rollback')
+      c.release()
+    }
+  })
+
+  test('a project whose core is down is admitted with its last known size; refused only when no size is known', async () => {
+    const p = await project(acme.id, { name: 'i2-down', status: 'ACTIVE_UNHEALTHY' })
+    vi.spyOn(disk, 'space').mockResolvedValue({ free: 20 * GiB, total: 100 * GiB })
+    vi.spyOn(disk, 'projectBytes').mockRejectedValue(new Error('core down'))
+    const none = await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/backups`)
+    expect(none.status).toBe(503)
+    expect(await none.json()).toMatchObject({ error: 'project_size_unknown' })
+    // the newest succeeded backup's size stands in: too big for the headroom, then small enough
+    await lastSize(p.id, 12 * GiB)
+    expect((await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/backups`)).status).toBe(507)
+    await lastSize(p.id, 1 * GiB)
+    expect((await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/backups`)).status).toBe(202)
+  })
+
+  test('the nightly run sizes each project with a short timeout; a hung core neither stalls the others nor loses its backup', async () => {
+    await pool.query(`delete from control.jobs where type in ('project.backup', 'control.backup')`)
+    await pool.query(`update control.projects set status = 'REMOVED' where status = any($1)`, [['ACTIVE_HEALTHY', 'ACTIVE_UNHEALTHY', 'COMING_UP']])
+    const known = await project(acme.id, { name: 'i2-night-known' })
+    const unknown = await project(acme.id, { name: 'i2-night-unknown' })
+    await lastSize(known.id, 1 * GiB)
+    vi.spyOn(disk, 'space').mockResolvedValue({ free: 20 * GiB, total: 100 * GiB })
+    hung.on = true
+    const ms = disk.sizeMs
+    disk.sizeMs = 200
+    try {
+      const t = Date.now()
+      await enqueueDailyBackups(pool)
+      expect(Date.now() - t).toBeLessThan(5000)
+    } finally {
+      disk.sizeMs = ms
+    }
+    const jobOf = async (id: string) => (await pool.query(`select status, error from control.jobs where project_id = $1 and type = 'project.backup'`, [id])).rows
+    expect(await jobOf(known.id)).toEqual([{ status: 'pending', error: null }])
+    expect(await jobOf(unknown.id)).toEqual([{ status: 'failed', error: expect.stringMatching(/size could not be read/) }])
+  })
+
+  test('the job refusing for space (exit 4) fails as backup_volume_full with the numbers', async () => {
+    const p = await project(acme.id, { name: 'i2-refused' })
+    fake.jobResult = () => ({ status: 'failed', exitCode: 4,
+      tail: 'backup: REFUSED: 900 MiB free on the backup volume, at least 100 MiB (BACKUP_MIN_FREE_MIB) needed after this backup of up to 850 MiB; free space first\n' })
+    const { job_id } = await (await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/backups`)).json()
+    workers()
+    const job = await finished(job_id)
+    expect(job).toMatchObject({ status: 'failed', attempts: 1 })
+    expect(job.error).toBe('backup_volume_full: the backup volume has 900 MiB free; this backup needs up to 850 MiB and 100 MiB '
+      + '(BACKUP_MIN_FREE_MIB) must stay free. Remove old backups or exports, or grow the volume, then try again.')
+    expect((await row(p.id)).status).toBe('ACTIVE_HEALTHY')
+  })
+
+  test("BACKUP_MIN_FREE_MIB, the jobs' floor, is control's floor too", async () => {
+    const p = await project(acme.id, { name: 'i2-floor' })
+    vi.spyOn(disk, 'space').mockResolvedValue({ free: 1 * GiB, total: 4 * GiB })
+    vi.spyOn(disk, 'projectBytes').mockResolvedValue(0.5 * GiB)
+    expect((await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/backups`)).status).toBe(507)
+    const saved = config.backupMinFreeMib
+    config.backupMinFreeMib = 100
+    try {
+      expect((await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/backups`)).status).toBe(202)
+    } finally {
+      config.backupMinFreeMib = saved
+    }
   })
 })

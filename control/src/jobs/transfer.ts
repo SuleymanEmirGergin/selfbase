@@ -16,6 +16,16 @@ export const RESTORE_STOPS = ['core', 'rest', 'fn', 'pooler']
 const JOB_MS = 6 * 3600_000
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
+// backup.sh's exit 4: the volume would keep less than the floor free after this backup (it measured the database and
+// the storage files at its start). Only the numbers and the rule's name are taken from its line, nothing else
+const REFUSED = /^backup: REFUSED: (\d+) MiB free on the backup volume, at least (\d+) MiB \((BACKUP_MIN_FREE_MIB|10% or 5 GiB, whichever is larger)\) needed after this backup of up to (\d+) MiB; free space first$/m
+function volumeFull(tail: string): string {
+  const m = REFUSED.exec(tail)
+  const numbers = m ? `the backup volume has ${m[1]} MiB free; this backup needs up to ${m[4]} MiB and ${m[2]} MiB (${m[3]}) must stay free`
+    : 'the backup volume would keep less than its floor free after this backup'
+  return `backup_volume_full: ${numbers}. Remove old backups or exports, or grow the volume, then try again.`
+}
+
 /** Waits for the provisioner job of `type` to end; its output tail when it succeeded, else an error saying what changed. */
 async function waitFor(ctx: JobCtx, ref: string, type: 'backup' | 'restore'): Promise<string> {
   const until = Date.now() + JOB_MS
@@ -45,6 +55,7 @@ async function waitFor(ctx: JobCtx, ref: string, type: 'backup' | 'restore'): Pr
     const tail = s.tail.trim().split('\n').slice(-10).join('\n')
     if (tail && s.status === 'succeeded') await ctx.log(`${type}_output`, { tail })
     if (s.status === 'succeeded') return s.tail
+    if (type === 'backup' && s.exitCode === 4) throw new Error(volumeFull(s.tail))
     if (type === 'restore' && s.exitCode === 10) throw new Error('the restore failed and rolled back: the database was not changed')
     if (type === 'restore' && s.exitCode === 5) {
       throw new Error('the database was restored but its sessions could not be deleted (rotate_keys): delete this project, then import again')

@@ -1,7 +1,7 @@
 // Daily backups (plan D-7, spec 8.8): at 03:15 UTC one control.backup and one project.backup per project that should
 // be running (ACTIVE_HEALTHY, ACTIVE_UNHEALTHY, COMING_UP: a live database; one that is really down fails as a job); the heavy lane runs them one at a time. A run missed while control was down is not replayed.
 import type pg from 'pg'
-import { checkBackupSpace, disk } from './disk.ts'
+import { backupBytes, checkBackupSpace } from './disk.ts'
 import { DESIRED_RUNNING, enqueue, enqueueIfIdle } from './jobs/index.ts'
 
 /** Milliseconds from `now` to the next 03:15 UTC (a full day when it is 03:15 exactly). */
@@ -30,8 +30,9 @@ export async function enqueueDailyBackups(db: pg.Pool): Promise<void> {
   // each backup is sized against the space the ones queued before it tonight will take
   let queuedBytes = 0
   for (const r of rows) {
-    const bytes = await disk.projectBytes(r).catch(() => null)
-    const refusal = bytes === null ? "the project's size could not be read" : await checkBackupSpace(queuedBytes + bytes).then(() => null, (e: Error) => e.message)
+    // core's answer within disk.sizeMs, else the newest backup's size (a project whose core is down still gets one)
+    const bytes = await backupBytes(db, r)
+    const refusal = bytes === null ? "the project's size could not be read and it has no earlier backup" : await checkBackupSpace(queuedBytes + bytes).then(() => null, (e: Error) => e.message)
     if (refusal) {
       console.error(`schedule: backup of ${r.ref} refused: ${refusal}`)
       await db.query(`insert into control.jobs (type, project_id, lane, step, payload, status, error) values ('project.backup', $1, 'heavy', '0', '{}', 'failed', $2)`,

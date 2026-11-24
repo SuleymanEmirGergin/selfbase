@@ -30,6 +30,11 @@ export function loadConfig(input: Record<string, string | undefined> = process.e
     const n = Number(v)
     return Number.isFinite(n) && n >= 0 ? n : fail(`${k} must be a non-negative number`)
   }
+  const mib = (k: string) => {
+    const v = env[k]
+    if (v === undefined || v === '') return null
+    return /^[1-9]\d{0,7}$/.test(v) ? Number(v) : fail(`${k} must be a whole number of MiB from 1`)
+  }
   const oneOf = <T extends string>(k: string, dflt: T, allowed: T[]) => {
     const v = (env[k] || dflt) as T
     return allowed.includes(v) ? v : fail(`${k} must be one of ${allowed.join(', ')}`)
@@ -92,6 +97,8 @@ export function loadConfig(input: Record<string, string | undefined> = process.e
     certProbe: oneOf('CERT_PROBE', 'on', ['on', 'off']),
     logsUrl: env.LOGS_URL || 'http://selfbase-logs:9428',
     backupRetentionDays: num('BACKUP_RETENTION_DAYS', 7),
+    // the backup volume's free-space floor in MiB, as the provisioner gives the backup jobs; null: 10% or 5 GiB (disk.ts)
+    backupMinFreeMib: mib('BACKUP_MIN_FREE_MIB'),
     // days an export's backups row is listed; the job's retention removes its files (reconcile.ts)
     exportRetentionDays: num('EXPORT_RETENTION_DAYS', 7),
     // a Studio session ends this long after sign-in, or after this long without a refresh (session.ts)
