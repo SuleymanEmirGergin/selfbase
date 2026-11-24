@@ -107,7 +107,10 @@ export async function rotate(refreshToken: string): Promise<SessionJson> {
 // S4: rotation and every revocation of a user's tokens hold this per-user transaction lock. Without it a revocation's
 // UPDATE could run while a rotation had inserted its child token but not committed it: the UPDATE's snapshot misses
 // the child, which then outlives the logout. Under the lock the revocation's UPDATE starts after the rotation
-// committed, so it sees (and revokes) the child. Lock order: an auth.users row lock may come before it, never after.
+// committed, so it sees (and revokes) the child. Lock order is not uniform: the admin ban holds the auth.users row
+// (FOR UPDATE) and then asks for this lock, while a rotation holds this lock and then its child insert takes FOR KEY
+// SHARE on that row. Postgres detects that cycle and aborts one side with a 500; either side rolls back whole, so no
+// revocation is lost and no ban reports success with a live token.
 const LOCK_NS = 0x5e55 // the two-key advisory lock space of refresh tokens
 const lockUser = (c: PoolClient, userId: string) => c.query('select pg_advisory_xact_lock($1, hashtext($2::text))', [LOCK_NS, userId])
 
