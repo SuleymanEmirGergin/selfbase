@@ -24,7 +24,8 @@ const PRUNE = `delete from control.jobs where type = 'project.apply' and created
   and created_at < now() - interval '7 days'`
 // audit retention: 90 days
 const PRUNE_AUDIT = `delete from control.audit_log where at < now() - interval '90 days'`
-// exports are listed for EXPORT_RETENTION_DAYS; their files are the backup job's to remove
+// exports are listed for EXPORT_RETENTION_DAYS; their files go by the same rule, through the nightly project.prune
+// (schedule.ts), a deleted project's too
 const PRUNE_EXPORTS = `delete from control.backups where location like 'export-%'
   and coalesce(finished_at, started_at) < now() - make_interval(days => $1)`
 

@@ -149,6 +149,20 @@ check 'control can read project.json but not the dump' docker run --rm --user 10
 check 'another uid cannot read project.json' docker run --rm --user 1001:1001 -v "$P-backups:/backups:ro" "$IMAGE" bash -c "
   ! cat /backups/export-t/$ets/project.json > /dev/null 2>&1"
 
+# ---- I3: prune only, for an export whose project is gone: no network, no database, no storage mount ----
+in_backups 'mkdir -p /backups/export-gone/20200101-000000 /backups/export-gone/20200102-000000
+  mkdir -p "/backups/export-gone/$(date -u +%Y%m%d-%H%M%S)"'
+prune() { docker run --rm --network none -v "$P-backups:/backups" -e "BACKUP_SUBDIR=$1" -e BACKUP_PRUNE_ONLY=1 \
+  -e EXPORT_RETENTION_DAYS=7 "$IMAGE" bash /scripts/backup.sh 2>&1; }
+rc=0; out=$(prune export-gone) || rc=$?
+check 'I3: a prune-only run needs neither the database nor the storage files' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
+check 'I3: it deletes the exports older than EXPORT_RETENTION_DAYS and reports each' [ "$(grep -cE '^backup: deleted export-gone/2020010[12]-000000 \(older than 7 days\)$' <<< "$out")" = 2 ]
+check 'I3: it keeps a recent export and writes nothing' in_backups '[ "$(ls /backups/export-gone | wc -l)" = 1 ] && ! ls -a /backups/export-gone | grep -q "^.tmp-"'
+check 'I3: it prints no wrote line' bash -c '! grep -q "backup: wrote" <<< "$1"' _ "$out"
+rc=0; out=$(prune t) || rc=$?
+check 'I3: prune-only takes export-<ref> directories only (exit 2)' [ "$rc" = 2 ]
+check 'I3: and leaves a project backup directory untouched' in_backups "[ -f /backups/t/$ts/MANIFEST ]"
+
 # ---- the control database: no storage mount, no storage archive ----
 JOB_ENV=(-e BACKUP_SUBDIR=control)
 last=$(job db - bash /scripts/backup.sh | tail -n1)

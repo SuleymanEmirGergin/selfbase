@@ -309,6 +309,25 @@ test('backup job: one bind, its own backup directory only; storage volume; fixed
   assert.equal(exp.Mounts[0].Source, `/opt/selfbase/backups/export-${REF}`)
 })
 
+test('I3: a prune-only backup job (expired exports, a deleted project too) has no network and no storage', () => {
+  const spec = buildJob(job({ args: { dir: `export-${REF}` }, env: { BACKUP_PRUNE_ONLY: '1', EXPORT_RETENTION_DAYS: '7' } }), NODE)
+  const hc = spec.body.HostConfig as any
+  // the export directory only, never created on the host (nothing to prune when it is not there)
+  assert.deepEqual(hc.Mounts, [{ Type: 'bind', Source: `/opt/selfbase/backups/export-${REF}`, Target: `/backups/export-${REF}` }])
+  assert.equal(hc.NetworkMode, 'none')
+  assert.equal(spec.body.NetworkingConfig, undefined)
+  assert.deepEqual(spec.networks, [])
+  assert.ok((spec.body.Env as string[]).includes('BACKUP_PRUNE_ONLY=1'))
+  scan(spec, 'prune job')
+  // a project's own backups, control's, a restore or another value: refused
+  assert.throws(() => buildJob(job({ env: { BACKUP_PRUNE_ONLY: '1' } }), NODE), code('invalid_dir'))
+  assert.throws(() => buildJob(job({ ref: 'control', args: { dir: 'control' }, env: { BACKUP_PRUNE_ONLY: '1' } }), NODE), code('invalid_dir'))
+  assert.throws(() => buildJob(job({ type: 'restore', args: { dir: `export-${REF}/${TS}` }, env: { BACKUP_PRUNE_ONLY: '1' } }), NODE), code('invalid_env'))
+  for (const v of ['0', 'yes', '']) {
+    assert.throws(() => buildJob(job({ args: { dir: `export-${REF}` }, env: { BACKUP_PRUNE_ONLY: v } }), NODE), code('invalid_env'), v)
+  }
+})
+
 test('R5: a restore job mounts the one backup it reads, read-only', () => {
   for (const dir of [`${REF}/${TS}`, `export-zyxwvutsrqponmlkjihg/${TS}`, 'import/acme/app-v1']) {
     const spec = buildJob(job({ type: 'restore', args: { dir } }), NODE)

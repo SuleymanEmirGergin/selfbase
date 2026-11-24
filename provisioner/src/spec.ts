@@ -58,7 +58,7 @@ const HOST_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)
 const RESTORE_DIR_RE = /^(export-)?[a-z]{20}\/\d{8}-\d{6}$|^import\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/
 const JOB_TYPES: string[] = ['backup', 'restore', 'clone', 'basebackup', 'volume-copy', 'migra-diff']
 const JOB_CMD: Partial<Record<JobType, string[]>> = { backup: ['bash', '/scripts/backup.sh'], restore: ['bash', '/scripts/restore.sh'] }
-const JOB_ENV = new Set(['PGHOST', 'PGPASSWORD', 'PGUSER', 'PGDATABASE', 'BACKUP_SUBDIR', 'BACKUP_RETENTION_DAYS', 'EXPORT_RETENTION_DAYS', 'BACKUP_MAX_COUNT', 'RESTORE_DIR', 'MANIFEST_B64', 'CONTROL_GID', 'ROTATE_KEYS'])
+const JOB_ENV = new Set(['PGHOST', 'PGPASSWORD', 'PGUSER', 'PGDATABASE', 'BACKUP_SUBDIR', 'BACKUP_RETENTION_DAYS', 'EXPORT_RETENTION_DAYS', 'BACKUP_MAX_COUNT', 'RESTORE_DIR', 'MANIFEST_B64', 'CONTROL_GID', 'ROTATE_KEYS', 'BACKUP_PRUNE_ONLY'])
 const JOB_RES: SizeEntry = { mem_mb: 512, cpus: 0.5, pids: 512 }
 const NS: Record<string, number> = { ms: 1e6, s: 1e9, m: 6e10, h: 3.6e12 }
 
@@ -296,11 +296,17 @@ export function buildJob(input: JobInput, node: NodeSettings): ContainerSpec {
   const dir = checkDir(ref, env[key], type === 'restore')
   // the node's floor, never a request's (JOB_ENV has no such key)
   if (type === 'backup' && node.backupMinFreeMib) env.BACKUP_MIN_FREE_MIB = node.backupMinFreeMib
+  // retention alone over expired exports (backup.sh): of a deleted project too, so no network, storage or new directory
+  const prune = isPruneOnly({ type, env })
+  if (Object.hasOwn(env, 'BACKUP_PRUNE_ONLY') && (type !== 'backup' || env.BACKUP_PRUNE_ONLY !== '1')) {
+    refuse(400, 'invalid_env', 'BACKUP_PRUNE_ONLY is 1, on a backup job only')
+  }
+  if (prune && dir !== `export-${ref}`) refuse(400, 'invalid_dir', `a prune-only job takes export-${ref} only`)
 
   const service = `job-${type}`
   const name = containerName(ref, service)
-  const net = ref === 'control' ? node.controlNetwork : networkName(ref)
-  const storage = ref === 'control' ? []
+  const net = prune ? 'none' : ref === 'control' ? node.controlNetwork : networkName(ref)
+  const storage = ref === 'control' || prune ? []
     : [{ Type: 'volume', Source: volumeName(ref, 'storage'), Target: '/data/storage', ReadOnly: type === 'backup' }]
   const body: Record<string, unknown> = {
     Image: `${node.registry}/selfbase-job:${node.templateVersion}`,
@@ -313,9 +319,13 @@ export function buildJob(input: JobInput, node: NodeSettings): ContainerSpec {
       // the only bind mount the provisioner ever writes (AC-11), and only the job's own directory of it (R5): a backup
       // never sees another org's or control's backups, a restore reads its one backup and cannot change it
       Mounts: [{ Type: 'bind', Source: `${node.backupHostDir}/${dir}`, Target: `/backups/${dir}`,
-        ...(type === 'restore' ? { ReadOnly: true } : { BindOptions: { CreateMountpoint: true } }) }, ...storage],
+        ...(type === 'restore' ? { ReadOnly: true } : prune ? {} : { BindOptions: { CreateMountpoint: true } }) }, ...storage],
     },
-    NetworkingConfig: { EndpointsConfig: { [net]: {} } },
+    ...(prune ? {} : { NetworkingConfig: { EndpointsConfig: { [net]: {} } } }),
   }
-  return seal(name, service, body, [net])
+  return seal(name, service, body, prune ? [] : [net])
 }
+
+/** A backup job that only prunes expired exports: it needs no project network (ops.runJob). */
+export const isPruneOnly = (input: Pick<JobInput, 'type' | 'env'>) =>
+  input.type === 'backup' && isObj(input.env) && (input.env as Record<string, unknown>).BACKUP_PRUNE_ONLY === '1'

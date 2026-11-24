@@ -135,6 +135,23 @@ defineJob('project.export', 'heavy', [...backupSteps((ctx) => `export-${need(ctx
   (ctx) => ({ MANIFEST_B64: (ctx.job.payload.manifest as string[]).join(''), CONTROL_GID: String(process.getgid?.() ?? 1000) })),
   step('forget', forgetManifest)], { onFail: async (ctx) => { await forgetManifest(ctx) } })
 
+// The exports past EXPORT_RETENTION_DAYS (and beyond BACKUP_MAX_COUNT) of a project, a deleted one too: the backup
+// job's retention alone over export-<ref> (BACKUP_PRUNE_ONLY), on no network and with no database; then the rows of
+// what it deleted go, as the files did (reconcile drops the rows of expired exports by their age too).
+const PRUNED = (ref: string) => new RegExp(`^backup: pruned export-${ref}$`, 'm')
+defineJob('project.prune', 'heavy', [
+  step('prune', (ctx) => startJob(ctx, need(ctx).ref, 'backup', {},
+    { BACKUP_SUBDIR: `export-${need(ctx).ref}`, BACKUP_PRUNE_ONLY: '1', ...retention() })),
+  step('record', async (ctx) => {
+    const { id, ref } = need(ctx)
+    const tail = await waitFor(ctx, ref, 'backup')
+    // a lost result followed by another job of this ref: never taken for this one
+    if (!PRUNED(ref).test(tail)) throw new Error(`the prune job did not confirm that it pruned export-${ref}: another job's result`)
+    const gone = [...tail.matchAll(/^backup: deleted (\S+)/gm)].map((m) => m[1]).filter((l) => l.startsWith(`export-${ref}/`))
+    if (gone.length) await ctx.db.query('delete from control.backups where project_id = $1 and location = any($2)', [id, gone])
+  }, false),
+])
+
 defineJob('control.backup', 'heavy', [
   step('backup', (ctx) => startJob(ctx, 'control', 'backup', {},
     { PGHOST: config.dbHost, PGPASSWORD: config.dbPassword, BACKUP_SUBDIR: 'control', ...retention() })),

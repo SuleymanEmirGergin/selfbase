@@ -12,7 +12,7 @@ import { createProject, enqueue, startWorkers } from '../src/jobs/index.ts'
 import { openManifest, sealManifest } from '../src/manifest.ts'
 import { ProvisionerError, setProvisioner } from '../src/provisioner.ts'
 import { reconcileOnce } from '../src/reconcile.ts'
-import { enqueueDailyBackups, msUntilNext } from '../src/schedule.ts'
+import { enqueueDailyBackups, enqueueExportPrunes, msUntilNext } from '../src/schedule.ts'
 import { backfillFingerprints, fingerprint, getSecrets, putSecret } from '../src/secrets.ts'
 import { forwardTarget } from '../src/forward.ts'
 import { disk, SIZE_SQL } from '../src/disk.ts'
@@ -944,5 +944,58 @@ describe('I2: backups are sized in the job, from what the dump reads', () => {
     } finally {
       config.backupMinFreeMib = saved
     }
+  })
+})
+
+describe("I3: exports past their window leave the disk, a deleted project's too", () => {
+  const stamp = (daysAgo: number) => new Date(Date.now() - daysAgo * 86_400_000).toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15)
+  const exportDir = (ref: string, ts: string) => mkdirSync(joinPath(dir, `export-${ref}`, ts), { recursive: true })
+  afterEach(async () => { await pool.query(`delete from control.jobs where type = 'project.prune'`) })
+
+  test('the nightly prune queues a prune-only job for each project with an expired export, any status', async () => {
+    const gone = await project(acme.id, { name: 'prune-gone', status: 'REMOVED' })
+    const stale = await project(acme.id, { name: 'prune-stale' })
+    const fresh = await project(acme.id, { name: 'prune-fresh' })
+    const none = await project(acme.id, { name: 'prune-none', status: 'REMOVED' })
+    exportDir(gone.ref, stamp(30))
+    exportDir(gone.ref, stamp(1))
+    exportDir(stale.ref, stamp(config.exportRetentionDays + 1))
+    exportDir(fresh.ref, stamp(1))
+    await enqueueExportPrunes(pool)
+    // a second night while they are queued: nothing twice
+    await enqueueExportPrunes(pool)
+    const jobs = (await pool.query(`select project_id from control.jobs where type = 'project.prune'`)).rows.map((r) => r.project_id)
+    expect(jobs.sort()).toEqual([gone.id, stale.id].sort())
+    expect(jobs).not.toContain(fresh.id)
+    expect(jobs).not.toContain(none.id)
+  })
+
+  test('the job prunes export-<ref> only, with the retention settings, and drops the rows of what it deleted', async () => {
+    const gone = await project(acme.id, { name: 'prune-run', status: 'REMOVED' })
+    const old = `export-${gone.ref}/${stamp(30)}`
+    const kept = `export-${gone.ref}/${stamp(1)}`
+    for (const location of [old, kept]) {
+      await pool.query(`insert into control.backups (project_id, kind, status, started_at, finished_at, location)
+        values ($1, 'logical', 'succeeded', now(), now(), $2)`, [gone.id, location])
+    }
+    fake.jobResult = (ref) => ({ status: 'succeeded', exitCode: 0, tail: `backup: deleted ${old} (older than 7 days)\nbackup: pruned export-${ref}\n` })
+    const id = await enqueue(pool, { type: 'project.prune', projectId: gone.id, payload: {}, createdBy: null })
+    workers()
+    expect((await finished(id)).status).toBe('succeeded')
+    // no database password: the job reaches no database
+    expect(fake.callsOf('runJob')[0].args).toEqual([gone.ref, 'backup', {}, { BACKUP_SUBDIR: `export-${gone.ref}`, BACKUP_PRUNE_ONLY: '1',
+      BACKUP_RETENTION_DAYS: String(config.backupRetentionDays), EXPORT_RETENTION_DAYS: String(config.exportRetentionDays),
+      BACKUP_MAX_COUNT: String(config.backupMaxCount) }])
+    expect((await pool.query('select location from control.backups where project_id = $1', [gone.id])).rows).toEqual([{ location: kept }])
+  })
+
+  test("another job's result is never taken for the prune's", async () => {
+    const gone = await project(acme.id, { name: 'prune-crossed', status: 'REMOVED' })
+    fake.jobResult = (ref) => ({ status: 'succeeded', exitCode: 0, tail: `backup: size 7 bytes\nbackup: wrote ${ref}/20261122-031500\n` })
+    const id = await enqueue(pool, { type: 'project.prune', projectId: gone.id, payload: {}, createdBy: null })
+    workers()
+    const job = await finished(id)
+    expect(job.status).toBe('failed')
+    expect(job.error).toMatch(/did not confirm/)
   })
 })

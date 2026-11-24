@@ -115,6 +115,27 @@ test('a job for a project without a network is 404, nothing created', async () =
   assert.equal(tryDocker('inspect', `sb-${MISSING}-job-backup`), null)
 })
 
+test("I3: a deleted project's expired exports are pruned by a job on no network, without its storage", async () => {
+  docker('run', '--rm', '-v', `${BACKUP_DIR}:/b`, IMAGE, 'mkdir', '-p', `/b/export-${MISSING}`)
+  const r = await api('POST', `/projects/${MISSING}/jobs`, { type: 'backup', args: { dir: `export-${MISSING}` }, env: { BACKUP_PRUNE_ONLY: '1' } })
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+  assert.equal(docker('inspect', '-f', '{{.HostConfig.NetworkMode}} {{len .Mounts}}', `sb-${MISSING}-job-backup`), 'none 1')
+  assert.equal(tryDocker('volume', 'inspect', `sb-${MISSING}-storage`), null)
+  let s: any
+  for (let i = 0; i < 40; i++) {
+    s = (await api('GET', `/projects/${MISSING}/jobs/backup`)).body
+    if (s.status !== 'running') break
+    await new Promise((res) => setTimeout(res, 500))
+  }
+  assert.equal(s.status, 'succeeded', JSON.stringify(s))
+  // its own export directory only (R5)
+  assert.match(s.tail, new RegExp(`^backup fixture sees: export-${MISSING} $`, 'm'))
+  // a normal backup of it is still refused
+  const full = await api('POST', `/projects/${MISSING}/jobs`, { type: 'backup', args: { dir: `export-${MISSING}` }, env: {} })
+  assert.deepEqual([full.status, full.body.error], [404, 'project_not_found'])
+  docker('run', '--rm', '-v', `${BACKUP_DIR}:/b`, IMAGE, 'rm', '-rf', `/b/export-${MISSING}`)
+})
+
 test('a second ensure changes nothing', async () => {
   const before = ids()
   assert.equal((await api('POST', `/projects/${REF}/ensure`, input())).status, 200)
