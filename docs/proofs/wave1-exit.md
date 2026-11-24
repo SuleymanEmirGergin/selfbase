@@ -17,11 +17,12 @@ project needs the API too.
 - The fresh project would not have cost a certificate. The `test` slot `sb-test.<BASE>` is free
   (`host_slots.project_id` null, first issued 2026-11-23 22:52 UTC), and `allocateHost` takes a free slot before it
   makes a new host. The fallback (`full` on project #1) needs the same token, so neither run was made.
-- Last recorded runs on project #1: `full` 12 passed, 0 failed, and `live` 7 passed, 2 skipped, on 2026-11-24 at about
-  06:53 UTC (`wave1-cutover.md`, Step 4).
+- The result is cited from Task 21, on the same release (`wave1-cutover.md`, Step 4): `full` 12 passed, 0 failed,
+  and `live` 7 passed, 2 skipped (no public object, no login variables). The run time is shown by `control.jobs`:
+  the `full` suite's `project.pause` and `project.restore` jobs on project #1 ran at 06:53:12 and 06:53:19 UTC.
 - Since then, project #1 changed in one way: the legacy domain was added at 07:03, and its `project.apply` job
-  recreated core. Step 5 of `wave1-cutover.md` checked it afterwards: health 200, and the anon key gives 200 on both
-  hosts.
+  recreated core. Step 5 of `wave1-cutover.md` checked it afterwards: the v1 anon key gives 200 on the legacy host's
+  `/rest/v1/`, and the default host was checked with `/health` 200 only.
 
 Token-free checks today, 07:31 to 07:37 UTC:
 
@@ -54,13 +55,17 @@ container's `HostConfig.Memory`. Every container below runs with `CgroupParent=s
 | selfbase-logs (cap 384) | 384 | 17.2 | 17.4 | 17.3 |
 | **sum of the five (cap 1312)** | 1312 | **185.7** | **185.9** | **185.8** |
 
-CPU stayed under 0.25 % for each control-stack container.
+The stack was idle: the three samples show no variation beyond 0.2 MiB, and CPU stayed under 0.25 % for each
+control-stack container. The provisioner, at 58.7 of 128 MiB (46 %), has the tightest ratio in the stack. Watch it
+under create load in wave 2.
 
-### Idle micro project: needs owner token
+### Idle micro project: deferred to the first wave 2 server deploy
 
-Measuring it needs a fresh micro project, and creating one needs the API. The only related number on record is Task 20's
-`selfbase.slice` `MemoryCurrent`: 282 MB with the idle stack and 641 MB with one micro project. That is the whole
-slice, not per service.
+The template cap is **1184 MiB** = db 512 + rest 128 + core 256 + fn 256 + pooler 32 (spec 7.2, sizes). No value has
+been measured on this server yet. The measurement needs a fresh micro project, and creating one needs an access token,
+so it is deferred to the first wave 2 server deploy. The only related number on record is Task 20's `selfbase.slice`
+`MemoryCurrent`: 282 MB with the idle stack and 641 MB with one micro project. That covers the whole slice, not each
+service.
 
 ### Project #1 (small, cap 2336 MiB)
 
@@ -147,7 +152,7 @@ sha256 `da83d8e72c82c56f9f61fba8941cf417d7d82952286b30c520efdfd1503d24d6`. Befor
 | `< fn-<v1-resource>-20261122T065708` | the same |
 | `< rest-<v1-resource>-20261122T065708` | the same |
 | `< <v1-resource>` (network) | v1 network, removed by the same stop |
-| `< <other-app>-20261122T005510` / `> <other-app>-20261123T165437` | another team's Coolify app, redeployed by Coolify at 2026-11-23 16:54 UTC, before Task 20 began. The name carries the deploy time (`wave1-before.md`). Nothing of ours touched it. |
+| one `<` line and one `>` line (a container name) | one container of another Coolify project was renamed by its own redeploy on 2026-11-23 (same image, not ours) |
 | `> selfbase` (network) | our own control network, named by `control/compose.yml`. Task 1's filter does not exclude a bare `selfbase` (Task 20 concern 3). |
 
 So the difference is exactly the five v1 containers and the v1 network, plus the two explained lines. All 14 volumes
@@ -186,16 +191,19 @@ The hosts this wave issued are exactly the three expected: **3 of 3**, none beyo
 | Proves | Status | Evidence |
 |---|---|---|
 | A project is created from Studio in under two minutes without Coolify | **Proven, with one caveat.** The time was measured on the `/platform` create call that Studio's form makes, not on a Studio click. | `wave1-deploy.md` "Measured": 82.8 s to `ACTIVE_HEALTHY` with a new certificate, 22.3 s on a reused host. `wave1-own-traefik.md` "Observed": 82.0 s and 82.7 s with no Coolify on the machine, and Studio opened the project. |
-| Two projects cannot reach each other | **Proven** for the database and admin ports. Every core resolves on the shared proxy network, and its admin port answers 403 there. | `wave1-cutover.md` "Isolation (Task 17 case 2)". Task 17 e2e case 2 (`test/e2e/stack.test.mjs`). |
+| Two projects cannot reach each other | **Proven for the DB and admin ports.** Each core is also on the shared proxy network, because its router needs it. So a core's name resolves there, unlike in the local e2e case. Its admin port answers 403 there, and its `:8080` answers across projects. That port serves only what the public host already serves. Parked as a wave 2 item. | `wave1-cutover.md` "Isolation (Task 17 case 2)". Task 17 e2e case 2 (`test/e2e/stack.test.mjs`). |
 | With the control stack stopped, every project still serves | **Proven** | `wave1-deploy.md` "Checks", Step 7: 29 of 29 probes answered 200 over 60 s, with no container recreated afterwards. |
 | The provisioner refuses anything outside the template | **Proven**, by review and tests. R-1 to R-6 are open and owned. | `docs/reviews/wave1-provisioner-security.md` "Findings and verdicts" and "Not fixed: for the controller" |
-| CorteQS runs as project #1 | **Proven.** Step 1 above, `full` and `live` today: needs owner token. | `wave1-cutover.md` Steps 3 to 6. This file, Step 1: health on both hosts, counts unchanged. |
-| The whole wave requested at most `MAX_NEW_HOSTS_PER_WEEK` new certificates | **Proven**: 3 of 3 | This file, Step 5 |
+| CorteQS runs as project #1 | **Proven, with limits.** The acceptance results are cited from Task 21, same release. `live` skipped 2 cases: login (no login variables) and a public object (none exists). The data is empty: `auth.users` 0, `storage.objects` 0, only `spatial_ref_sys`, so no real user-data path ran. The CorteQS app itself was not run against #1; only its unit tests are cited. | `wave1-cutover.md` Steps 3 to 6. This file, Step 1: health on both hosts, counts unchanged. |
+| The whole wave requested at most `MAX_NEW_HOSTS_PER_WEEK` new certificates | **Proven: 3 of 3.** The count rests on control-db and the certificates' dates, not on proxy issuance lines (the proxy log has none at ERROR level). There is zero margin until the 7-day window rolls: the first slot frees on 2026-11-30 22:51 UTC. | This file, Step 5 |
 | Own-Traefik mode (CC-6) | **Proven locally**, with its "not proven" list: public ACME, 80/443 on a Linux host with a firewall, the systemd slice, behaviour next to another proxy | `wave1-own-traefik.md` "Observed" and "Not proven there" |
 
 ## Open at the exit
 
-- Needs owner token: the acceptance suite (`live` on project #1, `full` on a fresh `test` project), the idle micro
-  project per-service measurement and the `/platform/capacity` call itself.
+- Needs an owner token: the acceptance suite (`live` on project #1, `full` on a fresh `test` project) and the
+  `/platform/capacity` call itself.
+- The idle micro project per-service measurement against its 1184 MiB cap is deferred to the first wave 2 server
+  deploy.
+- The provisioner sits at 46 % of its cap at idle; watch it in wave 2.
 - Project #1's first scheduled backup: 2026-11-25 03:15 UTC, to be checked then.
 - The v1 resource `<v1-resource>` stays stopped with its volumes until the owner deletes it.
