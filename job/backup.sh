@@ -119,7 +119,7 @@ find "$backups" -mindepth 1 -maxdepth 1 -name '.tmp-*' -mmin +1440 -exec rm -rf 
 # writer's process group (setsid) once the volume is at the floor, whoever filled it (another backup, an export).
 free_k() { df -Pk "$backups" | awk 'NR == 2 { print $4 }'; }
 capped() {
-  local file=$1 room rc=0; shift
+  local file=$1 room crc=0; shift
   room=$(( $(free_k) - need ))
   [ "$room" -gt 0 ] || outgrown
   ( ulimit -f "$room" && exec setsid "$@" ) & w=$!
@@ -133,10 +133,10 @@ capped() {
     fi
     sleep 1
   done
-  wait "$w" || rc=$?
+  wait "$w" || crc=$?
   w=''
-  if [ "$rc" != 0 ] && { [ "$rc" = 153 ] || [ "$(stat -c %s "$file" 2> /dev/null || echo 0)" -ge $((room * 1024)) ]; }; then outgrown; fi
-  return "$rc"
+  if [ "$crc" != 0 ] && { [ "$crc" = 153 ] || [ "$(stat -c %s "$file" 2> /dev/null || echo 0)" -ge $((room * 1024)) ]; }; then outgrown; fi
+  return "$crc"
 }
 outgrown() {
   echo "backup: REFUSED: the backup outgrew the room above the floor, at least $((need / 1024)) MiB ($rule) must stay free on the backup volume; free space first" >&2

@@ -140,6 +140,8 @@ echo "restore: about $(( (storage_k + db_k) / 1024 )) MiB to write, $((room / 10
 # public || then hides the ROTATE_KEYS tables), and a ddl trigger could block or alter the restore's own steps.
 export PGOPTIONS='-c event_triggers=off'
 q() { PGOPTIONS="$PGOPTIONS -c search_path=pg_catalog" psql -XAtq -v ON_ERROR_STOP=1 "$@"; }
+# the cleanup's state (no function declares a local of these names: the trap runs in the scope of the function a
+# signal stopped)
 jobs='' db_done=0 t='' held=0 w='' wstop='' wrc=0
 HOLD=selfbase_restore_hold
 cleanup() {
@@ -170,10 +172,10 @@ trap cleanup EXIT
 trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 # at_floor: the volume is at the floor, in space or (where it counts them) in inodes: 10% of them, as in step 1b
 at_floor() {
-  local t i
+  local fs_inodes fs_ifree
   [ "$(df -Pk "$storage" | awk 'NR == 2 { print $4 }')" -gt "$need" ] || return 0
-  read -r t i < <(df -Pi "$storage" | awk 'NR == 2 { print $2, $4 }')
-  [[ $t =~ ^[1-9][0-9]{0,17}$ && $i =~ ^[0-9]{1,18}$ ]] && [ "$i" -le $((t / 10)) ]
+  read -r fs_inodes fs_ifree < <(df -Pi "$storage" | awk 'NR == 2 { print $2, $4 }')
+  [[ $fs_inodes =~ ^[1-9][0-9]{0,17}$ && $fs_ifree =~ ^[0-9]{1,18}$ ]] && [ "$fs_ifree" -le $((fs_inodes / 10)) ]
 }
 # watched <stop> <writer...>: runs the writer in a process group of its own (setsid) and reads the free space and
 # inodes every second; at the floor <stop> runs (empty: none), the writer's group is killed and the restore ends with

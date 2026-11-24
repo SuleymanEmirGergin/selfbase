@@ -46,6 +46,19 @@ migrate() { # core's start: platform migrations, adopting a v1 database
 ledger() { sql db "select coalesce(string_agg(version, ',' order by version), '') from selfbase.platform_migrations"; }
 current=$(ls db/platform | grep -E '^[0-9]{4}-' | cut -c1-4 | paste -sd, -)
 
+# M2: a signal runs the EXIT trap inside whatever function was running, so a local there of a name the trap reads
+# hides the global (a local t in at_floor made the cleanup remove a number, not the temp dir). shadows <script>
+# <globals...>: the names among them that some function of job/<script> declares local
+shadows() {
+  local f=$1; shift
+  { sed -nE 's/^[[:space:]]*local[[:space:]]+//p' "job/$f" | tr ' ' '\n' | sed -E 's/=.*//' | grep -xF -f <(printf '%s\n' "$@") || true; } |
+    sort -u | tr '\n' ' '
+}
+s=$(shadows restore.sh t w wstop wrc jobs db_done held swapped contained rel HOLD storage need rule PGOPTIONS)
+check 'M2: no function of restore.sh shadows a global its cleanup reads' [ -z "$s" ]; [ -z "$s" ] || echo "shadowed: $s" >&2
+s=$(shadows backup.sh rc w tmp sub ts)
+check 'M2: no function of backup.sh shadows a global its trap reads' [ -z "$s" ]; [ -z "$s" ] || echo "shadowed: $s" >&2
+
 echo "# building $IMAGE and starting $P"
 docker build -q -f job/Dockerfile -t "$IMAGE" . > /dev/null
 cleanup
