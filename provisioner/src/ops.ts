@@ -57,13 +57,21 @@ export function serial<T>(key: string, fn: () => Promise<T>): Promise<T> {
 }
 
 // R6: gateway_mode_ipv4=isolated is a per-network option of Docker 28+. An older engine still gets the split networks
-// (control and core's admin port away from tenant containers), only without that isolation; read once per process.
-let isolates: Promise<boolean> | undefined
-export const engineIsolates = () => isolates ??= docker('GET', '/version').then((r) => {
-  const ok = Number(String(r.data?.Version ?? '').split('.')[0]) >= 28
-  if (!ok) console.warn(`provisioner: Docker ${r.data?.Version} has no gateway_mode_ipv4 (28+): project networks keep a route to the host and out`)
+// (control and core's admin port away from tenant containers), only without that isolation. Read on every ensure, so
+// an engine upgraded under live-restore is seen without a provisioner restart; warned once per version.
+const warnedVersions = new Set<string>()
+// loop guard: set when a network made with the isolation reads back without it (an engine that drops the option);
+// from then on this process treats the engine as one that cannot isolate, so no ensure rebuilds networks again
+let isolationLost = false
+export async function engineIsolates(): Promise<boolean> {
+  const version = String((await docker('GET', '/version')).data?.Version ?? '')
+  const ok = !isolationLost && Number(version.split('.')[0]) >= 28
+  if (!ok && !warnedVersions.has(version)) {
+    warnedVersions.add(version)
+    console.warn(`provisioner: Docker ${version} ${isolationLost ? 'did not keep' : 'has no'} gateway_mode_ipv4 (28+): project networks keep a route to the host and out`)
+  }
   return ok
-}, (e) => { isolates = undefined; throw e })
+}
 
 // the proxy's current addresses as core's TRUSTED_PROXY_IPS renders them; null while the proxy is down
 const proxyIps = (ctx: Ctx) => proxyAddresses(ctx).then((r) => r.addresses, () => null)
@@ -140,6 +148,9 @@ export async function ensure(ctx: Ctx, ref: string, body: unknown) {
   const weak = (n: { body: Record<string, unknown> }, e: any) => n.body.Internal === true
     && (e.Internal !== true || e.Options?.['com.docker.network.bridge.gateway_mode_ipv4'] !== 'isolated')
   const rebuild: { name: string; net: any }[] = []
+  const ours = new Set([...spec.containers.map((c) => c.name), ctx.node.controlContainer])
+  const foreign = (net: any, allowJobs: boolean) => (Object.values(net.Containers ?? {}) as { Name: string }[])
+    .find((e) => !ours.has(e.Name) && !(allowJobs && e.Name.startsWith(containerName(ref, 'job-'))))
   for (const n of spec.networks) {
     const e = n === tenant ? existing : await inspectNetwork(n.name)
     if (!e) continue
@@ -149,12 +160,16 @@ export async function ensure(ctx: Ctx, ref: string, body: unknown) {
     }
     // a network keeps its subnet; another one would mean two projects claim one /27 (control allocates them)
     if (!(n === tenant && old) && subnetOf(e) !== want(n)) refuse(409, 'subnet_conflict', `${n.name} exists with another subnet`)
+    // labels can be forged: what is attached is the real test of a network being the project's (the project's own
+    // job containers count as its own)
+    const other = foreign(e, true)
+    if (other) refuse(409, 'network_busy', `${other.Name} is on ${n.name} and is not this project's; remove it`)
     if ((n === tenant && old) || weak(n, e)) rebuild.push({ name: n.name, net: e })
   }
   if (rebuild.length) {
-    const ours = new Set([...spec.containers.map((c) => c.name), ctx.node.controlContainer])
+    // a rebuild removes the network: a running job on it is a conflict for a later pass
     for (const { name, net } of rebuild) {
-      const other = (Object.values(net.Containers ?? {}) as { Name: string }[]).find((e) => !ours.has(e.Name))
+      const other = foreign(net, false)
       if (other) refuse(409, 'network_busy', `${other.Name} is on ${name}; retry when it is gone`)
     }
     for (const c of [...spec.containers].reverse()) await stopAndRemove(c.name)
@@ -167,7 +182,15 @@ export async function ensure(ctx: Ctx, ref: string, body: unknown) {
     current = current.map(() => null)
     fresh = spec.containers
   }
-  for (const n of spec.networks) if (!(await inspectNetwork(n.name))) await docker('POST', '/networks/create', n.body)
+  for (const n of spec.networks) {
+    if (await inspectNetwork(n.name)) continue
+    await docker('POST', '/networks/create', n.body)
+    // the loop guard: a network that reads back weak right after it was made would be rebuilt on every pass
+    if (!isolationLost && weak(n, await inspectNetwork(n.name))) {
+      isolationLost = true
+      console.warn(`provisioner: ${n.name} was made with gateway_mode_ipv4=isolated but the engine did not keep it; networks are no longer rebuilt for the isolation until the provisioner restarts`)
+    }
+  }
   for (const v of spec.volumes) {
     if ((await docker('GET', `/volumes/${v}`, undefined, [404])).status === 404) {
       await docker('POST', '/volumes/create', { Name: v, Labels: { 'selfbase.managed': 'true', 'selfbase.project': ref } })

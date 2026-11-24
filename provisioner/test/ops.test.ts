@@ -423,3 +423,26 @@ test('F: labelled networks without the isolation this engine has are made again 
     assert.equal((await api('POST', `/projects/${REF}/ensure`, input())).status, 200)
     assert.deepEqual(ids(), made)
   })
+
+test('F: a network ensure adopts as it is (labels, subnet, isolation right) is refused while a foreign container is on it; a job is not foreign', async () => {
+  assert.equal((await api('POST', `/projects/${REF}/ensure`, input())).status, 200)
+  const net = `sb-${REF}`
+  const INTRUDER = 'selfbase-test-intruder'
+  tryDocker('rm', '-f', INTRUDER)
+  try {
+    docker('run', '-d', '--init', '--name', INTRUDER, '--network', net, IMAGE)
+    const before = ids()
+    const busy = await api('POST', `/projects/${REF}/ensure`, input())
+    assert.deepEqual([busy.status, busy.body.error], [409, 'network_busy'], JSON.stringify(busy.body))
+    assert.deepEqual(ids(), before)
+    tryDocker('rm', '-f', INTRUDER)
+    // the project's own job container (a backup running) is part of the project
+    docker('run', '-d', '--init', '--name', `sb-${REF}-job-backup`, '--network', net, IMAGE)
+    const r = await api('POST', `/projects/${REF}/ensure`, input())
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.deepEqual(ids(), before)
+  } finally {
+    tryDocker('rm', '-f', INTRUDER)
+    tryDocker('rm', '-f', `sb-${REF}-job-backup`)
+  }
+})
