@@ -545,8 +545,8 @@ sql db-empty "select cron.schedule('e_job', '0 0 1 1 *', 'select 1'); update cro
 JOB_ENV=(-e BACKUP_SUBDIR=ecron)
 ecron=$(job db-empty "$P-empty-storage" bash /scripts/backup.sh | tail -n1); ecron=${ecron#backup: wrote }
 sql db-empty "update cron.job set active = true where jobname = 'e_job'" > /dev/null
-rc=0; out=$(cramped "$ecron" 1 '' 'psql() { case "$*" in *"selfbase_restore_hold cascade"*) kill -TERM $$ ;; esac; command psql "$@"; }
-  export -f psql') || rc=$?
+rc=0; out=$(cramped "$ecron" 1 '' 'psql() { case "$*" in *"selfbase_restore_hold cascade"*) pkill -TERM -f "^bash /scripts/restore.sh" ;; esac
+  command psql "$@"; }; export -f psql') || rc=$?
 check '1: a signal after pg_restore committed exits 7' [ "$rc" = 7 ]; [ "$rc" = 7 ] || echo "$out" >&2
 check '1: cron.job stays as restored (its job is not set active again)' [ "$(ejob)" = f ]
 check '1: it says the database was restored and the storage not, never that nothing changed' \
@@ -667,6 +667,55 @@ check '2: it ends within the deadline (under 45 s)' [ "$took" -lt 45 ]; [ "$took
 check '2: and says the cron jobs are to be set active by hand' grep -q 'could NOT set cron jobs .* active again; do it by hand' <<< "$out"
 check '2: (they are still inactive)' [ "$(ejob)" = f ]
 sql db-empty "update cron.job set active = true where jobname = 'e_job'" > /dev/null
+# round 6, 1: a psql here is bounded by the wall clock, not only by the server's timeouts. A stand-in server accepts
+# the connection, completes the startup, then never answers (it exits after 60 s): the restore's first query ends
+# at its bound (16 s, timeout's exit 124), not when the server goes
+docker run --rm -i -v "$P-backups:/backups" "$IMAGE" bash -c 'mkdir -p /backups/standin && cat > /backups/standin/silent.pl' <<'EOF'
+alarm 60;
+use IO::Socket::INET;
+my $s = IO::Socket::INET->new(LocalAddr => '127.0.0.1:5499', Listen => 5, ReuseAddr => 1) or die "listen: $!";
+my @keep;
+while (my $c = $s->accept) {
+  my ($l, $m);
+  sysread $c, $l, 4;
+  sysread $c, $m, unpack('N', $l) - 4;
+  my $p = "server_version\0" . "17.0\0";
+  syswrite $c, pack('aNN', 'R', 8, 0) . pack('aN', 'S', 4 + length $p) . $p . pack('aNa', 'Z', 5, 'I');
+  push @keep, $c;
+}
+EOF
+start=$SECONDS
+rc=0; out=$(cramped "$small" 1 '' 'perl /backups/standin/silent.pl & sleep 1
+  export PGHOST=127.0.0.1 PGPORT=5499 PGSSLMODE=disable PGGSSENCMODE=disable') || rc=$?
+took=$((SECONDS - start))
+check '1: a query to a server that never answers ends at its bound (exit 124)' [ "$rc" = 124 ]; [ "$rc" = 124 ] || echo "$out" >&2
+check '1: well before the server goes (under 30 s)' [ "$took" -lt 30 ]; [ "$took" -lt 30 ] || echo "took ${took}s" >&2
+# the two-statement ledger undo is one bound too (transaction_timeout): the hold step fails once it moved the ledger,
+# with a session holding the ledger table for 7 s and another the hold schema for 90 s. Per statement (10 s each) the
+# undo would take 17 s and end on the statement timeout; as one transaction it ends at 10 s on the transaction timeout
+had=$(sql db-empty "select count(*) from pg_namespace where nspname = 'selfbase'")
+sql db-empty "create schema if not exists selfbase; create table selfbase.platform_migrations (version text)" > /dev/null
+start=$SECONDS
+rc=0; out=$(cramped "$small" 1 '' 'psql() { case "$*" in *"set schema selfbase_restore_hold"*) command psql "$@" || return
+    PGOPTIONS= command psql -XAtq -c "begin; lock table selfbase_restore_hold.platform_migrations; select pg_catalog.pg_sleep(7)" > /dev/null 2>&1 &
+    PGOPTIONS= command psql -XAtq -c "begin; create table selfbase_restore_hold.blk (); select pg_catalog.pg_sleep(90)" > /dev/null 2>&1 &
+    sleep 1; return 1 ;; esac
+  command psql "$@"; }; export -f psql') || rc=$?
+took=$((SECONDS - start))
+sql db-empty "select pg_terminate_backend(pid) from pg_stat_activity where query like '%selfbase_restore_hold.blk%' and pid <> pg_backend_pid()" > /dev/null
+check '1: a ledger undo under locks ends on the transaction timeout' grep -q 'transaction timeout' <<< "$out"; grep -q 'transaction timeout' <<< "$out" || echo "$out" >&2
+check '1: and says the ledger is to be moved back by hand' grep -q 'could NOT move the platform ledger back; do it by hand' <<< "$out"
+check '1: the restore keeps its exit (1), within the deadline (under 45 s)' [ "$rc" = 1 ] && [ "$took" -lt 45 ]
+sql db-empty "drop schema if exists selfbase_restore_hold cascade; drop table if exists selfbase.platform_migrations;
+  $([ "$had" = 1 ] || echo 'drop schema if exists selfbase;') update cron.job set active = true where jobname = 'e_job'" > /dev/null
+# round 6, 2: the whole writer group is killed. A stand-in tar fills the inodes past the floor; on TERM its leader
+# exits, while a child it started ignores TERM and keeps writing into the temp dir (making it again if it is gone)
+standin orphan 'cd "${@: -1}"; d=$PWD; ( trap "" TERM; while :; do mkdir -p "$d" && : > "$d/c$((i += 1))"; sleep 0.1; done ) 2> /dev/null &
+  trap "exit 1" TERM; for i in $(seq 1900); do : > i$i; done; sleep 90 & wait'
+rc=0; out=$(cramped "$small" 1 2000 'export PATH=/backups/standin/orphan:$PATH') || rc=$?
+check '2: a writer child that outlives its leader: still exit 6' [ "$rc" = 6 ]; [ "$rc" = 6 ] || echo "$out" >&2
+check '2: the child is killed with its group before the temp dir goes (no tar, no entry left)' \
+  bash -c 'grep -qx tars=0 <<< "$1" && grep -qx entries=0 <<< "$1"' _ "$out"; grep -qx entries=0 <<< "$out" || echo "$out" >&2
 # 1: a pg_restore that committed and exits 0 as the floor stop reaches it, signalling the restore as it goes: the
 # commit is kept (exit 7: database restored, storage not replaced), never reported as nothing changed
 pgrstandin zero 'real "$@" || exit; trap "kill -TERM $PPID; exit 0" TERM; head -c 100M /dev/zero > /data/storage/.fill 2> /dev/null

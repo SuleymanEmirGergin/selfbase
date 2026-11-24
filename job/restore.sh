@@ -33,16 +33,19 @@
 #      stopped and reaped first, then (before pg_restore started) the cron and ledger steps are undone and the temp
 #      dir removed
 #   exit 8, state unknown: once pg_restore has started, every outcome but its recorded success (it exited 0) leaves
-#      the database holding the whole backup or none of it, and nothing here can tell which (no sample of its sessions
-#      shows a rollback, and the dump's own SQL can commit before it fails), so no repair SQL runs on it (the cron and
-#      ledger steps stay as they are) and control stops the project's database as well. Its sessions are still
-#      terminated (containment); a stop that cannot show they ended (a termination that fails, sessions that keep
-#      coming, a database it cannot reach) says so
+#      the database holding the whole backup, part of it, or none of it (the dump's own SQL can commit before it
+#      fails), and nothing here can tell which (no sample of its sessions shows a rollback), so no repair SQL runs on
+#      it (the cron and ledger steps stay as they are) and control stops the project's database as well. Its sessions
+#      are still terminated (containment); a stop that cannot show they ended (a termination that fails, sessions that
+#      keep coming, a database it cannot reach) says so
 #   the cleanup's deadline: 40 s for all of it from the first floor stop or the cleanup's start, under the
-#      container's 60 s stop timeout (a signal waits for the command in the foreground first: a psql here takes at
-#      most 15 s): the stop of pg_restore's sessions runs until 20 s are left, the writer's group gets TERM, then KILL
-#      5 s later, every psql has 5 s to connect and 10 s a statement. A step that finds no time left is skipped: an
-#      undo skipped is exit 8 (said, with the SQL to run by hand); a temp dir left is removed by the next restore
+#      container's 60 s stop timeout (a signal waits for the command in the foreground first: a psql here is killed
+#      after 16 s, 17 s at most with its KILL): the stop of pg_restore's sessions runs until 20 s are left, the
+#      writer's whole process group gets TERM, then KILL 5 s later while any of it is left; every psql has 5 s to
+#      connect, 10 s for its transaction (one bound for a call of two statements) and a wall-clock bound of 16 s, or
+#      the time left before the deadline (a server that stops answering does not hold it). A step that finds no time
+#      left is skipped: an undo skipped is exit 8 (said, with the SQL to run by hand); a temp dir left is removed by
+#      the next restore
 #   2. cron: every active job is set inactive (committed) and running job sessions are terminated, so no job runs
 #      during the restore; the restore brings back the backup's job states (on a failure before pg_restore starts the
 #      jobs set inactive here are set active again)
@@ -164,9 +167,18 @@ echo "restore: about $(( (storage_k + db_k) / 1024 )) MiB to write, $((room / 10
 # public || then hides the ROTATE_KEYS tables), and a ddl trigger could block or alter the restore's own steps.
 export PGOPTIONS='-c event_triggers=off'
 q() { PGOPTIONS="$PGOPTIONS -c search_path=pg_catalog" psql -XAtq -v ON_ERROR_STOP=1 "$@"; }
-# qt: q in bounded time, 5 s to connect and 10 s a statement (a lock it waits for included): every query a signal may
-# have to wait for (bash runs a trap once the command in the foreground ends) and every one the cleanup runs
-qt() { PGCONNECT_TIMEOUT=5 PGOPTIONS="$PGOPTIONS -c statement_timeout=10s" q "$@"; }
+# qt: q in bounded time: every query a signal may have to wait for (bash runs a trap once the command in the
+# foreground ends) and every one the cleanup runs. 5 s to connect and 10 s for its statements together (a lock they
+# wait for included) are the server's bounds; timeout kills psql after 16 s, or 1 s before the cleanup's deadline,
+# whatever the server does (a dead connection, a server that stops answering). psql runs in a bash -c so a psql
+# function the environment exports (the tests' stand-ins) still applies
+qt() {
+  local n=16
+  [ -z "$deadline" ] || [ $((deadline - SECONDS - 1)) -ge 16 ] || n=$((deadline - SECONDS - 1))
+  [ "$n" -ge 1 ] || return 1
+  PGCONNECT_TIMEOUT=5 PGOPTIONS="$PGOPTIONS -c search_path=pg_catalog -c statement_timeout=10s -c transaction_timeout=10s" \
+    timeout -k 1 "$n" bash -c 'psql -XAtq -v ON_ERROR_STOP=1 "$@"' qt "$@"
+}
 # the cleanup's state (no function declares a local of these names: the trap runs in the scope of the function a
 # signal stopped). db_done: pg_restore committed; swapped: the storage swap began; started: pg_restore started (from
 # then on only db_done is known); contained: no stop failed to show that the restore's sessions ended; deadline: the
@@ -175,8 +187,9 @@ jobs='' db_done=0 swapped=0 t='' held=0 w='' wstop='' wrc=0 contained=1 started=
 HOLD=selfbase_restore_hold
 # committed: pg_restore exited 0, the database is the backup's; the cron and ledger steps are never undone over it
 committed() { db_done=1 held=0 jobs='' contained=1; }
-# ends <pid> <by>: waits for the background <pid> until it ends or SECONDS reaches <by>; 1 when it still runs then
-ends() { while kill -0 "$1" 2> /dev/null; do [ "$SECONDS" -lt "$2" ] || return 1; sleep 0.2; done; }
+# ends <pid or -group> <by>: waits for the background <pid> (or every process of the group) until it ends or SECONDS
+# reaches <by>; 1 when it still runs then
+ends() { while kill -0 -- "$1" 2> /dev/null; do [ "$SECONDS" -lt "$2" ] || return 1; sleep 0.2; done; }
 # undo <done> <not done> <sql>: a step made before pg_restore started, undone when 16 s of the deadline are left (a
 # qt and a margin); one skipped (spent) or failed is said, with its SQL to run by hand
 undo() {
@@ -199,11 +212,11 @@ cleanup() {
   elif [ "$db_done" = 1 ]; then code=7
     echo "restore: FAILED after the DATABASE WAS RESTORED from $rel (exit $rc): the storage files were NOT replaced; the import is partial: delete this project, then import again" >&2
   elif [ "$started" = 1 ]; then code=8
-    echo "restore: STOPPED, STATE UNKNOWN (exit $rc): pg_restore of $rel started and did not finish, so the database may hold the whole backup or none of it$([ "$contained" = 1 ] || echo ", and its sessions could NOT be shown to have ended"); no repair SQL was run on it$([ -z "$jobs" ] || echo " (cron jobs $jobs stay inactive)")$([ "$held" = 0 ] || echo " (the platform ledger stays in schema $HOLD)"); stop the project's database, then delete this project and import again" >&2
+    echo "restore: STOPPED, STATE UNKNOWN (exit $rc): pg_restore of $rel started and did not finish, so the database may hold the whole backup, part of it, or none of it$([ "$contained" = 1 ] || echo ", and its sessions could NOT be shown to have ended"); no repair SQL was run on it$([ -z "$jobs" ] || echo " (cron jobs $jobs stay inactive)")$([ "$held" = 0 ] || echo " (the platform ledger stays in schema $HOLD)"); stop the project's database, then delete this project and import again" >&2
   else
     # before pg_restore started: what the cron and ledger steps did is undone
     [ "$held" = 0 ] || undo 'the platform ledger is back in place' 'move the platform ledger back' \
-      "alter table $HOLD.platform_migrations set schema selfbase; drop schema $HOLD"
+      "alter table if exists $HOLD.platform_migrations set schema selfbase; drop schema if exists $HOLD"
     [ -z "$jobs" ] || undo "cron jobs $jobs set active again" "set cron jobs $jobs active again" \
       "update cron.job set active = true where jobid in ($jobs)"
     if [ "$spent" = 1 ]; then code=8
@@ -234,16 +247,17 @@ at_floor() {
 # inodes every second; at the floor (the cleanup's deadline starts there) the writer is reaped and the restore ends:
 # exit 6 for the extraction, nothing changed; exit 8 for pg_restore, which had started (the cleanup says so)
 # reap: stops the running writer (its <stop> first, unless one already failed: a second would only take the time
-# the rest needs), sends its process group TERM, then KILL 5 s later (2 s before the deadline at the latest), and
-# waits for it until the deadline; wrc: its exit status (137 for one still there then). A pg_restore that exited 0 had
+# the rest needs), sends its process group TERM, then KILL 5 s later (2 s before the deadline at the latest) while any
+# process of the group is left (a child can outlive its leader and write on), and waits for the group until the
+# deadline; wrc: the leader's exit status (137 when the group is still there then). A pg_restore that exited 0 had
 # committed
 reap() {
   [ -z "$wstop" ] || [ "$contained" = 0 ] || "$wstop" || contained=0
   kill -TERM -- "-$w" 2> /dev/null || kill -TERM "$w" 2> /dev/null || true
-  ends "$w" $((SECONDS + 5 < deadline - 2 ? SECONDS + 5 : deadline - 2)) ||
+  ends "-$w" $((SECONDS + 5 < deadline - 2 ? SECONDS + 5 : deadline - 2)) ||
     kill -KILL -- "-$w" 2> /dev/null || kill -KILL "$w" 2> /dev/null || true
   wrc=137
-  ! ends "$w" "$deadline" || { wrc=0; wait "$w" 2> /dev/null || wrc=$?; }
+  ! ends "-$w" "$deadline" || { wrc=0; wait "$w" 2> /dev/null || wrc=$?; }
   # recorded before w is cleared: a signal between the two finds the commit
   [ "$wrc" != 0 ] || [ "$wstop" != stop_restore ] || committed
   w=''
@@ -269,6 +283,8 @@ watched() {
   wrc=0; wait "$w" || wrc=$?
   # recorded before w is cleared: a signal from here on finds the commit
   [ "$wrc" != 0 ] || [ "$wstop" != stop_restore ] || committed
+  # what its leader left running of the group writes no more (the swap moves the temp dir's files next)
+  kill -KILL -- "-$w" 2> /dev/null || true
   w=''
   return "$wrc"
 }
@@ -319,8 +335,9 @@ toc=$(pg_restore -l "$dir/db.dump") ||
 v1=0
 grep -qE ' TABLE selfbase platform_migrations ' <<< "$toc" || v1=1
 if [ "$v1" = 1 ] && [ "$(qt -c "select pg_catalog.to_regclass('selfbase.platform_migrations') is not null")" = t ]; then
-  qt -c "create schema if not exists $HOLD; alter table selfbase.platform_migrations set schema $HOLD"
+  # held first: a failure or signal as the move commits still finds it (the undo's "if exists" covers one that did not)
   held=1
+  qt -c "create schema if not exists $HOLD; alter table selfbase.platform_migrations set schema $HOLD"
 fi
 # from here every outcome but pg_restore's exit 0 is exit 8, state unknown, and nothing is undone
 started=1
