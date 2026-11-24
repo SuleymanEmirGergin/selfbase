@@ -146,6 +146,17 @@ test('R6: core and control alone on sb-<ref>-ctl, whose /29 is all the admin por
   assert.ok(coreEnv.includes('PROJECT_SUBNET=10.207.0.48/29'), coreEnv.join(' '))
 })
 
+test('backup jobs get the node floor BACKUP_MIN_FREE_MIB; a request can never set it', () => {
+  const backup = (node: NodeSettings, env: Record<string, string> = {}) =>
+    buildJob({ ref: REF, type: 'backup', args: { dir: REF }, env: { PGHOST: 'db', PGPASSWORD: 'x', ...env } }, node).body.Env as string[]
+  assert.ok(!backup(NODE).some((e) => e.startsWith('BACKUP_MIN_FREE_MIB=')))
+  assert.ok(backup({ ...NODE, backupMinFreeMib: '100' }).includes('BACKUP_MIN_FREE_MIB=100'))
+  assert.throws(() => backup(NODE, { BACKUP_MIN_FREE_MIB: '1' }), code('invalid_env'))
+  const restore = buildJob({ ref: REF, type: 'restore', args: { dir: `${REF}/20260101-000000` }, env: { PGHOST: 'db', PGPASSWORD: 'x' } },
+    { ...NODE, backupMinFreeMib: '100' }).body.Env as string[]
+  assert.ok(!restore.some((e) => e.startsWith('BACKUP_MIN_FREE_MIB=')))
+})
+
 test('json-file logs when no syslog address', () => {
   const { containers } = buildProject(input(), tpl, SIZES, { ...NODE, logSyslogAddr: '', cgroupParent: 'selfbase.slice' })
   const hc = containers[0].body.HostConfig as any

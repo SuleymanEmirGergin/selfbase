@@ -9,6 +9,7 @@
 #   CONTROL_GID (an export: control's group, default 1000)
 # The provisioner mounts only /backups/$BACKUP_SUBDIR (R5). The run is refused (exit 4, nothing written) while the
 # backup volume has less than 10% or 5 GiB free, whichever is larger: one project must never fill the shared disk.
+# BACKUP_MIN_FREE_MIB (the provisioner's node setting, never a request's) replaces that floor, e.g. on a small test disk.
 # Writes /backups/$BACKUP_SUBDIR/<YYYYMMDD-HHMMSS UTC>/{db.dump (pg_dump -Fc), globals.sql (roles, without
 # passwords; for a disaster restore onto a fresh cluster only), storage.tar.gz, project.json (exports only),
 # MANIFEST (file, size, sha256)}. BACKUP_SUBDIR=control backs up the control database: no storage archive.
@@ -34,6 +35,8 @@ export_keep=${EXPORT_RETENTION_DAYS:-7}
 max=${BACKUP_MAX_COUNT:-14}
 [[ $keep =~ ^[0-9]+$ && $export_keep =~ ^[0-9]+$ ]] || { echo "backup: BACKUP_RETENTION_DAYS and EXPORT_RETENTION_DAYS must be whole numbers of days" >&2; exit 2; }
 [[ $max =~ ^[1-9][0-9]*$ ]] || { echo "backup: BACKUP_MAX_COUNT must be a whole number from 1" >&2; exit 2; }
+min_free=${BACKUP_MIN_FREE_MIB:-}
+[[ -z $min_free || $min_free =~ ^[1-9][0-9]{0,7}$ ]] || { echo "backup: BACKUP_MIN_FREE_MIB must be a whole number of MiB from 1" >&2; exit 2; }
 files='db.dump globals.sql'
 if [ "$sub" != control ]; then
   [ -d "$storage" ] || { echo "backup: storage directory $storage not mounted" >&2; exit 1; }
@@ -44,8 +47,9 @@ mkdir -p "$backups"
 [[ $sub == export-* ]] || chmod 0700 "$backups"
 # KiB: the volume's size and what is free on it
 read -r total avail < <(df -Pk "$backups" | awk 'NR == 2 { print $2, $4 }')
-need=$(( total / 10 > 5242880 ? total / 10 : 5242880 ))
-[ "$avail" -ge "$need" ] || { echo "backup: REFUSED: $((avail / 1024)) MiB free on the backup volume, at least $((need / 1024)) MiB (10% or 5 GiB, whichever is larger) needed; free space first" >&2; exit 4; }
+if [ -n "$min_free" ]; then need=$((min_free * 1024)) rule=BACKUP_MIN_FREE_MIB
+else need=$(( total / 10 > 5242880 ? total / 10 : 5242880 )) rule='10% or 5 GiB, whichever is larger'; fi
+[ "$avail" -ge "$need" ] || { echo "backup: REFUSED: $((avail / 1024)) MiB free on the backup volume, at least $((need / 1024)) MiB ($rule) needed; free space first" >&2; exit 4; }
 [ ! -e "$backups/$ts" ] || { echo "backup: $sub/$ts already exists" >&2; exit 1; }
 # leftovers of killed runs (a running backup's temp dir is never a day old)
 find "$backups" -mindepth 1 -maxdepth 1 -name '.tmp-*' -mmin +1440 -exec rm -rf {} +

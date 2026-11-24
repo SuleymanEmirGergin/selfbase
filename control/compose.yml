@@ -161,6 +161,8 @@ services:
       LOG_SYSLOG_ADDR: ${LOG_SYSLOG_ADDR:-}
       CGROUP_PARENT: ${CGROUP_PARENT:-}
       BACKUP_HOST_DIR: ${BACKUP_HOST_DIR}
+      # backup jobs' free-space floor in MiB; empty: 10% of the backup volume or 5 GiB, whichever is larger
+      BACKUP_MIN_FREE_MIB: ${BACKUP_MIN_FREE_MIB:-}
       PROJECT_SUBNET_POOL: ${PROJECT_SUBNET_POOL:-10.207.0.0/16}
       CONTROL_CONTAINER: selfbase-control
       CONTROL_NETWORK: selfbase

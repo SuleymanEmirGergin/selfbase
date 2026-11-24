@@ -294,6 +294,8 @@ export function buildJob(input: JobInput, node: NodeSettings): ContainerSpec {
   // the other job's directory key would only confuse the script
   if (Object.hasOwn(env, type === 'backup' ? 'RESTORE_DIR' : 'BACKUP_SUBDIR')) refuse(400, 'invalid_dir', `a ${type} job takes no ${type === 'backup' ? 'RESTORE_DIR' : 'BACKUP_SUBDIR'}`)
   const dir = checkDir(ref, env[key], type === 'restore')
+  // the node's floor, never a request's (JOB_ENV has no such key)
+  if (type === 'backup' && node.backupMinFreeMib) env.BACKUP_MIN_FREE_MIB = node.backupMinFreeMib
 
   const service = `job-${type}`
   const name = containerName(ref, service)

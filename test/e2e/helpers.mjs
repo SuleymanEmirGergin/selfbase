@@ -51,6 +51,8 @@ export function envFile() {
     CERT_PROBE: 'off',
     MAX_NEW_HOSTS_PER_WEEK: '3',
     BACKUP_HOST_DIR,
+    // /opt/selfbase is on Docker Desktop's small VM disk (about 3.7 GiB free): below backup.sh's default floor
+    BACKUP_MIN_FREE_MIB: '100',
     LOG_SYSLOG_ADDR: 'udp://127.0.0.1:5514',
     // explicit /27s from here; nothing else on a developer machine uses it
     PROJECT_SUBNET_POOL: '10.218.0.0/16',

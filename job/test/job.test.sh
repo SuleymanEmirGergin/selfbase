@@ -89,6 +89,16 @@ rc=0; out=$(docker run --rm --network "$NET" -e PGHOST=db -e PGPASSWORD="$PW" -e
 check 'R3: a nearly full backup volume is refused (exit 4)' [ "$rc" = 4 ]
 check 'R3: the refusal says how much is free and needed' grep -q 'backup: REFUSED: .* MiB free on the backup volume, at least 5120 MiB' <<< "$out"
 check 'R3: nothing is written on a refused run' grep -qx 'entries=0' <<< "$out"
+# the provisioner's node floor (BACKUP_MIN_FREE_MIB) replaces the default, e.g. on a small test disk
+small() { docker run --rm --network "$NET" -e PGHOST=db -e PGPASSWORD="$PW" -e BACKUP_SUBDIR=t -e "BACKUP_MIN_FREE_MIB=$1" \
+  --mount type=tmpfs,destination=/backups,tmpfs-size=16m -v "$P-storage:/data/storage:ro" "$IMAGE" bash /scripts/backup.sh 2>&1; }
+rc=0; out=$(small 1) || rc=$?
+check 'R3: BACKUP_MIN_FREE_MIB=1 lets a backup run on a 16 MiB volume' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
+rc=0; out=$(small 64) || rc=$?
+check 'R3: BACKUP_MIN_FREE_MIB=64 refuses it, naming the setting' [ "$rc" = 4 ]
+check 'R3: the refusal names BACKUP_MIN_FREE_MIB' grep -q 'at least 64 MiB (BACKUP_MIN_FREE_MIB) needed' <<< "$out"
+rc=0; out=$(small 1x) || rc=$?
+check 'R3: a BACKUP_MIN_FREE_MIB that is not a number is refused (exit 2)' [ "$rc" = 2 ]
 
 # ---- with MANIFEST_B64: project.json is written and listed ----
 JOB_ENV=(-e BACKUP_SUBDIR=export-t -e CONTROL_GID=1234 -e "MANIFEST_B64=$(printf '{"v":1}' | base64 | tr -d '\n')")
