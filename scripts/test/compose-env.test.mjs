@@ -70,13 +70,29 @@ test('no panel settings and no Coolify labels are left', () => {
   assert.doesNotMatch(compose, /coolify\./)
 })
 
-test('control resolves its siblings on the selfbase network only (it is on the proxy network too)', () => {
+test('control reaches its siblings by their fixed addresses, never a DNS name (it is on the proxy network too)', () => {
   const ctl = readFileSync(join(root, 'control', 'compose.yml'), 'utf8')
-  // Docker's DNS answers a bare name from the first network in name order, and coolify sorts before selfbase
-  assert.match(ctl, /^\s+PROVISIONER_URL: http:\/\/selfbase-provisioner\.selfbase:8090$/m)
-  assert.match(ctl, /^\s+CONTROL_DB_HOST: selfbase-control-db\.selfbase$/m)
-  assert.match(ctl, /^\s+LOGS_URL: http:\/\/selfbase-logs\.selfbase:9428$/m)
+  // any container on the proxy network can carry the alias selfbase-provisioner.selfbase, and Docker's DNS answers it
+  // before the selfbase network's own container (R1, reproduced on Docker 29.8)
+  const P = '\\$\\{CONTROL_NET_PREFIX:-10\\.206\\.255\\}'
+  const at = (service, n) => assert.match(serviceOf(ctl, service), new RegExp(`^\\s+selfbase: \\{ ipv4_address: "${P}\\.${n}" \\}$`, 'm'), service)
+  assert.match(ctl, new RegExp(`^\\s+PROVISIONER_URL: http://${P}\\.3:8090$`, 'm'))
+  assert.match(ctl, new RegExp(`^\\s+CONTROL_DB_HOST: ${P}\\.2$`, 'm'))
+  assert.match(ctl, new RegExp(`^\\s+LOGS_URL: http://${P}\\.4:9428$`, 'm'))
+  at('control-db', 2)
+  at('provisioner', 3)
+  at('logs', 4)
+  assert.doesNotMatch(ctl, /^\s+[A-Z_]+: .*selfbase-(provisioner|control-db|logs)\b/m)
+  // dynamic addresses (control, backup jobs) never land on a fixed one
+  assert.match(ctl, new RegExp(`subnet: ${P}\\.0/27\\s+ip_range: ${P}\\.16/28\\s+gateway: ${P}\\.1\\s`))
 })
+
+function serviceOf(text, name) {
+  const lines = text.split(/\r?\n/)
+  const start = lines.findIndex((l) => l === `  ${name}:`)
+  const rest = lines.slice(start + 1)
+  return rest.slice(0, rest.findIndex((l) => /^  \S/.test(l) || /^\S/.test(l))).join('\n')
+}
 
 // The local stack (compose.yml + compose.build.yml), resolved by docker compose itself.
 // An empty env file keeps a real .env out of it; the values come from the environment.

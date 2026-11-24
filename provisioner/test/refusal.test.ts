@@ -93,7 +93,7 @@ test("ref 'control' is refused on every route except jobs of type backup", async
   ]
   for (const [name, run] of refused) await assert.rejects(run(), code('invalid_ref'), name)
   assert.throws(() => buildJob(job({ ref: 'control', type: 'restore' }), NODE), code('invalid_ref'))
-  assert.equal(buildJob(job({ ref: 'control' }), NODE).name, 'sb-control-job-backup')
+  assert.equal(buildJob(job({ ref: 'control', args: { dir: 'control' } }), NODE).name, 'sb-control-job-backup')
 })
 
 test('provisioner-set variables cannot come from project env, even when a size omits them', () => {

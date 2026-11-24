@@ -109,18 +109,35 @@ export async function ensure(ctx: Ctx, ref: string, body: unknown) {
   if (!Array.isArray(recreate) || !recreate.every((s) => spec.containers.some((c) => c.service === s))) {
     refuse(400, 'invalid_recreate', 'recreate must list template services')
   }
-  const current = await Promise.all(spec.containers.map((c) => inspect(c.name)))
-  const fresh = spec.containers.filter((c, i) => !current[i] || current[i].Config?.Labels?.['selfbase.spec'] !== c.specHash
+  let current = await Promise.all(spec.containers.map((c) => inspect(c.name)))
+  let fresh = spec.containers.filter((c, i) => !current[i] || current[i].Config?.Labels?.['selfbase.spec'] !== c.specHash
     || (recreate as string[]).includes(c.service))
   // before anything changes: an image Coolify's nightly prune removed is pulled again here
   for (const image of new Set(fresh.map((c) => c.body.Image as string))) await ensureImage(image)
 
-  const existing = await inspectNetwork(spec.network.name)
-  if (!existing) await docker('POST', '/networks/create', spec.network.body)
+  let existing = await inspectNetwork(spec.network.name)
   // a network keeps its subnet; another one would mean two projects claim one /27 (control allocates them)
-  else if (existing.IPAM?.Config?.[0]?.Subnet !== (input as { subnet: string }).subnet) {
+  if (existing && existing.IPAM?.Config?.[0]?.Subnet !== (input as { subnet: string }).subnet) {
     refuse(409, 'subnet_conflict', `${spec.network.name} exists with another subnet`)
   }
+  // A network made before fixed addresses has no IPRange, so Docker may hand a service's address to anything else
+  // on it. It is made again once, same subnet: our containers (all of them change with the addresses) are removed and
+  // control is detached first; a job still on it is a conflict for a later pass, refused before anything changes.
+  // Volumes are never touched.
+  if (existing && !existing.IPAM?.Config?.[0]?.IPRange) {
+    const ours = new Set([...spec.containers.map((c) => c.name), ctx.node.controlContainer])
+    const other = (Object.values(existing.Containers ?? {}) as { Name: string }[]).find((e) => !ours.has(e.Name))
+    if (other) refuse(409, 'network_busy', `${other.Name} is on ${spec.network.name}; retry when it is gone`)
+    for (const c of [...spec.containers].reverse()) await stopAndRemove(c.name)
+    if (attached(existing, ctx.node.controlContainer)) {
+      await docker('POST', `/networks/${spec.network.name}/disconnect`, { Container: ctx.node.controlContainer, Force: true }, [404])
+    }
+    await docker('DELETE', `/networks/${spec.network.name}`)
+    existing = null
+    current = current.map(() => null)
+    fresh = spec.containers
+  }
+  if (!existing) await docker('POST', '/networks/create', spec.network.body)
   for (const v of spec.volumes) {
     if ((await docker('GET', `/volumes/${v}`, undefined, [404])).status === 404) {
       await docker('POST', '/volumes/create', { Name: v, Labels: { 'selfbase.managed': 'true', 'selfbase.project': ref } })

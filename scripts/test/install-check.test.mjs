@@ -123,6 +123,8 @@ rootTest('settings that must agree with each other', () => {
   bad({ SECRETS_GID: 'staff' }, 'SECRETS_GID')
   bad({ PROXY_TRAEFIK_MAJOR: '4' }, 'PROXY_TRAEFIK_MAJOR')
   bad({ PROXY_TRAEFIK_MAJOR: '2' }, 'COMPOSE_FILE')
+  for (const p of ['8.8.8', '10.206.256', '10.206.255.0', '172.32.0']) bad({ CONTROL_NET_PREFIX: p }, 'CONTROL_NET_PREFIX')
+  assert.equal(run({ ...good, CONTROL_NET_PREFIX: '172.20.9' }).status, 0)
   assert.equal(run({ ...good, PROXY_MODE: 'own', COMPOSE_PROFILES: 'proxy', PROXY_CERTRESOLVER: '' }).status, 0)
   assert.equal(run({ ...good, PROXY_TRAEFIK_MAJOR: '2', COMPOSE_FILE: 'compose.yml:compose.traefik-v2.yml' }).status, 0)
 })

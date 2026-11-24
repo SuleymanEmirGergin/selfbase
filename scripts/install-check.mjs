@@ -14,7 +14,7 @@ const REQUIRED = ['BASE_DOMAIN', 'REGISTRY', 'TEMPLATE_VERSION', 'PROXY_MODE', '
 // compose secrets (SECRETS_DIR/<file>), never env: a container's Config.Env is readable by a socket proxy's inspect
 const SECRET_FILES = { SELFBASE_MASTER_KEY: 'master_key', CONTROL_DB_PASSWORD: 'control_db_password',
   CONTROL_JWT_SECRET: 'control_jwt_secret', PROVISIONER_TOKEN: 'provisioner_token' }
-const OPTIONAL = ['PROJECT_SUBNET_POOL', 'SECRETS_DIR', 'SECRETS_GID', 'TRUSTED_PROXY_HOSTS', 'PROXY_CONTAINER',
+const OPTIONAL = ['PROJECT_SUBNET_POOL', 'CONTROL_NET_PREFIX', 'SECRETS_DIR', 'SECRETS_GID', 'TRUSTED_PROXY_HOSTS', 'PROXY_CONTAINER',
   'PUBLIC_URL', 'TEST_HOST', 'NODE_NAME', 'LEGACY_HOSTNAMES', 'MEMORY_BUDGET_MB', 'OVERCOMMIT', 'SHARED_RESERVED_MB',
   'JOB_SLOT_MB', 'MAX_NEW_HOSTS_PER_WEEK', 'BRANCH_HOST_SLOTS', 'CERT_PROBE', 'BACKUP_RETENTION_DAYS', 'SMTP_HOST', 'SMTP_PORT',
   'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM', 'AUTH_RATE_LIMIT_SIGN_IN', 'PROXY_ENTRYPOINT_HTTP', 'PROXY_ENTRYPOINT_HTTPS',
@@ -105,6 +105,11 @@ if (v('PROJECT_SUBNET_POOL')) {
   const network = prefix === 0 ? 0 : (addr & ((0xffffffff << (32 - prefix)) >>> 0)) >>> 0
   if (!pool || octets.some((o) => o > 255) || prefix > 16 || network !== addr) bad('PROJECT_SUBNET_POOL', 'must be an IPv4 network address of a /16 or larger')
 }
+
+// control/compose.yml cuts the selfbase network's /27 from it: <prefix>.0/27, fixed addresses .2-.4
+const cnp = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(v('CONTROL_NET_PREFIX'))
+if (v('CONTROL_NET_PREFIX') && (!cnp || cnp.slice(1).some((o) => Number(o) > 255) || !(cnp[1] === '10' || (cnp[1] === '172' && cnp[2] >= 16 && cnp[2] <= 31)
+  || (cnp[1] === '192' && cnp[2] === '168')))) bad('CONTROL_NET_PREFIX', 'must be the first three octets of a private address, like 10.206.255')
 
 const base = v('BASE_DOMAIN').toLowerCase()
 const under = (host) => host === base || host.endsWith(`.${base}`)

@@ -234,6 +234,17 @@ go()`
   // (the provisioner inspects selfbase-traefik), never DNS
   limited(run('docker', ['run', '--rm', '--name', IMPOSTOR, '--network', PROXY_NETWORK, '--network-alias', 'selfbase-traefik',
     '--entrypoint', 'node', inspect(`sb-${P.a.ref}-core`).Config.Image, '-e', signIns]).split(' '))
+  // R1: Docker's DNS on the proxy network answers any container's alias (selfbase-provisioner.selfbase, db.sb-<ref>)
+  // before the sibling's own network does: control and core reach their siblings by fixed address only
+  const envOf = (c) => Object.fromEntries(inspect(c).Config.Env.map((e) => [e.slice(0, e.indexOf('=')), e.slice(e.indexOf('=') + 1)]))
+  const ipOn = (c, net) => inspect(c).NetworkSettings.Networks[net].IPAddress
+  const ctl = envOf('selfbase-control')
+  assert.equal(ctl.CONTROL_DB_HOST, ipOn('selfbase-control-db', 'selfbase'))
+  assert.equal(new URL(ctl.PROVISIONER_URL).hostname, ipOn('selfbase-provisioner', 'selfbase'))
+  assert.equal(new URL(ctl.LOGS_URL).hostname, ipOn('selfbase-logs', 'selfbase'))
+  const core = envOf(`sb-${P.a.ref}-core`)
+  assert.equal(core.DB_HOST, ipOn(`sb-${P.a.ref}-db`, `sb-${P.a.ref}`))
+  assert.equal(new URL(core.PGRST_URL).hostname, ipOn(`sb-${P.a.ref}-rest`, `sb-${P.a.ref}`))
 })
 
 test('4: Studio against the real stack: table editor, SQL, logs', async () => {
