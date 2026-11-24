@@ -101,25 +101,32 @@ export const setStatus = (ctx: JobCtx, status: string) => ctx.db.query('update c
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 /**
- * Run at control start: a name that no longer routes for its project by assertRoutable's rule (a LEGACY_HOSTNAMES
- * name now bound to another org, or no longer listed, and never counted for this one) is removed and logged, and the
- * project gets a project.apply, so the router stops serving it and the rightful org can add it. Returns the job ids.
+ * Run at control start: a name LEGACY_HOSTNAMES now gives another org (whatever issued_hosts says) is removed and
+ * logged, and its project gets a project.apply carrying the name (`released`), in one transaction, so the router stops
+ * serving it. Until that apply succeeds addDomain refuses the name to anyone (hosts.ts). A name the setting no longer
+ * lists at all is left in place with a warning: an empty or misspelt setting must not take a v1 name off the air.
+ * Returns the job ids.
  */
 export async function evictStaleLegacyNames(db: pg.Pool): Promise<string[]> {
   const rows = (await db.query(
-    `select d.project_id, d.hostname, p.ref, o.slug from control.project_domains d
+    `select d.project_id, d.hostname, p.ref, o.slug,
+            exists (select 1 from control.host_slots s where s.hostname = d.hostname and s.project_id = d.project_id)
+         or exists (select 1 from control.issued_hosts i where i.hostname = d.hostname and i.org_id = p.org_id) as counted
+       from control.project_domains d
        join control.projects p on p.id = d.project_id join control.organizations o on o.id = p.org_id
-      where d.kind <> 'default'
-        and not exists (select 1 from control.host_slots s where s.hostname = d.hostname and s.project_id = d.project_id)
-        and not exists (select 1 from control.issued_hosts i where i.hostname = d.hostname and i.org_id = p.org_id)`)).rows
+      where d.kind <> 'default'`)).rows
   const jobs: string[] = []
   for (const r of rows) {
-    if (config.legacyHostnames.includes(r.hostname) && legacyOrgOf(r.hostname) === r.slug) continue
-    // uncounted, so no issued_hosts hold to start: the row alone goes
-    await db.query(`delete from control.project_domains where project_id = $1 and hostname = $2 and kind <> 'default'`,
-      [r.project_id, r.hostname])
+    if (!config.legacyHostnames.includes(r.hostname)) {
+      if (!r.counted) console.warn(`hosts: ${r.hostname} on project ${r.ref} is neither counted nor in LEGACY_HOSTNAMES; left in place, check the setting`)
+      continue
+    }
+    if (legacyOrgOf(r.hostname) === r.slug) continue
+    jobs.push(await enqueueCoalesced(db,
+      { type: 'project.apply', projectId: r.project_id, payload: { recreate: ['core'], released: r.hostname }, createdBy: null },
+      (c) => c.query(`delete from control.project_domains where project_id = $1 and hostname = $2 and kind <> 'default'`,
+        [r.project_id, r.hostname])))
     console.log(`hosts: removed ${r.hostname} from project ${r.ref}: LEGACY_HOSTNAMES no longer gives it to organization ${r.slug}`)
-    jobs.push(await enqueueCoalesced(db, { type: 'project.apply', projectId: r.project_id, payload: { recreate: ['core'] }, createdBy: null }))
   }
   return jobs
 }

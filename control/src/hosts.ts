@@ -170,6 +170,15 @@ export async function addDomain(db: Db, projectId: string, hostname: string, kin
       'select 1 from control.project_domains where hostname = $1 union all select 1 from control.host_slots where hostname = $1', [h],
     )
     if (taken.rowCount) throw new HostError('hostname_taken', `${h} is already used by a project on this server. Choose another hostname.`)
+    // the tombstone of a name evicted at start (evictStaleLegacyNames): held until its project's router is rebuilt
+    // without it, by that apply or a later apply, restore or delete of the project
+    const releasing = await c.query(
+      `select 1 from control.jobs j where j.type = 'project.apply' and j.payload->>'released' = $1 and j.status <> 'succeeded'
+          and not exists (select 1 from control.jobs k where k.project_id = j.project_id and k.status = 'succeeded'
+                            and k.type in ('project.apply', 'project.restore', 'project.delete') and k.created_at > j.created_at)`, [h])
+    if (releasing.rowCount) {
+      throw new HostError('hostname_taken', `${h} is being released from another project on this server. Try again in a few minutes.`)
+    }
     if (!listed) {
       const issued = (await c.query(
         `select org_id, released_at is not null and released_at < now() - $2::interval as expired from control.issued_hosts where hostname = $1`,
@@ -204,11 +213,14 @@ export async function assertRoutable(db: Db, projectId: string, hosts: string[])
   for (const h of hosts) {
     const underBase = h === base || h.endsWith(`.${base}`)
     if (!underBase && isWildcardDns(h)) throw new Error(`${h} is a wildcard-IP DNS name outside ${base}`)
-    if (counted.has(h)) continue
-    if (!config.legacyHostnames.includes(h)) {
+    // the binding first, as addDomain checks it: an issued_hosts row of this org does not outrank LEGACY_HOSTNAMES
+    if (config.legacyHostnames.includes(h)) {
+      if (legacyOrgOf(h) !== org.slug) throw new Error(`${h} is a legacy hostname of another organization`)
+      continue
+    }
+    if (!counted.has(h)) {
       throw new Error(`${h} holds no host slot, was never counted as a new host of this organization and is not a legacy hostname`)
     }
-    if (legacyOrgOf(h) !== org.slug) throw new Error(`${h} is a legacy hostname of another organization`)
   }
 }
 
