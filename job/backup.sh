@@ -39,7 +39,7 @@ tmp="$backups/.tmp-$ts"
 # the writer capped() runs (its process group), stopped and reaped before the temp dir goes; a signal is a failure the
 # trap sees (bash runs the EXIT trap on one with $? of the last command, often 0)
 w=''
-trap 'rc=$?; [ -z "$w" ] || { kill -TERM -- "-$w" 2> /dev/null; wait "$w" 2> /dev/null; }
+trap 'rc=$?; [ -z "$w" ] || { kill -TERM -- "-$w" 2> /dev/null || true; wait "$w" 2> /dev/null || true; }
   [ $rc = 0 ] || { rm -rf "$tmp"; echo "backup: FAILED (exit $rc); no backup written for $sub/$ts" >&2; }' EXIT
 trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 
