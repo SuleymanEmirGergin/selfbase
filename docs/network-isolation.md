@@ -47,9 +47,13 @@ fetches an outside URL.
 
 ## What these rules do not cover: core's outbound calls
 
-Core's outbound calls (the `net.http_*` queue a project's SQL fills, Google OAuth, SMTP) leave from core's address on
-the proxy network, not from the project's /27. The rules above match only `PROJECT_SUBNET_POOL`, so they do not
-apply to core. What stands between a project's `net.http_*` request and the host is core's guard alone
+On Docker 28 and later, core's outbound calls (the `net.http_*` queue a project's SQL fills, Google OAuth, SMTP) leave
+from core's address on the proxy network, not from the project's /27: the project network is isolated and has no
+gateway, so the proxy network holds core's only default route. The rules above match only `PROJECT_SUBNET_POOL`, so
+they do not apply to core there. (Below Docker 28 the project network has a gateway, and Docker picks the default
+route by network name. With the own proxy network, `sb-<ref>` sorts before `selfbase-proxy`, so core's calls leave
+from the pool and the rules do cover them. Under Coolify, `coolify` sorts first and the calls leave from the proxy
+network as on Docker 28.) What stands between a project's `net.http_*` request and the host is core's guard alone
 (`core/src/netguard.ts`): it refuses private, loopback and link-local addresses and core's own networks, but the
 host's public address is an ordinary public address to it. A service on the host listening on 0.0.0.0, or a published
 port, is reachable that way. A host in `NETQUEUE_ALLOW_HOSTS` skips the guard entirely. There is no simple host rule
