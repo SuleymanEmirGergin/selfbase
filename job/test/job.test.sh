@@ -16,8 +16,9 @@ export TEST_DB_EMPTY_PORT=${JOB_TEST_DB_EMPTY_PORT:-54383} TEST_REST_PORT=${JOB_
 NET=${P}_default
 compose() { docker compose -p "$P" -f template/compose.test.yml "$@"; }
 cleanup() {
+  docker rm -f "$P-dbsmall" > /dev/null 2>&1 || true
   compose down -v --remove-orphans > /dev/null 2>&1 || true
-  docker volume rm -f "$P-backups" "$P-storage" "$P-v1-storage" "$P-empty-storage" "$P-big-storage" > /dev/null 2>&1 || true
+  docker volume rm -f "$P-backups" "$P-storage" "$P-v1-storage" "$P-empty-storage" "$P-big-storage" "$P-small" > /dev/null 2>&1 || true
 }
 trap cleanup EXIT
 fails=0
@@ -150,6 +151,14 @@ rc=0; out=$(sized "$P-storage" $((256 - dbm - 16))) || rc=$?
 check 'D: a globals.sql that outgrows the room above the floor stops at it (exit 4)' [ "$rc" = 4 ]
 check 'D: and leaves neither a backup nor a temp directory either' grep -qx 'entries=0' <<< "$out"
 sql db "drop role d_big" > /dev/null
+# D: the watchdog. Another writer fills the backup volume while the dump runs (a stand-in pg_dump waits 8 s first): the
+# file cap set when the dump started still allows it, the watchdog stops it at the floor (exit 4)
+slow='mkdir -p /tmp/w; printf "#!/bin/sh\nsleep 8\nexec %s \"\$@\"\n" "$(command -v pg_dump)" > /tmp/w/pg_dump; chmod +x /tmp/w/pg_dump;
+  export PATH=/tmp/w:$PATH; (sleep 3; head -c 120M /dev/zero > /backups/filler) &'
+rc=0; out=$(sized "$P-storage" '' "$slow") || rc=$?
+check 'D: a dump running while the volume fills past the floor is stopped there (exit 4)' [ "$rc" = 4 ]; [ "$rc" = 4 ] || echo "$out" >&2
+check 'D: the stop says the floor was reached' grep -q 'backup: REFUSED: the backup volume reached the floor' <<< "$out"
+check 'D: and leaves neither a backup nor a temp directory (watchdog)' grep -qx 'entries=0' <<< "$out"
 # a database that grew after control admitted the backup: refused when the job starts
 sql db "create table public.grow (b text);
   insert into public.grow select string_agg(md5(random()::text), '') from generate_series(1, 98304) g, generate_series(1, 32) h group by g" > /dev/null
@@ -404,6 +413,31 @@ rc=0; out=$(cramped esmall/empty-files 1 2000) || rc=$?
 check 'E: 1900 empty files on a volume of 2000 inodes are refused (exit 6)' [ "$rc" = 6 ]; [ "$rc" = 6 ] || echo "$out" >&2
 check 'E: that refusal names the inodes' grep -q "^restore: REFUSED: [0-9]* inodes free on the volume of the project's data" <<< "$out"
 check 'E: the database is unchanged by both' [ "$(emarker)" = after-backup ]
+# E: the watchdog. What the server writes counts too: a materialized view the dump refreshes is one short line in the
+# estimate, over a row count kept in a table (1 when it was refreshed, 2 million in the dump). The database and the
+# storage volume share one 512 MiB tmpfs, as Docker volumes share a disk; 100 MiB of room above the floor
+sql db-empty "create table public.knob (n int); insert into public.knob values (1);
+  create materialized view public.e_grow as select g, repeat('x', 200) as pad from generate_series(1, (select n from public.knob)) g;
+  update public.knob set n = 2000000" > /dev/null
+JOB_ENV=(-e BACKUP_SUBDIR=egrow)
+grow=$(job db-empty "$P-empty-storage" bash /scripts/backup.sh | tail -n1); grow=${grow#backup: wrote }
+sql db-empty 'drop materialized view public.e_grow; drop table public.knob' > /dev/null
+docker volume create --driver local --opt type=tmpfs --opt device=tmpfs --opt o=size=512m "$P-small" > /dev/null
+docker run -d --name "$P-dbsmall" --network "$NET" --network-alias dbsmall -e POSTGRES_PASSWORD="$PW" -e PGDATA=/var/lib/postgresql/data/pg \
+  -v "$P-small:/var/lib/postgresql/data" "$(docker inspect -f '{{.Config.Image}}' "$(compose ps -q db-empty)")" > /dev/null
+for i in $(seq 120); do docker exec "$P-dbsmall" pg_isready -q -U postgres -h 127.0.0.1 2> /dev/null && break; sleep 1; done
+docker exec "$P-dbsmall" mkdir -p /var/lib/postgresql/data/storage
+# every project database has pg_cron (restore.sh reads cron.job)
+docker exec "$P-dbsmall" psql -XAtq -U postgres -c 'create extension if not exists pg_cron' > /dev/null
+gfloor=$(( $(docker exec "$P-dbsmall" df -Pk /var/lib/postgresql/data | awk 'NR == 2 { print $4 }') / 1024 - 100 ))
+rc=0; out=$(docker run --rm --network "$NET" -e PGHOST=dbsmall -e PGPASSWORD="$PW" -e "RESTORE_DIR=$grow" -e "BACKUP_MIN_FREE_MIB=$gfloor" \
+  -v "$P-backups:/backups:ro" --mount "type=volume,src=$P-small,dst=/data/storage,volume-subpath=storage" "$IMAGE" \
+  bash /scripts/restore.sh 2>&1) || rc=$?
+check 'E: a dump whose server-side growth crosses the floor is stopped (exit 6)' [ "$rc" = 6 ]; [ "$rc" = 6 ] || echo "$out" >&2
+check 'E: the stop says the floor was reached and nothing was changed' grep -q "^restore: REFUSED: the volume of the project's data reached the floor" <<< "$out"
+check 'E: the stopped restore rolled back: the view is not there' \
+  [ "$(docker exec "$P-dbsmall" psql -XAtq -U postgres -c "select to_regclass('public.e_grow') is null" 2>&1)" = t ]
+docker rm -f "$P-dbsmall" > /dev/null; docker volume rm -f "$P-small" > /dev/null
 # the v1 dump below drops schema auth: a table it does not hold would block that
 sql db "drop table auth.sessions, auth.mfa_factors, $(sed 's/\([a-z_]*\)/auth.\1/g; s/ /, /g' <<< "$FOREIGN_CREDS")" > /dev/null
 

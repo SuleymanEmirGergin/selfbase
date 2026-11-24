@@ -27,7 +27,8 @@ function volumeFull(tail: string): string {
 }
 
 // restore.sh's exit 6: before anything changed, it found that the archive's files and the dump's estimated size would
-// leave less than the floor free on the volume of the project's data. Again only the numbers and the rule are taken
+// leave less than the floor free on the volume of the project's data (or its inodes), or its watchdog stopped it at
+// the floor and it rolled back. Again only the numbers and the rule are taken (the other lines get the general text)
 const RESTORE_REFUSED = /^restore: REFUSED: (\d+) MiB free on the volume of the project's data, at least (\d+) MiB \((BACKUP_MIN_FREE_MIB|10% or 5 GiB, whichever is larger)\) needed after this restore of (about|more than) (\d+) MiB; free space first$/m
 function restoreVolumeFull(tail: string): string {
   const m = RESTORE_REFUSED.exec(tail)

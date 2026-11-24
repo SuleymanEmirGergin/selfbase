@@ -14,7 +14,8 @@
 # project's superuser can change, so it is only an estimate: every writer (pg_dump, pg_dumpall, tar) also runs under
 # ulimit -f, set to the room left above the floor when it starts, and one that reaches it (SIGXFSZ, or EFBIG where the
 # signal is ignored) exits 4 too. That also bounds globals.sql, which no database size counts, and a database that
-# grows after the estimate.
+# grows after the estimate. The cap counts one file only, so a watchdog reads the free space every second while each
+# writer runs and stops it at the floor, whatever else fills the volume (exit 4, no backup written).
 # BACKUP_MIN_FREE_MIB (the provisioner's node setting, never a request's) replaces that floor, e.g. on a small test disk.
 # Writes /backups/$BACKUP_SUBDIR/<YYYYMMDD-HHMMSS UTC>/{db.dump (pg_dump -Fc), globals.sql (roles, without
 # passwords; for a disaster restore onto a fresh cluster only), storage.tar.gz, project.json (exports only),
@@ -108,12 +109,25 @@ fi
 find "$backups" -mindepth 1 -maxdepth 1 -name '.tmp-*' -mmin +1440 -exec rm -rf {} +
 # capped <file> <writer...>: runs the writer of <file> with files capped at the room above the floor now (KiB, as
 # ulimit -f counts in bash; what this backup wrote so far is already off the free space). A writer that reaches the
-# cap was stopped by it: the volume would have crossed the floor, exit 4 (the trap removes the temp dir).
+# cap was stopped by it: the volume would have crossed the floor, exit 4 (the trap removes the temp dir). The cap
+# counts this file only: a watchdog also reads the free space every second while the writer runs, and kills the
+# writer's process group (setsid) once the volume is at the floor, whoever filled it (another backup, an export).
+free_k() { df -Pk "$backups" | awk 'NR == 2 { print $4 }'; }
 capped() {
-  local file=$1 room rc=0; shift
-  room=$(( $(df -Pk "$backups" | awk 'NR == 2 { print $4 }') - need ))
+  local file=$1 room rc=0 w; shift
+  room=$(( $(free_k) - need ))
   [ "$room" -gt 0 ] || outgrown
-  ( ulimit -f "$room" && exec "$@" ) || rc=$?
+  ( ulimit -f "$room" && exec setsid "$@" ) & w=$!
+  while kill -0 "$w" 2> /dev/null; do
+    if [ "$(free_k)" -le "$need" ]; then
+      kill -TERM -- "-$w" 2> /dev/null || kill -TERM "$w" 2> /dev/null || true
+      wait "$w" 2> /dev/null || true
+      echo "backup: REFUSED: the backup volume reached the floor while ${file##*/} was written; at least $((need / 1024)) MiB ($rule) must stay free on it; free space first" >&2
+      exit 4
+    fi
+    sleep 1
+  done
+  wait "$w" || rc=$?
   if [ "$rc" != 0 ] && { [ "$rc" = 153 ] || [ "$(stat -c %s "$file" 2> /dev/null || echo 0)" -ge $((room * 1024)) ]; }; then outgrown; fi
   return "$rc"
 }

@@ -15,7 +15,14 @@
 #      restored) and refuses before anything changes (exit 6) when that would leave less than the floor free on the
 #      volume of the project's data (the floor: BACKUP_MIN_FREE_MIB, the provisioner's node setting, else 10% or 5 GiB,
 #      whichever is larger), or less than 10% of its inodes: a dump that expands without bound must not fill the disk
-#      other projects share
+#      other projects share. The estimate is an early refusal only: the watchdog below is the bound
+#   1c. the storage archive is extracted into a temp dir inside the volume (owner: the volume's, modes from the umask,
+#      never the archive's) and checked again for anything but files and directories; a failure here changed nothing
+#      (exit 1; the temp dir is removed)
+#   watchdog: while tar (1c) and pg_restore (3) run, the free space is read every second; at the floor the writer is
+#      stopped (pg_restore's server session is terminated, so its one transaction rolls back), the temp dir removed,
+#      and the restore ends with exit 6, nothing changed: what the server writes for the dump (a materialized view it
+#      refreshes, an index it builds) is no line of the dump, so no estimate can bound it
 #   2. cron: every active job is set inactive (committed) and running job sessions are terminated, so no job runs
 #      during the restore; the restore brings back the backup's job states (on failure the jobs set inactive here
 #      are set active again)
@@ -31,9 +38,8 @@
 #      after step 3 commits, while core, rest, fn and pooler are still stopped, so no session the backup carried ever
 #      meets a core signing with the new keys. pg_restore owns step 3's transaction, so this is the next one; when it
 #      fails the job fails (exit 5) and control does not start the project
-#   5. the storage volume: the archive is extracted into a temp dir inside the volume (owner: the volume's, modes from
-#      the umask, never the archive's), checked again for anything but files and directories, then swapped in (a
-#      failure here, after the database was restored: exit 3)
+#   5. the storage volume: the files extracted in 1c are given to the volume's owner and swapped in (a failure here,
+#      after the database was restored: exit 3)
 # What it does NOT do: objects created after the backup are not removed; roles are not restored (globals.sql is for
 # a disaster restore onto a fresh cluster); the services are started again by control. Never prints a value from
 # the environment.
@@ -100,12 +106,13 @@ if [[ $itotal =~ ^[1-9][0-9]{0,17}$ && $ifree =~ ^[0-9]{1,18}$ ]] && [ $((ifree 
   exit 6
 fi
 # the database: the dump's SQL as pg_restore would send it, decompressed and counted here, never written. On disk a
-# row takes its text plus about 24 bytes of tuple header, and its index entries take as much again for the indexed
-# columns: (bytes + 32 per line) x 2. An estimate, not a bound: a table with many indexes, or rows of a few bytes, can
-# take more. Counting stops once the estimate passes the room, so a decompression bomb costs no more than the room.
+# row takes its text plus about 24 bytes of tuple header: bytes + 33 per line, once (x1). The factor was 2 (for the
+# indexes) and over-refused restores that fit by 2 to 6 times; it can be low because the watchdog below is the bound,
+# and this estimate only refuses early, before anything changes, a dump that cannot fit at all.
+# Counting stops once the estimate passes the room, so a decompression bomb costs no more than the room.
 # A dump pg_restore cannot read counts as far as it got: the restore itself then fails and rolls back (exit 10).
 db_k=$(pg_restore -f - "$dir/db.dump" 2> /dev/null | LC_ALL=C awk -v lim=$(( (room - storage_k) * 1024 )) '
-  { b += length($0) + 33 } b * 2 > lim { over = 1; exit } END { if (over) print "over"; else printf "%.0f\n", b * 2 / 1024 }') || true
+  { b += length($0) + 33 } b > lim { over = 1; exit } END { if (over) print "over"; else printf "%.0f\n", b / 1024 }') || true
 [ "$db_k" != over ] || refused 'more than' "$room"
 [[ $db_k =~ ^[0-9]{1,18}$ ]] || { echo "restore: the size of $rel/db.dump cannot be estimated; refusing" >&2; exit 1; }
 echo "restore: about $(( (storage_k + db_k) / 1024 )) MiB to write, $((room / 1024)) MiB free above the floor"
@@ -140,6 +147,40 @@ cleanup() {
   exit "$rc"
 }
 trap cleanup EXIT
+# watched <stop> <writer...>: runs the writer in a process group of its own (setsid) and reads the free space every
+# second; at the floor <stop> runs (empty: none), the writer's group is killed and the restore ends with exit 6. The
+# cleanup trap then removes the temp dir and undoes the cron and ledger steps.
+app=selfbase_restore_$$
+watched() {
+  local stop=$1 w rc=0; shift
+  setsid "$@" & w=$!
+  while kill -0 "$w" 2> /dev/null; do
+    if [ "$(df -Pk "$storage" | awk 'NR == 2 { print $4 }')" -le "$need" ]; then
+      [ -z "$stop" ] || "$stop" || true
+      kill -TERM -- "-$w" 2> /dev/null || kill -TERM "$w" 2> /dev/null || true
+      wait "$w" 2> /dev/null || true
+      echo "restore: REFUSED: the volume of the project's data reached the floor; at least $((need / 1024)) MiB ($rule) must stay free; the restore was stopped and rolled back, nothing was changed; free space first" >&2
+      exit 6
+    fi
+    sleep 1
+  done
+  wait "$w" || rc=$?
+  return "$rc"
+}
+# pg_restore's server session: killing the client alone leaves a statement that sends nothing back (a REFRESH, an
+# index build) running; terminated, its one transaction rolls back and its new files are removed (waits up to 10 s)
+stop_restore() {
+  q -c "select pg_catalog.pg_terminate_backend(pid, 10000) from pg_catalog.pg_stat_activity
+        where application_name = '$app' and pid <> pg_catalog.pg_backend_pid()" > /dev/null
+}
+# 1c. the storage files, into a temp dir on the volume, before the database changes
+t="$storage/.restoring-$$"
+rm -rf "$t"
+mkdir "$t"
+watched '' tar --no-same-owner --no-same-permissions -xzf "$dir/storage.tar.gz" -C "$t" ||
+  { echo "restore: $rel/storage.tar.gz could not be extracted; nothing was changed" >&2; exit 1; }
+[ -z "$(find "$t" ! -type f ! -type d -print -quit)" ] ||
+  { echo "restore: the extracted storage holds something other than files and directories; nothing was changed" >&2; exit 1; }
 jobs=$(q -c "select case when pg_catalog.to_regclass('cron.job') is null then '' else (select coalesce(pg_catalog.string_agg(jobid::text, ','), '')
   from (select jobid from cron.job where active) j) end")
 if [ -n "$jobs" ]; then
@@ -156,7 +197,8 @@ if [ "$v1" = 1 ] && [ "$(q -c "select pg_catalog.to_regclass('selfbase.platform_
   q -c "create schema if not exists $HOLD; alter table selfbase.platform_migrations set schema $HOLD"
   held=1
 fi
-pg_restore --clean --if-exists --single-transaction --exit-on-error -d "${PGDATABASE:-postgres}" "$dir/db.dump" || exit 10
+watched stop_restore env PGAPPNAME="$app" pg_restore --clean --if-exists --single-transaction --exit-on-error \
+  -d "${PGDATABASE:-postgres}" "$dir/db.dump" || exit 10
 if [ "$v1" = 1 ]; then
   # the v1 restore is committed: from here the old ledger must never go back over it
   held=0
@@ -185,19 +227,14 @@ if [ "$rotate" = 1 ]; then
           if remains then raise exception 'auth.% still has rows after the delete', t; end if;
         end if;
       end loop;
-    end \$\$"; } || { trap - EXIT
+    end \$\$"; } || { trap - EXIT; rm -rf "$t"
     echo "restore: FAILED: the DATABASE WAS RESTORED from $rel but its sessions could not be deleted (ROTATE_KEYS); delete this project, then import again" >&2
     exit 5; }
   echo "restore: the restored sessions are deleted (ROTATE_KEYS)"
 fi
 db_done=1
 echo "restore: database restored (cron jobs as in the backup)"
-t="$storage/.restoring-$$"
-rm -rf "$t"
-mkdir "$t"
-tar --no-same-owner --no-same-permissions -xzf "$dir/storage.tar.gz" -C "$t"
-[ -z "$(find "$t" ! -type f ! -type d -print -quit)" ] || { echo "restore: the extracted storage holds something other than files and directories" >&2; exit 3; }
-# core (not root) owns its storage: everything restored belongs to the volume's owner, as core wrote it
+# 5. core (not root) owns its storage: everything restored belongs to the volume's owner, as core wrote it
 chown -R "$(stat -c %u:%g "$storage")" "$t"
 find "$storage" -mindepth 1 -maxdepth 1 ! -name ".restoring-$$" -exec rm -rf {} +
 find "$t" -mindepth 1 -maxdepth 1 -exec mv -t "$storage" {} +
