@@ -5,7 +5,7 @@ import { admit, AdmissionError, type Size } from '../admission.ts'
 import { config } from '../config.ts'
 import { forgetCoreIp } from '../core-addr.ts'
 import { ApiError } from '../errors.ts'
-import { allocateHost, assertRoutable, hostsOf, precheckHost, releaseHost } from '../hosts.ts'
+import { allocateHost, assertRoutable, hostsOf, precheckHost, releaseDomains, releaseHost } from '../hosts.ts'
 import { newRef } from '../ids.ts'
 import { loadProjectEnv } from '../project-env.ts'
 import { generateProjectSecrets } from '../project-secrets.ts'
@@ -73,7 +73,7 @@ export async function createProject(pool: pg.Pool, input: CreateInput): Promise<
         + 'Import it with new keys (rotate_keys), or delete the other project first.')
     }
     await admit(c, { size: input.size })
-    await precheckHost(c, input.pool)
+    await precheckHost(c, input.pool, input.orgId)
     const version = (await c.query(`select value from control.settings where key = 'current_template_version'`)).rows[0]?.value
       ?? config.templateVersion
     let project!: Project
@@ -235,8 +235,8 @@ defineJob('project.delete', 'light', [
   step('remove', (ctx) => ctx.provisioner.remove(need(ctx).ref, true)),
   step('release', async (ctx) => {
     await releaseHost(ctx.db, need(ctx).id)
-    // legacy and custom names too: they become free for another project
-    await ctx.db.query('delete from control.project_domains where project_id = $1', [need(ctx).id])
+    // legacy and custom names too: free for the org's other projects at once, for other orgs after the hold
+    await releaseDomains(ctx.db, need(ctx).id)
   }),
   step('secrets', (ctx) => ctx.db.query('delete from control.project_secrets where project_id = $1', [need(ctx).id])),
   step('removed', (ctx) => setStatus(ctx, 'REMOVED')),
