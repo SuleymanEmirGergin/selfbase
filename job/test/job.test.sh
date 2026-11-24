@@ -60,6 +60,16 @@ sql db "insert into selfbase.mail_log (to_email, subject, html) values ('a@examp
 sql db "insert into auth.refresh_tokens (token, session_id) values ('restored-token', gen_random_uuid());
   create table auth.sessions (id uuid primary key); insert into auth.sessions values (gen_random_uuid())" > /dev/null
 sessions() { sql db "select (select count(*) from auth.refresh_tokens) || ',' || (select count(*) from auth.sessions)"; }
+# other credentials the backup carries: a pending link (one_time_tokens), and GoTrue tables a foreign dump may hold
+# (PKCE flow state, MFA challenges, AMR claims, SAML relay states, OAuth authorization codes); a user and a factor stay
+FOREIGN_CREDS='flow_state mfa_challenges mfa_amr_claims saml_relay_states oauth_authorizations'
+sql db "insert into auth.users (id, email) values ('22222222-2222-2222-2222-222222222222', 'u@example.test');
+  insert into auth.one_time_tokens (user_id, token_type, token_hash, relates_to)
+    values ('22222222-2222-2222-2222-222222222222', 'recovery_token', 'restored-hash', 'u@example.test');
+  create table auth.mfa_factors (id uuid primary key); insert into auth.mfa_factors values (gen_random_uuid());
+  $(for t in $FOREIGN_CREDS; do echo "create table auth.$t (id uuid primary key); insert into auth.$t values (gen_random_uuid());"; done)" > /dev/null
+creds() { sql db "select concat_ws(',', (select count(*) from auth.one_time_tokens)$(for t in $FOREIGN_CREDS; do echo ", (select count(*) from auth.$t)"; done))"; }
+kept() { sql db "select (select count(*) from auth.users) || ',' || (select count(*) from auth.mfa_factors)"; }
 
 # ---- backup of a v2 database ----
 JOB_ENV=(-e BACKUP_SUBDIR=t)
@@ -213,6 +223,7 @@ check 'storage is the backup' docker run --rm -v "$P-storage:/s" "$IMAGE" bash -
 check 'R4: restored storage belongs to the volume owner, not the archive owner' docker run --rm -v "$P-storage:/s" "$IMAGE" bash -c \
   '[ "$(stat -c %u:%g /s/stub /s/stub/b/v2.txt | sort -u)" = 1000:1000 ]'
 check "I1: a plain restore keeps the backup's sessions" [ "$(sessions)" = 1,1 ]
+check "I1: a plain restore keeps the backup's other credentials" [ "$(creds)" = 1,1,1,1,1,1 ]
 
 # ---- I1: ROTATE_KEYS=1 (an import with rotate_keys) deletes the restored sessions, before control starts core ----
 JOB_ENV=(-e RESTORE_DIR=t/$ts -e ROTATE_KEYS=yes)
@@ -223,6 +234,8 @@ JOB_ENV=(-e RESTORE_DIR=t/$ts -e ROTATE_KEYS=1)
 rc=0; out=$(job db "$P-storage" bash /scripts/restore.sh 2>&1) || rc=$?
 check 'I1: a rotating restore succeeds' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
 check 'I1: a rotating restore leaves no refresh token and no session' [ "$(sessions)" = 0,0 ]
+check 'R1: a rotating restore leaves no one-time token, flow state, MFA challenge, AMR claim, relay state or OAuth code' [ "$(creds)" = 0,0,0,0,0,0 ]
+check 'R1: a rotating restore keeps the users and their MFA factors' [ "$(kept)" = 1,1 ]
 check 'I1: a rotating restore says so' grep -qx 'restore: the restored sessions are deleted (ROTATE_KEYS)' <<< "$out"
 check 'I1: the rest of the database is the backup' [ "$(sql db 'select v from public.marker')" = in-backup ]
 # a delete that fails (a trigger the backup carries): the job fails with exit 5, never as a success
@@ -243,7 +256,7 @@ JOB_ENV=(-e "RESTORE_DIR=${last#backup: wrote }" -e ROTATE_KEYS=1)
 rc=0; out=$(job db-empty "$P-empty-storage" bash /scripts/restore.sh 2>&1) || rc=$?
 check 'I1: a rotating restore of a dump without auth tables succeeds' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
 # the v1 dump below drops schema auth: a table it does not hold would block that
-sql db "drop table auth.sessions" > /dev/null
+sql db "drop table auth.sessions, auth.mfa_factors, $(sed 's/\([a-z_]*\)/auth.\1/g; s/ /, /g' <<< "$FOREIGN_CREDS")" > /dev/null
 
 # ---- a v1 database restores into a v2 database and is adopted by core ----
 sql db-v1 "insert into auth.users (id, email) values ('11111111-1111-1111-1111-111111111111', 'v1@example.test')" > /dev/null

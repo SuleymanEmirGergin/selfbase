@@ -20,7 +20,9 @@
 #      project's core created is moved aside before step 3 (it would keep --clean from dropping schema selfbase) and
 #      dropped after it (moved back if step 3 fails), so core adopts the restored database at its next start and
 #      applies 0002+
-#   4b. ROTATE_KEYS=1: every row of auth.refresh_tokens and auth.sessions (where the dump has them) is deleted right
+#   4b. ROTATE_KEYS=1: every row of auth.refresh_tokens, auth.sessions, auth.one_time_tokens and the GoTrue tables a
+#      foreign dump may hold (mfa_amr_claims, flow_state, mfa_challenges, saml_relay_states, oauth_authorizations;
+#      where the dump has them) is deleted right
 #      after step 3 commits, while core, rest, fn and pooler are still stopped, so no session the backup carried ever
 #      meets a core signing with the new keys. pg_restore owns step 3's transaction, so this is the next one; when it
 #      fails the job fails (exit 5) and control does not start the project
@@ -116,9 +118,12 @@ if [ "$v1" = 1 ]; then
 fi
 if [ "$rotate" = 1 ]; then
   # step 3 is committed: the cleanup trap must neither undo the cron or ledger steps nor call this a storage failure
-  q -c "do \$\$ begin
-    if to_regclass('auth.refresh_tokens') is not null then delete from auth.refresh_tokens; end if;
-    if to_regclass('auth.sessions') is not null then delete from auth.sessions; end if;
+  # every credential row (sessions, pending links and codes); users, identities and MFA factors are the data moved
+  q -c "do \$\$ declare t text; begin
+    foreach t in array array['refresh_tokens', 'sessions', 'mfa_amr_claims', 'one_time_tokens', 'flow_state',
+        'mfa_challenges', 'saml_relay_states', 'oauth_authorizations'] loop
+      if to_regclass('auth.' || t) is not null then execute format('delete from auth.%I', t); end if;
+    end loop;
   end \$\$" || { trap - EXIT
     echo "restore: FAILED: the DATABASE WAS RESTORED from $rel but its sessions could not be deleted (ROTATE_KEYS); delete this project, then import again" >&2
     exit 5; }
