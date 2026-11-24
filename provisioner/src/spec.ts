@@ -314,6 +314,8 @@ export function buildJob(input: JobInput, node: NodeSettings): ContainerSpec {
     Env: Object.entries(env).map(([k, v]) => `${k}=${v}`),
     Cmd: cmd,
     Labels: baseLabels(ref, service, node.templateVersion),
+    // a stopped job has 60 s to stop its writer and undo its steps (backup.sh, restore.sh traps) before SIGKILL
+    StopTimeout: 60,
     HostConfig: {
       ...hostConfig(node, name, JOB_RES, 'no', net, ['NET_RAW']),
       Init: true,

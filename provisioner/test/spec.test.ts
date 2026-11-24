@@ -301,6 +301,10 @@ test('backup job: one bind, its own backup directory only; storage volume; fixed
   assert.deepEqual(spec.body.Cmd, ['bash', '/scripts/backup.sh'])
   assert.equal(spec.body.Image, 'ghcr.io/acme/selfbase/selfbase-job:2.1.0')
   assert.deepEqual(hc.RestartPolicy, { Name: 'no' })
+  // a stopped job gets 60 s to stop its writer and undo its steps before SIGKILL (Docker's default is 10 s)
+  for (const type of ['backup', 'restore'] as const) {
+    assert.equal(buildJob(job({ type, args: { dir: type === 'backup' ? REF : `${REF}/${TS}` } }), NODE).body.StopTimeout, 60, type)
+  }
   assert.equal(hc.Memory, 512 * MiB)
   assert.equal(hc.MemorySwap, hc.Memory)
   assert.ok((spec.body.Env as string[]).includes(`BACKUP_SUBDIR=${REF}`))
