@@ -321,6 +321,20 @@ test('H: a listed name bound to a slug no organization has is kept, with a warni
   expect(warn.mock.calls.flat().join('\n')).toMatch(/old\.example\.test.*defualt/)
 }))
 
+test('H: a kept name of an unknown slug does not fail the project\'s applies; the counted check decides', () => withLegacy(async (p) => {
+  config.legacyOrgs = { 'old.example.test': 'defualt' }
+  expect(await evictStaleLegacyNames(pool)).toEqual([])
+  // as migrations 0003 and 0005 recorded a v1 name attached before them: issued to the project's own org
+  await pool.query(`insert into control.issued_hosts (hostname, org_id) values ('old.example.test', $1) on conflict (hostname) do update set org_id = $1`, [orgId])
+  const apply = await finished(await enqueue(pool, { type: 'project.apply', projectId: p.id, payload: { recreate: ['core'] }, createdBy: null }))
+  expect(apply.error ?? null).toBeNull()
+  expect(apply.status).toBe('succeeded')
+  // not counted either: the counted check refuses it, as for any name that is not a legacy name
+  await pool.query(`delete from control.issued_hosts where hostname = 'old.example.test'`)
+  const refused = await finished(await enqueue(pool, { type: 'project.apply', projectId: p.id, payload: { recreate: ['core'] }, createdBy: null }))
+  expect(refused.error).toMatch(/holds no host slot/)
+}))
+
 test('H: a listed name that an issued_hosts row gives the wrong org is evicted, and assertRoutable refuses it first', () => withLegacy(async (p) => {
   // as migrations 0003 and 0005 recorded a v1 name attached before them: issued to the project's own org
   await pool.query(`insert into control.issued_hosts (hostname, org_id) values ('old.example.test', $1) on conflict (hostname) do update set org_id = $1`, [orgId])

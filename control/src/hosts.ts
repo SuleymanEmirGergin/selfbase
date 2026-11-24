@@ -220,8 +220,12 @@ export async function assertRoutable(db: Db, projectId: string, hosts: string[])
     if (!underBase && isWildcardDns(h)) throw new Error(`${h} is a wildcard-IP DNS name outside ${base}`)
     // the binding first, as addDomain checks it: an issued_hosts row of this org does not outrank LEGACY_HOSTNAMES
     if (config.legacyHostnames.includes(h)) {
-      if (legacyOrgOf(h) !== org.slug) throw new Error(`${h} is a legacy hostname of another organization`)
-      continue
+      const owner = legacyOrgOf(h)
+      if (owner === org.slug) continue
+      // a slug no organization has gives the name to nobody (evictStaleLegacyNames keeps it): the counted check decides
+      if ((await db.query('select 1 from control.organizations where slug = $1', [owner])).rowCount) {
+        throw new Error(`${h} is a legacy hostname of another organization`)
+      }
     }
     if (!counted.has(h)) {
       throw new Error(`${h} holds no host slot, was never counted as a new host of this organization and is not a legacy hostname`)
