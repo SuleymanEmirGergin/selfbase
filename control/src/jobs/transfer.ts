@@ -79,6 +79,13 @@ async function waitFor(ctx: JobCtx, ref: string, type: 'backup' | 'restore'): Pr
       throw new Error('the import is partial: the database was restored but the storage files were not replaced (the restore was stopped): '
         + 'delete this project, then run the import again')
     }
+    if (type === 'restore' && s.exitCode === 8) {
+      // the restore could not prove its database sessions ended: one may still commit, so nothing of the project runs
+      const stopped = await ctx.provisioner.stop(ref, [...RESTORE_STOPS, 'db']).then(() => true, () => false)
+      throw new Error('the restore was stopped and it is unknown whether its database sessions ended, so the database may be '
+        + (stopped ? 'either state: its database is stopped as well' : 'either state, and its database could NOT be stopped: stop it by hand')
+        + '; delete this project, then import again')
+    }
     throw new Error(`the ${type} job failed (${s.exitCode === null ? 'it never started' : `exit ${s.exitCode}`})`)
   }
 }

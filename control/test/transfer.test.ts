@@ -204,6 +204,17 @@ describe('import', () => {
     expect((await finished(out.job_id)).error).toMatch(/^the import is partial: .*storage files were not replaced.*run the import again/)
   })
 
+  test('a restore that exits 8 (stopped, state unknown) stops the database too and says the state is unknown', async () => {
+    fake.jobResult = () => ({ status: 'failed', exitCode: 8, tail: 'restore: STOPPED, STATE UNKNOWN' })
+    const out = await (await postForm(owner.token, form({ ...importFields({ name: 'unknown' }), env_file: envBlob(v1Env().text) }))).json()
+    workers()
+    const error = (await finished(out.job_id)).error
+    expect(error).toMatch(/unknown whether .* sessions ended/)
+    expect(error).toMatch(/its database is stopped as well/)
+    expect(error).not.toMatch(/rolled back|not changed/)
+    expect(fake.callsOf('stop').map((c) => c.args)).toContainEqual([out.project.ref, [...FOUR, 'db']])
+  })
+
   test('a certificate later than the wait leaves the import COMING_UP; a later reconcile pass activates it', async () => {
     cert = 'pending'
     const out = await (await postForm(owner.token, form({ ...importFields({ name: 'slow-cert' }), env_file: envBlob(v1Env().text) }))).json()

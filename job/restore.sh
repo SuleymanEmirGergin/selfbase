@@ -23,12 +23,16 @@
 #      never the archive's) and checked again for anything but files and directories; a failure here changed nothing
 #      (exit 1; the temp dir is removed)
 #   watchdog: while tar (1c) and pg_restore (3) run, the free space and inodes are read every second; below the floor
-#      (step 1b admits a restore that leaves exactly the floor free) the writer is stopped (the database's client sessions are terminated, so pg_restore's one transaction rolls back), the temp
-#      dir removed, and the restore ends with exit 6, nothing changed: what the server writes for the dump (a
-#      materialized view it refreshes, an index it builds) is no line of the dump, so no estimate can bound it. A
-#      writer that exits 0 as it is stopped had already finished (pg_restore committed): the restore goes on.
+#      (step 1b admits a restore that leaves exactly the floor free) the writer is stopped (every session of the
+#      cluster but this job's own is terminated, so pg_restore's one transaction rolls back), the temp dir removed, and
+#      the restore ends with exit 6, nothing changed: what the server writes for the dump (a materialized view it
+#      refreshes, an index it builds) is no line of the dump, so no estimate can bound it. A writer that exits 0 as it
+#      is stopped had already finished (pg_restore committed): the restore goes on.
 #      A signal (a job container stopped) ends the restore as a failure (exit 128 + its number): the writer is
-#      stopped and reaped first, then the temp dir removed and the cron and ledger steps undone
+#      stopped and reaped first, then the temp dir removed and the cron and ledger steps undone.
+#      A stop that cannot show the sessions ended within 30 s (a termination that fails, sessions that keep coming,
+#      a database it cannot reach) undoes nothing and claims no rollback: exit 8, the state is unknown (control then
+#      stops the project's database as well)
 #   2. cron: every active job is set inactive (committed) and running job sessions are terminated, so no job runs
 #      during the restore; the restore brings back the backup's job states (on failure the jobs set inactive here
 #      are set active again)
@@ -149,11 +153,12 @@ echo "restore: about $(( (storage_k + db_k) / 1024 )) MiB to write, $((room / 10
 export PGOPTIONS='-c event_triggers=off'
 q() { PGOPTIONS="$PGOPTIONS -c search_path=pg_catalog" psql -XAtq -v ON_ERROR_STOP=1 "$@"; }
 # the cleanup's state (no function declares a local of these names: the trap runs in the scope of the function a
-# signal stopped). db_done: pg_restore committed; swapped: the storage swap began
-jobs='' db_done=0 swapped=0 t='' held=0 w='' wstop='' wrc=0
+# signal stopped). db_done: pg_restore committed; swapped: the storage swap began; contained: no stop failed to show
+# that the restore's sessions ended
+jobs='' db_done=0 swapped=0 t='' held=0 w='' wstop='' wrc=0 contained=1
 HOLD=selfbase_restore_hold
 # committed: pg_restore exited 0, the database is the backup's; the cron and ledger steps are never undone over it
-committed() { db_done=1 held=0 jobs=''; }
+committed() { db_done=1 held=0 jobs='' contained=1; }
 cleanup() {
   local rc=$? was=$wstop
   # a signal ended the script while a writer ran: it is stopped and reaped before its temp dir goes, so nothing writes
@@ -161,6 +166,10 @@ cleanup() {
   if [ -n "$w" ]; then reap; [ "$was" != stop_restore ] || [ "$wrc" != 0 ] || committed; fi
   [ -z "$t" ] || rm -rf "$t"
   [ "$rc" != 0 ] || return 0
+  if [ "$contained" = 0 ]; then
+    echo "restore: STOPPED, STATE UNKNOWN (exit $rc): the sessions of the restore of $rel could not be shown to have ended, so its transaction may yet commit or roll back; nothing was undone; stop the project's database, then delete this project and import again" >&2
+    exit 8
+  fi
   if [ "$db_done" = 1 ] && [ "$swapped" = 1 ]; then
     echo "restore: FAILED in the storage step: the DATABASE WAS RESTORED from $rel, storage may be partly replaced; delete this project, then import again" >&2
     exit 3
@@ -195,9 +204,10 @@ at_floor() {
 # watched <stop> <writer...>: runs the writer in a process group of its own (setsid) and reads the free space and
 # inodes every second; at the floor <stop> runs (empty: none), the writer's group is killed and the restore ends with
 # exit 6. The cleanup trap then removes the temp dir and undoes the cron and ledger steps.
-# reap: stops the running writer (its <stop> first), kills its process group and waits for it; wrc: its exit status
+# reap: stops the running writer (its <stop> first: one that fails leaves the state unknown), kills its process group
+# and waits for it; wrc: its exit status
 reap() {
-  [ -z "$wstop" ] || "$wstop" || true
+  [ -z "$wstop" ] || "$wstop" || contained=0
   kill -TERM -- "-$w" 2> /dev/null || kill -TERM "$w" 2> /dev/null || true
   wrc=0; wait "$w" 2> /dev/null || wrc=$?
   w=''
@@ -209,7 +219,8 @@ watched() {
     if at_floor; then
       reap
       # a writer that exited 0 had finished before the stop reached it (pg_restore committed): nothing to roll back
-      [ "$wrc" != 0 ] || return 0
+      [ "$wrc" != 0 ] || { contained=1; return 0; }
+      [ "$contained" = 1 ] || exit 8
       echo "restore: REFUSED: the volume of the project's data reached the floor; at least $((need / 1024)) MiB ($rule) and 10% of its inodes must stay free; the restore was stopped and rolled back, nothing was changed; free space first" >&2
       exit 6
     fi
@@ -220,19 +231,22 @@ watched() {
   return "$wrc"
 }
 # pg_restore's server session: killing the client alone leaves a statement that sends nothing back (a REFRESH, an
-# index build) running; terminated, its one transaction rolls back and its new files are removed. Every client
-# session of the database goes, not one picked by name: the dump's own SQL can rename its session (application_name),
-# and core, rest, fn and pooler are stopped, so the restore's are the only ones. Done once a pass finds none (30 s at
-# most; each termination waits up to 10 s)
+# index build) running; terminated, its one transaction rolls back and its new files are removed. Every session of
+# the cluster goes (client backends and background workers, in every database: the cluster is the project's alone),
+# not one picked by name: the dump's own SQL can rename its session (application_name) or open another (dblink), and
+# core, rest, fn and pooler are stopped. Done once a pass finds none; a pass that cannot run (no login), a
+# termination that fails or a session still there after 30 s in all returns 1: the state is unknown
 stop_restore() {
-  local i
-  for i in $(seq 30); do
-    [ "$(q -c "select pg_catalog.count(pg_catalog.pg_terminate_backend(pid, 10000)) from pg_catalog.pg_stat_activity
-          where datname = pg_catalog.current_database() and backend_type = 'client backend' and pid <> pg_catalog.pg_backend_pid()")" != 0 ] ||
-      return 0
+  local deadline=$((SECONDS + 30)) found
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    # <sessions found>,<terminations that failed or did not end their session within 1 s>
+    found=$(PGCONNECT_TIMEOUT=5 PGOPTIONS="$PGOPTIONS -c statement_timeout=10s" q -c "select pg_catalog.count(*) || ',' ||
+        pg_catalog.count(*) filter (where not pg_catalog.pg_terminate_backend(pid, 1000)) from pg_catalog.pg_stat_activity
+        where backend_type in ('client backend', 'background worker') and pid <> pg_catalog.pg_backend_pid()") || found=''
+    [ "$found" != 0,0 ] || return 0
     sleep 1
   done
-  echo "restore: WARNING: a session of the restore still ran 30 s after it was terminated" >&2
+  echo "restore: WARNING: the sessions of the restore could not be shown to have ended within 30 s" >&2
   return 1
 }
 # 1c. the storage files, into a temp dir on the volume, before the database changes

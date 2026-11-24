@@ -528,6 +528,40 @@ check '1: cron.job stays as restored (its job is not set active again)' [ "$(ejo
 check '1: it says the database was restored and the storage not, never that nothing changed' \
   bash -c 'grep -q "DATABASE WAS RESTORED .* storage files were NOT replaced" <<< "$1" && ! grep -q unchanged <<< "$1"' _ "$out"
 check '1: and its temp dir is gone' grep -qx entries=0 <<< "$out"
+# 2: a signal while pg_restore runs (a refresh that sleeps 60 s keeps it running): every session of the cluster but
+# the restore's own is terminated, one in a second database too, so the one transaction rolls back; the cron step
+# is undone
+sql db-empty "update cron.job set active = true where jobname = 'e_job';
+  create table public.knob3 (s float8); insert into public.knob3 values (0);
+  create function public.e_nap() returns int language plpgsql as \$\$ begin perform pg_catalog.pg_sleep((select s from public.knob3)); return 1; end \$\$;
+  create materialized view public.e_slow as select public.e_nap() as n;
+  update public.knob3 set s = 60" > /dev/null
+JOB_ENV=(-e BACKUP_SUBDIR=eslow)
+eslow=$(job db-empty "$P-empty-storage" bash /scripts/backup.sh | tail -n1); eslow=${eslow#backup: wrote }
+sql db-empty 'drop materialized view public.e_slow; drop function public.e_nap(); drop table public.knob3' > /dev/null
+sql db-empty 'create database e_other' > /dev/null
+others() { sql db-empty "select count(*) from pg_stat_activity where datname = 'e_other'"; }
+compose exec -T db-empty psql -XAtq -U postgres -d e_other -c 'select pg_sleep(120)' > /dev/null 2>&1 & other=$!
+for i in $(seq 20); do [ "$(others)" = 0 ] || break; sleep 0.5; done
+rc=0; out=$(cramped "$eslow" 1 '' '(sleep 6; pkill -TERM -f "^bash /scripts/restore.sh") &') || rc=$?
+n=$(others)
+sql db-empty "select pg_terminate_backend(pid) from pg_stat_activity where datname = 'e_other'" > /dev/null
+wait "$other" || true
+check '2: a restore stopped by SIGTERM while pg_restore runs exits 143' [ "$rc" = 143 ]; [ "$rc" = 143 ] || echo "$out" >&2
+check '2: it says it was stopped, nothing changed' grep -q '^restore: STOPPED by a signal' <<< "$out"
+check '2: the dump was not restored (it rolled back)' [ "$(sql db-empty "select to_regclass('public.e_slow') is null")" = t ]
+check '2: the database is unchanged' [ "$(emarker)" = after-backup ]
+check '2: the cron step is undone' [ "$(ejob)" = t ]
+check '2: a session in a second database of the cluster was terminated too' [ "$n" = 0 ]; [ "$n" = 0 ] || echo "e_other sessions: $n" >&2
+# 2: a stop that cannot prove the sessions ended (here every termination query fails) claims no rollback: exit 8,
+# state unknown, and nothing is undone
+rc=0; out=$(cramped "$eslow" 1 '' 'psql() { case "$*" in *"pg_terminate_backend(pid, 1000)"*) return 2 ;; esac; command psql "$@"; }
+  export -f psql; (sleep 6; pkill -TERM -f "^bash /scripts/restore.sh") &') || rc=$?
+check '2: a stop that does not converge exits 8' [ "$rc" = 8 ]; [ "$rc" = 8 ] || echo "$out" >&2
+check '2: it says the state is unknown and claims no rollback' \
+  bash -c 'grep -q "STATE UNKNOWN" <<< "$1" && ! grep -qE "rolled back|unchanged|set active again" <<< "$1"' _ "$out"
+sql db-empty "select pg_terminate_backend(pid) from pg_stat_activity where backend_type = 'client backend' and pid <> pg_backend_pid()" > /dev/null
+sql db-empty "update cron.job set active = true where jobname = 'e_job'" > /dev/null
 # E: the watchdog. What the server writes counts too: a materialized view the dump refreshes is one short line in the
 # estimate, over a row count kept in a table (1 when it was refreshed, 2 million in the dump). The database and the
 # storage volume share one 512 MiB tmpfs, as Docker volumes share a disk; 100 MiB of room above the floor
