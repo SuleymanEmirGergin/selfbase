@@ -1,3 +1,4 @@
+import { realpath } from 'node:fs/promises'
 import path from 'node:path'
 import { config } from '../config.ts'
 
@@ -27,4 +28,16 @@ export function resolveObjectPath(bucket: string, name: string): string {
   const file = path.resolve(root, bucket, name)
   if (!file.startsWith(root + path.sep)) throw badKey()
   return file
+}
+
+/**
+ * Whether `p` (an object's file, or the directory an upload writes into) is inside its bucket's directory once every
+ * symlink is resolved. A restored or hand-placed link must never serve or receive a file outside the bucket
+ * (/proc/self/environ, another bucket). False also when `p` does not exist.
+ */
+export async function insideBucket(bucket: string, p: string): Promise<boolean> {
+  const real = await Promise.all([realpath(config.storageDir), realpath(p)]).catch(() => null)
+  if (!real) return false
+  const dir = path.join(real[0], bucket)
+  return real[1] === dir || real[1].startsWith(dir + path.sep)
 }
