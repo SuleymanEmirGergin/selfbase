@@ -210,6 +210,9 @@ reap() {
   [ -z "$wstop" ] || "$wstop" || contained=0
   kill -TERM -- "-$w" 2> /dev/null || kill -TERM "$w" 2> /dev/null || true
   wrc=0; wait "$w" 2> /dev/null || wrc=$?
+  # 127: watched's own wait had already reaped it when the signal came, and its status is lost with it: a pg_restore
+  # not yet recorded as committed may have committed
+  [ "$wrc" != 127 ] || [ "$wstop" != stop_restore ] || [ "$db_done" = 1 ] || contained=0
   w=''
 }
 watched() {
@@ -227,6 +230,8 @@ watched() {
     sleep 1
   done
   wrc=0; wait "$w" || wrc=$?
+  # recorded before w is cleared: a signal from here on finds the commit (or, with w still set, the lost status above)
+  [ "$wrc" != 0 ] || [ "$wstop" != stop_restore ] || committed
   w=''
   return "$wrc"
 }
