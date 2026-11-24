@@ -1,7 +1,7 @@
 // Daily backups (plan D-7, spec 8.8): at 03:15 UTC one control.backup and one project.backup per project that should
 // be running (ACTIVE_HEALTHY, ACTIVE_UNHEALTHY, COMING_UP: a live database; one that is really down fails as a job); the heavy lane runs them one at a time. A run missed while control was down is not replayed.
 import type pg from 'pg'
-import { checkBackupSpace } from './disk.ts'
+import { checkBackupSpace, disk } from './disk.ts'
 import { DESIRED_RUNNING, enqueue, enqueueIfIdle } from './jobs/index.ts'
 
 /** Milliseconds from `now` to the next 03:15 UTC (a full day when it is 03:15 exactly). */
@@ -13,7 +13,7 @@ export function msUntilNext(now: Date): number {
 
 /** A project with a pending or running job (a pause, an upgrade, last night's backup) is skipped tonight. */
 export async function enqueueDailyBackups(db: pg.Pool): Promise<void> {
-  const { rows } = await db.query(`select id from control.projects where status = any($1) order by created_at`, [DESIRED_RUNNING])
+  const { rows } = await db.query(`select id, ref, org_id from control.projects where status = any($1) order by created_at`, [DESIRED_RUNNING])
   // a low backup volume: tonight's backups are refused, each as a failed job with the reason (a failed job is the record)
   const refused = await checkBackupSpace().then(() => null, (e: Error) => e.message)
   if (refused) {
@@ -27,7 +27,19 @@ export async function enqueueDailyBackups(db: pg.Pool): Promise<void> {
   // one control.backup at a time: a night whose backup is still queued or running gets no second one
   const queued = await db.query(`select 1 from control.jobs where type = 'control.backup' and status in ('pending', 'running')`)
   if (!queued.rowCount) await enqueue(db, { type: 'control.backup', payload: {}, createdBy: null })
-  for (const r of rows) await enqueueIfIdle(db, { type: 'project.backup', projectId: r.id, payload: {}, createdBy: null })
+  // each backup is sized against the space the ones queued before it tonight will take
+  let queuedBytes = 0
+  for (const r of rows) {
+    const bytes = await disk.projectBytes(r).catch(() => null)
+    const refusal = bytes === null ? "the project's size could not be read" : await checkBackupSpace(queuedBytes + bytes).then(() => null, (e: Error) => e.message)
+    if (refusal) {
+      console.error(`schedule: backup of ${r.ref} refused: ${refusal}`)
+      await db.query(`insert into control.jobs (type, project_id, lane, step, payload, status, error) values ('project.backup', $1, 'heavy', '0', '{}', 'failed', $2)`,
+        [r.id, refusal])
+      continue
+    }
+    if (await enqueueIfIdle(db, { type: 'project.backup', projectId: r.id, payload: {}, createdBy: null })) queuedBytes += bytes!
+  }
 }
 
 export function startSchedule(db: pg.Pool): { stop(): void } {

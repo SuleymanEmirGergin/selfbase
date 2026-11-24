@@ -8,7 +8,7 @@ import { config } from '../config.ts'
 import { pool } from '../db.ts'
 import { configSections, EnvFileError, parseV1Env, stripImported } from '../envfile.ts'
 import { ApiError } from '../errors.ts'
-import { checkBackupSpace } from '../disk.ts'
+import { checkBackupSpace, checkProjectBackup } from '../disk.ts'
 import { createProject } from '../jobs/index.ts'
 import { backupDirOf } from '../jobs/transfer.ts'
 import { ManifestError, MIN_PASSPHRASE, openManifest, sealManifest } from '../manifest.ts'
@@ -51,7 +51,7 @@ platformTransfer.get('/projects/:ref/backups', async (c) => {
 platformTransfer.post('/projects/:ref/backups', async (c) => {
   const p = await projectFor(c, 'project.manage')
   await checkBackupRate(p.id)
-  await checkBackupSpace()
+  await checkProjectBackup(p)
   return c.json({ job_id: await lifecycle(c, p, 'project.backup', CAN_BACKUP) }, 202)
 })
 
@@ -68,7 +68,7 @@ platformTransfer.post('/projects/:ref/export', async (c) => {
     throw new ApiError(400, 'weak_passphrase', `the passphrase must be at least ${MIN_PASSPHRASE} characters`)
   }
   await checkBackupRate(p.id)
-  await checkBackupSpace()
+  await checkProjectBackup(p)
   const secrets = await getSecrets(pool, p)
   const rows = (await pool.query('select section, data from control.project_config where project_id = $1 order by section', [p.id])).rows
   const sealed = await sealManifest({ config: Object.fromEntries(rows.map((r) => [r.section, r.data])),

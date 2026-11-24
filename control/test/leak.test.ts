@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { join as joinPath } from 'node:path'
 import { app } from '../src/app.ts'
 import { config } from '../src/config.ts'
+import { disk } from '../src/disk.ts'
 import { pool } from '../src/db.ts'
 import { enqueue, startWorkers } from '../src/jobs/index.ts'
 import { setProvisioner } from '../src/provisioner.ts'
@@ -58,6 +59,8 @@ beforeAll(async () => {
   vi.spyOn(process.stdout, 'write').mockImplementation(keep(process.stdout.write.bind(process.stdout)) as never)
   vi.spyOn(process.stderr, 'write').mockImplementation(keep(process.stderr.write.bind(process.stderr)) as never)
   for (const m of ['log', 'info', 'warn', 'error', 'debug'] as const) vi.spyOn(console, m).mockImplementation(keep(() => {}) as never)
+  // no core runs here to report the project's size
+  vi.spyOn(disk, 'projectBytes').mockResolvedValue(0)
 })
 afterAll(() => {
   config.maxNewHostsPerWeek = cap
