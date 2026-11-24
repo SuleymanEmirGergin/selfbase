@@ -422,21 +422,53 @@ sql db-empty "create table public.knob (n int); insert into public.knob values (
 JOB_ENV=(-e BACKUP_SUBDIR=egrow)
 grow=$(job db-empty "$P-empty-storage" bash /scripts/backup.sh | tail -n1); grow=${grow#backup: wrote }
 sql db-empty 'drop materialized view public.e_grow; drop table public.knob' > /dev/null
-docker volume create --driver local --opt type=tmpfs --opt device=tmpfs --opt o=size=512m "$P-small" > /dev/null
-docker run -d --name "$P-dbsmall" --network "$NET" --network-alias dbsmall -e POSTGRES_PASSWORD="$PW" -e PGDATA=/var/lib/postgresql/data/pg \
-  -v "$P-small:/var/lib/postgresql/data" "$(docker inspect -f '{{.Config.Image}}' "$(compose ps -q db-empty)")" > /dev/null
-for i in $(seq 120); do docker exec "$P-dbsmall" pg_isready -q -U postgres -h 127.0.0.1 2> /dev/null && break; sleep 1; done
-docker exec "$P-dbsmall" mkdir -p /var/lib/postgresql/data/storage
-# every project database has pg_cron (restore.sh reads cron.job)
-docker exec "$P-dbsmall" psql -XAtq -U postgres -c 'create extension if not exists pg_cron' > /dev/null
+# smalldb: a new dbsmall on a new 512 MiB tmpfs (a stopped restore leaves its WAL on it)
+smalldb() {
+  docker rm -f "$P-dbsmall" > /dev/null 2>&1 || true; docker volume rm -f "$P-small" > /dev/null
+  docker volume create --driver local --opt type=tmpfs --opt device=tmpfs --opt o=size=512m "$P-small" > /dev/null
+  docker run -d --name "$P-dbsmall" --network "$NET" --network-alias dbsmall -e POSTGRES_PASSWORD="$PW" -e PGDATA=/var/lib/postgresql/data/pg \
+    -v "$P-small:/var/lib/postgresql/data" "$(docker inspect -f '{{.Config.Image}}' "$(compose ps -q db-empty)")" > /dev/null
+  for i in $(seq 120); do docker exec "$P-dbsmall" pg_isready -q -U postgres -h 127.0.0.1 2> /dev/null && break; sleep 1; done
+  docker exec "$P-dbsmall" mkdir -p /var/lib/postgresql/data/storage
+  # every project database has pg_cron (restore.sh reads cron.job)
+  docker exec "$P-dbsmall" psql -XAtq -U postgres -c 'create extension if not exists pg_cron' > /dev/null
+}
+smalldb
 gfloor=$(( $(docker exec "$P-dbsmall" df -Pk /var/lib/postgresql/data | awk 'NR == 2 { print $4 }') / 1024 - 100 ))
 rc=0; out=$(docker run --rm --network "$NET" -e PGHOST=dbsmall -e PGPASSWORD="$PW" -e "RESTORE_DIR=$grow" -e "BACKUP_MIN_FREE_MIB=$gfloor" \
   -v "$P-backups:/backups:ro" --mount "type=volume,src=$P-small,dst=/data/storage,volume-subpath=storage" "$IMAGE" \
   bash /scripts/restore.sh 2>&1) || rc=$?
 check 'E: a dump whose server-side growth crosses the floor is stopped (exit 6)' [ "$rc" = 6 ]; [ "$rc" = 6 ] || echo "$out" >&2
 check 'E: the stop says the floor was reached and nothing was changed' grep -q "^restore: REFUSED: the volume of the project's data reached the floor" <<< "$out"
-check 'E: the stopped restore rolled back: the view is not there' \
-  [ "$(docker exec "$P-dbsmall" psql -XAtq -U postgres -c "select to_regclass('public.e_grow') is null" 2>&1)" = t ]
+gone=$(docker exec "$P-dbsmall" psql -XAtq -U postgres -c "select to_regclass('public.e_grow') is null" 2>&1)
+check 'E: the stopped restore rolled back: the view is not there' [ "$gone" = t ]; [ "$gone" = t ] || echo "$gone" >&2
+# the dump controls its session's name: a view whose refresh first sets application_name is stopped all the same,
+# and no session of it is left running once the restore has ended. The dump's SQL can also ignore the cancel
+# pg_restore sends when it is killed (a plpgsql handler for query_canceled); only a termination ends it. Past 400000
+# rows (160 to 280 MiB with their WAL: beyond the room, short of a full disk) each row waits 10 ms, so a session the
+# stop missed is still there when the restore ends
+sql db-empty "create table public.knob2 (n int); insert into public.knob2 values (1);
+  create function public.renamed_n() returns int language plpgsql as \$\$ begin
+    perform pg_catalog.set_config('application_name', 'renamed', false); return (select n from public.knob2); end \$\$;
+  create function public.slow_pad(g int) returns text language plpgsql as \$\$ begin
+    if g > 400000 then begin perform pg_catalog.pg_sleep(0.01); exception when query_canceled then null; end; end if;
+    return pg_catalog.repeat('x', 200); end \$\$;
+  create materialized view public.e_rename as select g, public.slow_pad(g) as pad from generate_series(1, public.renamed_n()) g;
+  update public.knob2 set n = 2000000" > /dev/null
+JOB_ENV=(-e BACKUP_SUBDIR=erename)
+ren=$(job db-empty "$P-empty-storage" bash /scripts/backup.sh | tail -n1); ren=${ren#backup: wrote }
+sql db-empty 'drop materialized view public.e_rename; drop function public.renamed_n(), public.slow_pad(int); drop table public.knob2' > /dev/null
+smalldb
+gfloor=$(( $(docker exec "$P-dbsmall" df -Pk /var/lib/postgresql/data | awk 'NR == 2 { print $4 }') / 1024 - 100 ))
+rc=0; out=$(docker run --rm --network "$NET" -e PGHOST=dbsmall -e PGPASSWORD="$PW" -e "RESTORE_DIR=$ren" -e "BACKUP_MIN_FREE_MIB=$gfloor" \
+  -v "$P-backups:/backups:ro" --mount "type=volume,src=$P-small,dst=/data/storage,volume-subpath=storage" "$IMAGE" \
+  bash /scripts/restore.sh 2>&1) || rc=$?
+left=$(docker exec "$P-dbsmall" psql -XAtq -U postgres -c "select count(*) from pg_stat_activity
+  where backend_type = 'client backend' and pid <> pg_backend_pid()" 2>&1)
+check 'E: a view whose refresh renames its session is stopped at the floor too (exit 6)' [ "$rc" = 6 ]; [ "$rc" = 6 ] || echo "$out" >&2
+check 'E: no session of the stopped restore is left running' [ "$left" = 0 ]; [ "$left" = 0 ] || echo "sessions left: $left" >&2
+check 'E: and that view is not there either' \
+  [ "$(docker exec "$P-dbsmall" psql -XAtq -U postgres -c "select to_regclass('public.e_rename') is null" 2>&1)" = t ]
 docker rm -f "$P-dbsmall" > /dev/null; docker volume rm -f "$P-small" > /dev/null
 # the v1 dump below drops schema auth: a table it does not hold would block that
 sql db "drop table auth.sessions, auth.mfa_factors, $(sed 's/\([a-z_]*\)/auth.\1/g; s/ /, /g' <<< "$FOREIGN_CREDS")" > /dev/null

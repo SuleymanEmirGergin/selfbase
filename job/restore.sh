@@ -20,9 +20,9 @@
 #      never the archive's) and checked again for anything but files and directories; a failure here changed nothing
 #      (exit 1; the temp dir is removed)
 #   watchdog: while tar (1c) and pg_restore (3) run, the free space is read every second; at the floor the writer is
-#      stopped (pg_restore's server session is terminated, so its one transaction rolls back), the temp dir removed,
-#      and the restore ends with exit 6, nothing changed: what the server writes for the dump (a materialized view it
-#      refreshes, an index it builds) is no line of the dump, so no estimate can bound it
+#      stopped (the database's client sessions are terminated, so pg_restore's one transaction rolls back), the temp
+#      dir removed, and the restore ends with exit 6, nothing changed: what the server writes for the dump (a
+#      materialized view it refreshes, an index it builds) is no line of the dump, so no estimate can bound it
 #   2. cron: every active job is set inactive (committed) and running job sessions are terminated, so no job runs
 #      during the restore; the restore brings back the backup's job states (on failure the jobs set inactive here
 #      are set active again)
@@ -150,7 +150,6 @@ trap cleanup EXIT
 # watched <stop> <writer...>: runs the writer in a process group of its own (setsid) and reads the free space every
 # second; at the floor <stop> runs (empty: none), the writer's group is killed and the restore ends with exit 6. The
 # cleanup trap then removes the temp dir and undoes the cron and ledger steps.
-app=selfbase_restore_$$
 watched() {
   local stop=$1 w rc=0; shift
   setsid "$@" & w=$!
@@ -168,10 +167,20 @@ watched() {
   return "$rc"
 }
 # pg_restore's server session: killing the client alone leaves a statement that sends nothing back (a REFRESH, an
-# index build) running; terminated, its one transaction rolls back and its new files are removed (waits up to 10 s)
+# index build) running; terminated, its one transaction rolls back and its new files are removed. Every client
+# session of the database goes, not one picked by name: the dump's own SQL can rename its session (application_name),
+# and core, rest, fn and pooler are stopped, so the restore's are the only ones. Done once a pass finds none (30 s at
+# most; each termination waits up to 10 s)
 stop_restore() {
-  q -c "select pg_catalog.pg_terminate_backend(pid, 10000) from pg_catalog.pg_stat_activity
-        where application_name = '$app' and pid <> pg_catalog.pg_backend_pid()" > /dev/null
+  local i
+  for i in $(seq 30); do
+    [ "$(q -c "select pg_catalog.count(pg_catalog.pg_terminate_backend(pid, 10000)) from pg_catalog.pg_stat_activity
+          where datname = pg_catalog.current_database() and backend_type = 'client backend' and pid <> pg_catalog.pg_backend_pid()")" != 0 ] ||
+      return 0
+    sleep 1
+  done
+  echo "restore: WARNING: a session of the restore still ran 30 s after it was terminated" >&2
+  return 1
 }
 # 1c. the storage files, into a temp dir on the volume, before the database changes
 t="$storage/.restoring-$$"
@@ -197,7 +206,7 @@ if [ "$v1" = 1 ] && [ "$(q -c "select pg_catalog.to_regclass('selfbase.platform_
   q -c "create schema if not exists $HOLD; alter table selfbase.platform_migrations set schema $HOLD"
   held=1
 fi
-watched stop_restore env PGAPPNAME="$app" pg_restore --clean --if-exists --single-transaction --exit-on-error \
+watched stop_restore pg_restore --clean --if-exists --single-transaction --exit-on-error \
   -d "${PGDATABASE:-postgres}" "$dir/db.dump" || exit 10
 if [ "$v1" = 1 ]; then
   # the v1 restore is committed: from here the old ledger must never go back over it
