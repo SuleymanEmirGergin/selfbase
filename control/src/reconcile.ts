@@ -6,6 +6,8 @@ import { probeCertificate } from './cert.ts'
 import { config } from './config.ts'
 import { hostsOf } from './hosts.ts'
 import { DESIRED_RUNNING, enqueueIfIdle, type Project } from './jobs/index.ts'
+import { sessionsUnconfirmed } from './jobs/project.ts'
+import { RESTORE_STOPS } from './jobs/transfer.ts'
 import type { Provisioner, ProjectState } from './provisioner.ts'
 
 export type ReconcileDeps = { db: pg.Pool; provisioner: Provisioner; probe?: (hostname: string) => Promise<'ok' | 'pending'> }
@@ -58,6 +60,14 @@ export async function reconcileOnce(deps: ReconcileDeps): Promise<ReconcileRepor
     try {
       const s: ProjectState = await deps.provisioner.inspect(p.ref)
       report.checked.push(p.ref)
+      // a rotating import that failed before its sessions were confirmed deleted (I1): its onFail stopped these four
+      // unless the provisioner was down then; a pass heals that, and says nothing once they are stopped
+      if (s.services.some((x) => RESTORE_STOPS.includes(x.service) && x.state === 'running')
+        && await sessionsUnconfirmed(deps.db, p.id) && await still([p.status])) {
+        await deps.provisioner.stop(p.ref, RESTORE_STOPS)
+        act('stop sessions_not_deleted')
+        continue
+      }
       if (p.status === 'INACTIVE') {
         if (s.services.some((x) => x.state === 'running') && await still(['INACTIVE'])) { await deps.provisioner.stop(p.ref); act('stop') }
         continue

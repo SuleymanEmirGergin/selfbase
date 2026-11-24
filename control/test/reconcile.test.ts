@@ -116,6 +116,25 @@ test('a running container of a paused project is stopped', async () => {
   expect(fake.callsOf('stop')).toHaveLength(1)
 })
 
+test('FR2: a project gated by an unconfirmed rotating import gets core, rest, fn and pooler stopped once; later passes are quiet', async () => {
+  const importJob = async (projectId: string) => (await pool.query(`insert into control.jobs (type, lane, project_id, step, status, payload)
+    values ('project.import', 'heavy', $1, '9', 'failed', $2) returning id`, [projectId, { backup_dir: 'import/o/x', rotate_keys: true, job_version: 2 }])).rows[0].id
+  // its onFail stop failed (the provisioner was down): the four still run
+  const p = await add('INIT_FAILED')
+  fake.running(p.ref, 'test')
+  await importJob(p.id)
+  // the restore confirmed the deletes before a later step failed: not gated
+  const q = await add('INIT_FAILED')
+  fake.running(q.ref, 'test')
+  await pool.query(`insert into control.job_events (job_id, status, step) values ($1, 'succeeded', 'restored')`, [await importJob(q.id)])
+  const first = await reconcileOnce(deps())
+  expect(first.actions).toEqual([{ ref: p.ref, action: 'stop sessions_not_deleted' }])
+  expect(fake.callsOf('stop').map((c) => c.args)).toEqual([[p.ref, ['core', 'rest', 'fn', 'pooler']]])
+  const second = await reconcileOnce(deps())
+  expect(second.actions).toEqual([])
+  expect(fake.callsOf('stop')).toHaveLength(1)
+})
+
 test('an unknown sb- ref is reported and nothing is removed', async () => {
   fake.running('zzzzzzzzzzzzzzzzzzzz', 'test')
   const r = await reconcileOnce(deps())
