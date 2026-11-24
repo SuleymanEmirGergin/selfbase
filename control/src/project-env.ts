@@ -46,6 +46,8 @@ const str = (v: unknown) => (v === null || v === undefined ? undefined : typeof 
 export function buildEnv(project: { ref: string }, secrets: Record<string, string>, config: Record<string, unknown>,
   hosts: string[]): Record<string, string> {
   if (!hosts[0]) throw new Error(`project ${project.ref} has no default host`)
+  // own keys only: an inherited one is no setting (see envfile.ts UNSAFE)
+  const own = (k: string) => (Object.hasOwn(config, k) ? config[k] : undefined)
   const env: Record<string, string> = {}
   for (const k of SECRET_ENV) {
     if (!secrets[k]) throw new Error(`project ${project.ref} has no ${k} secret`)
@@ -53,17 +55,18 @@ export function buildEnv(project: { ref: string }, secrets: Record<string, strin
   }
   for (const k of THIRD_PARTY_SECRET_ENV) env[k] = secrets[k] ?? ''
   const publicUrl = `https://${hosts[0]}`
-  for (const [k, d] of Object.entries(CONFIG_DEFAULTS)) env[k] = str(config[k]) ?? d
+  for (const [k, d] of Object.entries(CONFIG_DEFAULTS)) env[k] = str(own(k)) ?? d
   env.PROJECT_REF = project.ref
   env.PUBLIC_URL = publicUrl
-  env.SITE_URL = str(config.SITE_URL) || publicUrl
+  env.SITE_URL = str(own('SITE_URL')) || publicUrl
   return env
 }
 
 /** project_config sections merged into one map (a key in two sections: the later section in name order wins). */
 export async function projectConfig(db: Db, projectId: string): Promise<Record<string, unknown>> {
   const rows = (await db.query('select data from control.project_config where project_id = $1 order by section', [projectId])).rows
-  return Object.assign({}, ...rows.map((r) => r.data))
+  // a null-prototype target: a stored "__proto__" key stays an own key here instead of becoming the prototype
+  return Object.assign(Object.create(null), ...rows.map((r) => r.data))
 }
 
 /** The env and hosts of a project as stored now. */

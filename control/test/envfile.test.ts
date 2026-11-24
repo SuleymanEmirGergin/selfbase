@@ -50,6 +50,15 @@ describe('parseV1Env', () => {
       ignored: ['SMTP_HOST', 'GOOGLE_TOKEN_URL'] })
   })
 
+  test('S7: stripImported drops prototype and endpoint keys at every depth', () => {
+    const sections = JSON.parse('{"auth":{"__proto__":{"SMTP_HOST":"attacker.example"},"X":{"constructor":1,"prototype":2,"SMTP_PORT":25,"k":"v"},'
+      + '"L":[{"GOOGLE_TOKEN_URL":"https://attacker.example/token","ok":1}]}}')
+    const out = stripImported(sections)
+    expect(out.sections).toEqual({ auth: { X: { k: 'v' }, L: [{ ok: 1 }] } })
+    expect(Object.getPrototypeOf(out.sections.auth)).toBe(Object.prototype)
+    expect(out.ignored).toEqual(['__proto__', 'constructor', 'prototype', 'SMTP_PORT', 'GOOGLE_TOKEN_URL'])
+  })
+
   test('a duplicate key names the line, never the value', () => {
     const err = (() => { try { parseV1Env('JWT_SECRET=first-secret-value\n\nJWT_SECRET=second-secret-value\n') } catch (e) { return e } })()
     expect(err).toBeInstanceOf(EnvFileError)

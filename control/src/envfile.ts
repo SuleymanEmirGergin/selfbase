@@ -28,13 +28,22 @@ const ENDPOINT = /_(URL|HOST|PORT)$/
 const KEPT = new Set(['SITE_URL', 'AUTH_SET_PASSWORD_URL'])
 const isEndpoint = (key: string) => ENDPOINT.test(key) && !KEPT.has(key)
 
-/** Manifest config sections without the endpoint keys an import may not set, and the names it dropped. */
+// JSON.parse makes these own keys; a later Object.assign or spread would turn __proto__ into the merged object's
+// prototype and so into inherited config (an import setting SMTP_HOST through config.auth.__proto__)
+const UNSAFE = new Set(['__proto__', 'constructor', 'prototype'])
+
+/** Drops prototype and endpoint keys at every depth (arrays too), naming each dropped key in `ignored`. */
+function clean(v: unknown, ignored: string[]): unknown {
+  if (Array.isArray(v)) return v.map((x) => clean(x, ignored))
+  if (!v || typeof v !== 'object') return v
+  return Object.fromEntries(Object.entries(v).flatMap(([k, x]) =>
+    UNSAFE.has(k) || isEndpoint(k) ? (ignored.push(k), []) : [[k, clean(x, ignored)]]))
+}
+
+/** Manifest config sections without the keys an import may not set, and the names it dropped. */
 export function stripImported(sections: Record<string, Record<string, unknown>>) {
   const ignored: string[] = []
-  const out: Record<string, Record<string, unknown>> = {}
-  for (const [s, data] of Object.entries(sections))
-    out[s] = Object.fromEntries(Object.entries(data).filter(([k]) => !isEndpoint(k) || (ignored.push(k), false)))
-  return { sections: out, ignored }
+  return { sections: clean(sections, ignored) as Record<string, Record<string, unknown>>, ignored }
 }
 const LINE = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/
 
