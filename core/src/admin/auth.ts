@@ -23,8 +23,9 @@ function parseSubnet(subnet: string): { base: number; mask: number } {
 export const checkProjectSubnet = (subnet: string | undefined) => !!subnet && !!parseSubnet(subnet)
 
 /**
- * Whether the admin port may answer `addr`. PROJECT_SUBNET is the project's /27, set by the provisioner: core
- * also sits on the shared proxy network, where other teams' containers are. The network, gateway (base+1, the
+ * Whether the admin port may answer `addr`. PROJECT_SUBNET is the project's control /29 (sb-<ref>-ctl, where only
+ * core and control are), set by the provisioner: core also sits on the shared proxy network, where other teams'
+ * containers are, and on the tenant network with fn, which runs project code. The network, gateway (base+1, the
  * Docker default, held by the host's bridge interface, so every host-network process) and broadcast addresses
  * are refused. Unset (local dev): any peer.
  */

@@ -67,16 +67,43 @@ check 'MANIFEST lists db.dump, globals.sql, storage.tar.gz and matches each file
   while read -r f size sum; do [ \"\$(stat -c %s \$f)\" = \$size ] && [ \"\$(sha256sum < \$f | cut -d' ' -f1)\" = \$sum ] || exit 1; done < MANIFEST"
 check 'no temp directory is left' in_backups "! ls -a /backups/t | grep -q '^.tmp-'"
 
-# ---- retention: an old backup goes, an old export stays ----
+# ---- retention: an old backup goes, an old export too (EXPORT_RETENTION_DAYS) ----
 in_backups 'mkdir -p /backups/t/20200101-000000 /backups/export-t/20200101-000000'
 JOB_ENV=(-e BACKUP_SUBDIR=t)
 job db "$P-storage" bash /scripts/backup.sh > /dev/null
 check 'retention deletes an old backup' in_backups '[ ! -e /backups/t/20200101-000000 ]'
 
+# ---- R3: at most BACKUP_MAX_COUNT backups per subdirectory, the new one always among them ----
+newest=$(in_backups 'for h in 3 2 1; do d=$(date -u -d "-$h hour" +%Y%m%d-%H%M%S); mkdir -p /backups/cnt/$d; done; echo $d')
+JOB_ENV=(-e BACKUP_SUBDIR=cnt -e BACKUP_MAX_COUNT=2)
+out=$(job db "$P-storage" bash /scripts/backup.sh)
+cnts=${out##*backup: wrote cnt/}
+check 'R3: BACKUP_MAX_COUNT=2 keeps the new backup and the newest one before it' in_backups "
+  [ \"\$(ls /backups/cnt | wc -l)\" = 2 ] && [ -f /backups/cnt/$cnts/MANIFEST ] && [ -d /backups/cnt/$newest ]"
+check 'R3: each count-pruned backup is reported' [ "$(grep -c '(beyond the newest 2)$' <<< "$out")" = 2 ]
+
+# ---- R3: a backup volume short of 10% / 5 GiB free is refused before anything is written ----
+rc=0; out=$(docker run --rm --network "$NET" -e PGHOST=db -e PGPASSWORD="$PW" -e BACKUP_SUBDIR=t \
+  --mount type=tmpfs,destination=/backups,tmpfs-size=16m -v "$P-storage:/data/storage:ro" "$IMAGE" \
+  bash -c 'bash /scripts/backup.sh; rc=$?; echo "entries=$(ls -A /backups/t | wc -l)"; exit $rc' 2>&1) || rc=$?
+check 'R3: a nearly full backup volume is refused (exit 4)' [ "$rc" = 4 ]
+check 'R3: the refusal says how much is free and needed' grep -q 'backup: REFUSED: .* MiB free on the backup volume, at least 5120 MiB' <<< "$out"
+check 'R3: nothing is written on a refused run' grep -qx 'entries=0' <<< "$out"
+# the provisioner's node floor (BACKUP_MIN_FREE_MIB) replaces the default, e.g. on a small test disk
+small() { docker run --rm --network "$NET" -e PGHOST=db -e PGPASSWORD="$PW" -e BACKUP_SUBDIR=t -e "BACKUP_MIN_FREE_MIB=$1" \
+  --mount type=tmpfs,destination=/backups,tmpfs-size=16m -v "$P-storage:/data/storage:ro" "$IMAGE" bash /scripts/backup.sh 2>&1; }
+rc=0; out=$(small 1) || rc=$?
+check 'R3: BACKUP_MIN_FREE_MIB=1 lets a backup run on a 16 MiB volume' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
+rc=0; out=$(small 64) || rc=$?
+check 'R3: BACKUP_MIN_FREE_MIB=64 refuses it, naming the setting' [ "$rc" = 4 ]
+check 'R3: the refusal names BACKUP_MIN_FREE_MIB' grep -q 'at least 64 MiB (BACKUP_MIN_FREE_MIB) needed' <<< "$out"
+rc=0; out=$(small 1x) || rc=$?
+check 'R3: a BACKUP_MIN_FREE_MIB that is not a number is refused (exit 2)' [ "$rc" = 2 ]
+
 # ---- with MANIFEST_B64: project.json is written and listed ----
 JOB_ENV=(-e BACKUP_SUBDIR=export-t -e CONTROL_GID=1234 -e "MANIFEST_B64=$(printf '{"v":1}' | base64 | tr -d '\n')")
 last=$(job db "$P-storage" bash /scripts/backup.sh | tail -n1)
-check 'retention never prunes an export' in_backups '[ -d /backups/export-t/20200101-000000 ]'
+check 'R3: retention prunes an export older than EXPORT_RETENTION_DAYS' in_backups '[ ! -e /backups/export-t/20200101-000000 ]'
 ets=${last#backup: wrote export-t/}
 check 'an export writes project.json and lists it in MANIFEST' in_backups "
   cd /backups/export-t/$ets && [ \"\$(cat project.json)\" = '{\"v\":1}' ] && grep -q '^project.json ' MANIFEST"
@@ -107,8 +134,27 @@ check 'a corrupted backup is refused' [ "$rc" != 0 ]
 check 'the refusal names the MANIFEST' grep -q 'does not match its MANIFEST' <<< "$out"
 check 'the database is unchanged after the refusal' [ "$(sql db 'select v from public.marker')" = after-backup ]
 
+# ---- R4: a storage archive with a link or a path out of the volume is refused, even with a matching MANIFEST ----
+# evil-link: ./stub/link -> /etc (a later entry stub/link/x would write through it); evil-dotdot: ../outside
+in_backups "set -e; for k in link dotdot; do cp -a /backups/t/$ts /backups/t/evil-\$k; done
+  w=\$(mktemp -d); mkdir -p \$w/s/stub \$w/d/sub; ln -s /etc \$w/s/stub/link; echo x > \$w/d/outside
+  tar -czf /backups/t/evil-link/storage.tar.gz -C \$w/s .
+  (cd \$w/d/sub && tar -czPf /backups/t/evil-dotdot/storage.tar.gz ../outside)
+  for k in link dotdot; do cd /backups/t/evil-\$k
+    sed -i \"s|^storage.tar.gz .*|storage.tar.gz \$(stat -c %s storage.tar.gz) \$(sha256sum < storage.tar.gz | cut -d' ' -f1)|\" MANIFEST; done"
+for k in link dotdot; do
+  JOB_ENV=(-e RESTORE_DIR=t/evil-$k)
+  rc=0; out=$(job db "$P-storage" bash /scripts/restore.sh 2>&1) || rc=$?
+  check "R4: an archive with a $k entry is refused before anything changes" [ "$rc" = 1 ]
+  check "R4: the $k refusal names the archive" grep -q 'storage.tar.gz holds an\? \(link\|absolute or \.\. path\)' <<< "$out"
+  check "R4: the database is unchanged after the $k refusal" [ "$(sql db 'select v from public.marker')" = after-backup ]
+done
+check 'R4: storage is untouched by the refusals' docker run --rm -v "$P-storage:/s" "$IMAGE" bash -c \
+  '[ "$(cat /s/stub/b/v2.txt)" = v2-file ] && [ ! -e /s/stub/link ] && [ ! -e /s/outside ]'
+
 # ---- a v2 dump restores and keeps its ledger ----
-docker run --rm -v "$P-storage:/s" "$IMAGE" bash -c 'echo later > /s/stub/b/later.txt'
+# core (uid 1000 here) owns the volume: what is restored is its, not the archive's owner (root wrote the fixture)
+docker run --rm -v "$P-storage:/s" "$IMAGE" bash -c 'echo later > /s/stub/b/later.txt && chown 1000:1000 /s'
 JOB_ENV=(-e RESTORE_DIR=t/$ts)
 rc=0; out=$(job db "$P-storage" bash /scripts/restore.sh 2>&1) || rc=$?
 check 'a v2 backup restores' [ "$rc" = 0 ]
@@ -117,6 +163,8 @@ check 'a v2 dump keeps its ledger' [ "$(ledger)" = "$current" ]
 check 'mail_log rows (links in clear) are not in the backup' [ "$(sql db 'select count(*) from selfbase.mail_log')" = 0 ]
 check 'storage is the backup' docker run --rm -v "$P-storage:/s" "$IMAGE" bash -c \
   '[ "$(cat /s/stub/b/v2.txt)" = v2-file ] && [ ! -e /s/stub/b/later.txt ] && ! ls -a /s | grep -q "^.restoring"'
+check 'R4: restored storage belongs to the volume owner, not the archive owner' docker run --rm -v "$P-storage:/s" "$IMAGE" bash -c \
+  '[ "$(stat -c %u:%g /s/stub /s/stub/b/v2.txt | sort -u)" = 1000:1000 ]'
 
 # ---- a v1 database restores into a v2 database and is adopted by core ----
 sql db-v1 "insert into auth.users (id, email) values ('11111111-1111-1111-1111-111111111111', 'v1@example.test')" > /dev/null

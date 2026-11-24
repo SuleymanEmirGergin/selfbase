@@ -1,6 +1,6 @@
 // The typed operations (spec 7.5, AC-11). Every container body comes from spec.ts; nothing here takes a
 // container spec from the caller. Objects are only ever addressed by sb-* names built in names.ts.
-import { assertRef, containerName, networkName, ProvisionError, REF_RE, volumeName } from './names.ts'
+import { assertRef, containerName, ctlNetworkName, egressNetworkName, networkName, ProvisionError, REF_RE, volumeName } from './names.ts'
 import { assertJobRef, buildJob, buildProject, type EnsureInput, type JobType, type Sizes } from './spec.ts'
 import { isObj, startOrder, type Template } from './template.ts'
 import type { NodeSettings } from './settings.ts'
@@ -9,7 +9,8 @@ import { containerLogs, docker, ensureImage } from './docker.ts'
 export type Ctx = { tpl: Template; sizes: Sizes; node: NodeSettings }
 export type ServiceState = { service: string; exists: boolean; state: string | null; health: string | null
   specHash: string | null; templateVersion: string | null; memLimitMb: number | null; proxyAttached: boolean
-  /** the address on sb-<ref>: control connects to it, never to a name Docker's DNS may answer from another network */
+  /** the address control reaches it at: sb-<ref>-ctl for core (the only service there), else sb-<ref>; never a name
+   *  Docker's DNS may answer from another network */
   projectIp: string | null
   /** core only: its TRUSTED_PROXY_IPS is not the proxy's current address (a restarted proxy); ensure recreates it */
   proxyStale: boolean }
@@ -55,6 +56,15 @@ export function serial<T>(key: string, fn: () => Promise<T>): Promise<T> {
   return next
 }
 
+// R6: gateway_mode_ipv4=isolated is a per-network option of Docker 28+. An older engine still gets the split networks
+// (control and core's admin port away from tenant containers), only without that isolation; read once per process.
+let isolates: Promise<boolean> | undefined
+export const engineIsolates = () => isolates ??= docker('GET', '/version').then((r) => {
+  const ok = Number(String(r.data?.Version ?? '').split('.')[0]) >= 28
+  if (!ok) console.warn(`provisioner: Docker ${r.data?.Version} has no gateway_mode_ipv4 (28+): project networks keep a route to the host and out`)
+  return ok
+}, (e) => { isolates = undefined; throw e })
+
 // the proxy's current addresses as core's TRUSTED_PROXY_IPS renders them; null while the proxy is down
 const proxyIps = (ctx: Ctx) => proxyAddresses(ctx).then((r) => r.addresses, () => null)
 
@@ -73,25 +83,26 @@ export async function proxyForCore(read: () => Promise<string[]>, currentCore: (
   }
 }
 
-function serviceState(service: string, c: any, node: NodeSettings, network: string, proxy: string[] | null): ServiceState {
+function serviceState(service: string, c: any, node: NodeSettings, ref: string, proxy: string[] | null): ServiceState {
   if (!c) return { service, exists: false, state: null, health: null, specHash: null, templateVersion: null, memLimitMb: null, proxyAttached: false, projectIp: null, proxyStale: false }
   const l = c.Config?.Labels ?? {}
   return { service, exists: true, state: c.State.Status, health: c.State.Health?.Status ?? null, specHash: l['selfbase.spec'] ?? null,
     templateVersion: l['selfbase.template'] ?? null, memLimitMb: c.HostConfig.Memory / MiB,
     proxyAttached: Object.hasOwn(c.NetworkSettings?.Networks ?? {}, node.proxyNetwork),
-    projectIp: c.NetworkSettings?.Networks?.[network]?.IPAddress || null,
+    projectIp: c.NetworkSettings?.Networks?.[ctlNetworkName(ref)]?.IPAddress || c.NetworkSettings?.Networks?.[networkName(ref)]?.IPAddress || null,
     proxyStale: service === 'core' && proxy !== null && !(c.Config?.Env ?? []).includes(`TRUSTED_PROXY_IPS=${proxy.join(',')}`) }
 }
 
 export async function projectState(ctx: Ctx, ref: string) {
   assertRef(ref)
   const net = await inspectNetwork(networkName(ref))
+  const ctl = await inspectNetwork(ctlNetworkName(ref))
   const labelled = (await listContainers({ label: [`selfbase.project=${ref}`] })).map((c) => c.Labels?.['selfbase.service'])
     .filter((s): s is string => typeof s === 'string' && SERVICE_RE.test(s) && !s.startsWith('job-'))
   const services = [...new Set([...startOrder(ctx.tpl.services), ...labelled])]
   const proxy = await proxyIps(ctx)
-  return { ref, network: !!net, controlAttached: attached(net, ctx.node.controlContainer),
-    services: await Promise.all(services.map(async (s) => serviceState(s, await inspect(containerName(ref, s)), ctx.node, networkName(ref), proxy))) }
+  return { ref, network: !!net, controlAttached: attached(ctl, ctx.node.controlContainer),
+    services: await Promise.all(services.map(async (s) => serviceState(s, await inspect(containerName(ref, s)), ctx.node, ref, proxy))) }
 }
 
 export async function listProjects(ctx: Ctx) {
@@ -105,22 +116,43 @@ export async function ensure(ctx: Ctx, ref: string, body: unknown) {
   if (!isObj(body)) refuse(400, 'invalid_body', 'body must be a JSON object')
   const { recreate = [], ...input } = body as Record<string, unknown>
   const proxy = await proxyForCore(async () => (await proxyAddresses(ctx)).addresses, () => inspect(containerName(ref, 'core')))
-  const spec = buildProject({ ...input, ref } as EnsureInput, ctx.tpl, ctx.sizes, ctx.node, proxy)
+  const spec = buildProject({ ...input, ref } as EnsureInput, ctx.tpl, ctx.sizes, ctx.node, proxy, await engineIsolates())
   if (!Array.isArray(recreate) || !recreate.every((s) => spec.containers.some((c) => c.service === s))) {
     refuse(400, 'invalid_recreate', 'recreate must list template services')
   }
-  const current = await Promise.all(spec.containers.map((c) => inspect(c.name)))
-  const fresh = spec.containers.filter((c, i) => !current[i] || current[i].Config?.Labels?.['selfbase.spec'] !== c.specHash
+  let current = await Promise.all(spec.containers.map((c) => inspect(c.name)))
+  let fresh = spec.containers.filter((c, i) => !current[i] || current[i].Config?.Labels?.['selfbase.spec'] !== c.specHash
     || (recreate as string[]).includes(c.service))
   // before anything changes: an image Coolify's nightly prune removed is pulled again here
   for (const image of new Set(fresh.map((c) => c.body.Image as string))) await ensureImage(image)
 
-  const existing = await inspectNetwork(spec.network.name)
-  if (!existing) await docker('POST', '/networks/create', spec.network.body)
+  const subnetOf = (n: any): string | undefined => n?.IPAM?.Config?.[0]?.Subnet
+  const want = (n: { body: Record<string, unknown> }) => subnetOf(n.body)
+  const [tenant] = spec.networks
+  const existing = await inspectNetwork(tenant.name)
+  // A network made before the split (R1, R6) spans the whole /27: dynamic addresses, control and every service on one
+  // bridge. It is made again once, as the three networks: our containers (all of them change) are removed and control
+  // is detached first; a job still on it is a conflict for a later pass, refused before anything changes. Volumes are
+  // never touched.
+  const old = !!existing && subnetOf(existing) === (input as { subnet: string }).subnet
   // a network keeps its subnet; another one would mean two projects claim one /27 (control allocates them)
-  else if (existing.IPAM?.Config?.[0]?.Subnet !== (input as { subnet: string }).subnet) {
-    refuse(409, 'subnet_conflict', `${spec.network.name} exists with another subnet`)
+  for (const n of spec.networks) {
+    const e = n === tenant ? existing : await inspectNetwork(n.name)
+    if (e && !(n === tenant && old) && subnetOf(e) !== want(n)) refuse(409, 'subnet_conflict', `${n.name} exists with another subnet`)
   }
+  if (old) {
+    const ours = new Set([...spec.containers.map((c) => c.name), ctx.node.controlContainer])
+    const other = (Object.values(existing.Containers ?? {}) as { Name: string }[]).find((e) => !ours.has(e.Name))
+    if (other) refuse(409, 'network_busy', `${other.Name} is on ${tenant.name}; retry when it is gone`)
+    for (const c of [...spec.containers].reverse()) await stopAndRemove(c.name)
+    if (attached(existing, ctx.node.controlContainer)) {
+      await docker('POST', `/networks/${tenant.name}/disconnect`, { Container: ctx.node.controlContainer, Force: true }, [404])
+    }
+    await docker('DELETE', `/networks/${tenant.name}`)
+    current = current.map(() => null)
+    fresh = spec.containers
+  }
+  for (const n of spec.networks) if (!(await inspectNetwork(n.name))) await docker('POST', '/networks/create', n.body)
   for (const v of spec.volumes) {
     if ((await docker('GET', `/volumes/${v}`, undefined, [404])).status === 404) {
       await docker('POST', '/volumes/create', { Name: v, Labels: { 'selfbase.managed': 'true', 'selfbase.project': ref } })
@@ -136,9 +168,10 @@ export async function ensure(ctx: Ctx, ref: string, body: unknown) {
     for (const n of c.networks.slice(1)) await connectIfMissing(cur, c.name, n)
     if (!cur.State.Running) await docker('POST', `/containers/${c.name}/start`, undefined, [304])
   }
-  const net = await inspectNetwork(spec.network.name)
-  if (!attached(net, ctx.node.controlContainer)) {
-    await docker('POST', `/networks/${spec.network.name}/connect`, { Container: ctx.node.controlContainer })
+  // control shares a bridge with core only (R6): never with db, rest, pooler or fn, which run tenant code or data
+  const ctl = ctlNetworkName(ref)
+  if (!attached(await inspectNetwork(ctl), ctx.node.controlContainer)) {
+    await docker('POST', `/networks/${ctl}/connect`, { Container: ctx.node.controlContainer })
   }
   return projectState(ctx, ref)
 }
@@ -171,13 +204,14 @@ export async function remove(ctx: Ctx, ref: string, volumes: boolean) {
   for (const n of new Set([...startOrder(ctx.tpl.services).reverse().map((s) => containerName(ref, s)), ...labelled])) {
     if (await stopAndRemove(n)) removed.containers.push(n)
   }
-  const name = networkName(ref)
-  const net = await inspectNetwork(name)
-  if (net) {
+  for (const name of [ctlNetworkName(ref), egressNetworkName(ref), networkName(ref)]) {
+    const net = await inspectNetwork(name)
+    if (!net) continue
     if (attached(net, ctx.node.controlContainer)) {
       await docker('POST', `/networks/${name}/disconnect`, { Container: ctx.node.controlContainer, Force: true }, [404])
     }
-    removed.network = (await docker('DELETE', `/networks/${name}`, undefined, [404])).status !== 404
+    const gone = (await docker('DELETE', `/networks/${name}`, undefined, [404])).status !== 404
+    if (name === networkName(ref)) removed.network = gone
   }
   if (volumes) {
     for (const v of ctx.tpl.volumes.map((x) => volumeName(ref, x))) {

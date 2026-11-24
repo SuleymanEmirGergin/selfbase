@@ -5,7 +5,9 @@
 # Local and CI builds instead of pulling (CC-1): add -f compose.build.yml (and `--profile images build` first).
 #
 # Networks:
-#   selfbase         control, control-db, provisioner, logs; also the network of control-db backup jobs
+#   selfbase         control, control-db, provisioner, logs; also the network of control-db backup jobs. A fixed
+#                    /27 (CONTROL_NET_PREFIX.0/27): control-db .2, provisioner .3, logs .4; everything else gets an
+#                    address from .16/28 only. control reaches these three by address, never by a DNS name
 #   selfbase-docker  internal: provisioner and socket-proxy only. control is NOT on it, so a compromised control can
 #                    reach the Docker API only through the provisioner's typed operations (AC-11)
 #   proxy            ${PROXY_NETWORK}, external: Traefik reaches control (and each project's core) here
@@ -38,11 +40,12 @@ services:
       CONTROL_DB_PASSWORD_FILE: /run/secrets/control_db_password
       CONTROL_JWT_SECRET_FILE: /run/secrets/control_jwt_secret
       PROVISIONER_TOKEN_FILE: /run/secrets/provisioner_token
-      # network-qualified: control is also on the proxy network, which Docker's DNS asks first (coolify < selfbase),
-      # so a foreign container aliased selfbase-provisioner there would otherwise receive every project secret
-      PROVISIONER_URL: http://selfbase-provisioner.selfbase:8090
-      CONTROL_DB_HOST: selfbase-control-db.selfbase
-      LOGS_URL: http://selfbase-logs.selfbase:9428
+      # fixed addresses, no DNS: control is also on the proxy network, where Docker's DNS answers a name or alias any
+      # container there carries first, network-qualified ones such as selfbase-provisioner.selfbase included
+      # (reproduced on Docker 29.8); such a container would otherwise receive every project secret
+      PROVISIONER_URL: http://${CONTROL_NET_PREFIX:-10.206.255}.3:8090
+      CONTROL_DB_HOST: ${CONTROL_NET_PREFIX:-10.206.255}.2
+      LOGS_URL: http://${CONTROL_NET_PREFIX:-10.206.255}.4:9428
       BASE_DOMAIN: ${BASE_DOMAIN:?set BASE_DOMAIN}
       PUBLIC_URL: ${PUBLIC_URL:-}
       NODE_NAME: ${NODE_NAME:-}
@@ -125,7 +128,8 @@ services:
       POSTGRES_PASSWORD_FILE: /run/secrets/control_db_password
     volumes:
       - selfbase-control-pgdata:/var/lib/postgresql/data
-    networks: [selfbase]
+    networks:
+      selfbase: { ipv4_address: "${CONTROL_NET_PREFIX:-10.206.255}.2" }
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "postgres", "-h", "localhost"]
       interval: 5s
@@ -157,11 +161,15 @@ services:
       LOG_SYSLOG_ADDR: ${LOG_SYSLOG_ADDR:-}
       CGROUP_PARENT: ${CGROUP_PARENT:-}
       BACKUP_HOST_DIR: ${BACKUP_HOST_DIR}
+      # backup jobs' free-space floor in MiB; empty: 10% of the backup volume or 5 GiB, whichever is larger
+      BACKUP_MIN_FREE_MIB: ${BACKUP_MIN_FREE_MIB:-}
       PROJECT_SUBNET_POOL: ${PROJECT_SUBNET_POOL:-10.207.0.0/16}
       CONTROL_CONTAINER: selfbase-control
       CONTROL_NETWORK: selfbase
       DOCKER_HOST: http://selfbase-socket-proxy:2375
-    networks: [selfbase, selfbase-docker]
+    networks:
+      selfbase: { ipv4_address: "${CONTROL_NET_PREFIX:-10.206.255}.3" }
+      selfbase-docker: {}
     depends_on: [socket-proxy]
 
   # The only container with the Docker socket (spec 7.5); answers the provisioner's address only.
@@ -195,7 +203,8 @@ services:
       - selfbase-logs:/vlogs
     ports:
       - "127.0.0.1:5514:5514/udp"
-    networks: [selfbase]
+    networks:
+      selfbase: { ipv4_address: "${CONTROL_NET_PREFIX:-10.206.255}.4" }
 
   # ---- profile proxy (PROXY_MODE=own): our own Traefik on a server without Coolify (spec 7.3) ----
   traefik:
@@ -251,6 +260,12 @@ services:
 networks:
   selfbase:
     name: selfbase
+    # private, outside PROJECT_SUBNET_POOL; the gateway stays .1 (Docker would take the range's first address)
+    ipam:
+      config:
+        - subnet: ${CONTROL_NET_PREFIX:-10.206.255}.0/27
+          ip_range: ${CONTROL_NET_PREFIX:-10.206.255}.16/28
+          gateway: ${CONTROL_NET_PREFIX:-10.206.255}.1
   selfbase-docker:
     name: selfbase-docker
     internal: true

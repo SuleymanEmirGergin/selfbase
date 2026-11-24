@@ -45,8 +45,9 @@ services:
     image: ${REGISTRY}/selfbase-core:${TEMPLATE_VERSION}
     init: true
     environment:
-      # core is also on the shared proxy network, where a bare name may resolve to a foreign container first: the
-      # provisioner sets these to <name>.sb-<ref> (resolved on the project network only); bare names for local compose
+      # core is also on the shared proxy network, where Docker's DNS answers a name or alias any container there carries
+      # (db.sb-<ref> too) before the project network's own service: the provisioner sets DB_HOST, PGRST_URL and FN_URL
+      # to the services' fixed addresses on sb-<ref>; bare names for local compose
       DB_HOST: ${DB_HOST:-db}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       AUTHENTICATOR_PASSWORD: ${AUTHENTICATOR_PASSWORD:?set AUTHENTICATOR_PASSWORD}
@@ -54,7 +55,8 @@ services:
       ADMIN_PORT: "8081"
       ADMIN_TOKEN: ${ADMIN_TOKEN:-}
       PROJECT_REF: ${PROJECT_REF:-}
-      # the project's /27: the admin port refuses any peer outside it (core is on the shared proxy network too)
+      # the project's control /29 (sb-<ref>-ctl: core and control only): the admin port refuses any peer outside it,
+      # fn and the shared proxy network included
       PROJECT_SUBNET: ${PROJECT_SUBNET:-}
       PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL (public https origin of core)}
       TRUST_PROXY: ${TRUST_PROXY:-true}
@@ -87,6 +89,8 @@ services:
       GOOGLE_AUTH_URL: ${GOOGLE_AUTH_URL:-https://accounts.google.com/o/oauth2/v2/auth}
       GOOGLE_TOKEN_URL: ${GOOGLE_TOKEN_URL:-https://oauth2.googleapis.com/token}
       GOOGLE_USERINFO_URL: ${GOOGLE_USERINFO_URL:-https://openidconnect.googleapis.com/v1/userinfo}
+      # the Google endpoints and SMTP_HOST may not reach private addresses except these hosts (core/src/netguard.ts)
+      OUTBOUND_ALLOW_HOSTS: ${OUTBOUND_ALLOW_HOSTS:-}
       STORAGE_DIR: /data/storage # fixed: the storage volume's mount point below
       STORAGE_MAX_UPLOAD_BYTES: ${STORAGE_MAX_UPLOAD_BYTES:-52428800}
       PGRST_URL: ${PGRST_URL:-http://rest:3000}

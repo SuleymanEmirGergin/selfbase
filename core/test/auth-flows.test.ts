@@ -653,6 +653,22 @@ describe('google oauth', () => {
     }
   })
 
+  it('R2: a Google endpoint on a private address that is not allow-listed is never called (SSRF from an imported setting)', async () => {
+    useFakeGoogle()
+    // the same fake server, by a name that resolves to loopback: only 127.0.0.1 is in OUTBOUND_ALLOW_HOSTS (setup.ts)
+    config.google = { ...config.google, userinfoUrl: `${fakeUrl.replace('127.0.0.1', 'localhost')}/userinfo` }
+    googleUser = { sub: String(randomInt(1e9, 9e9)), email: email(), email_verified: true }
+    const res = await googleLogin()
+    expect(res.status).toBe(302)
+    expect(fragment(res).get('error_description')).toBe('Unable to exchange external code')
+    expect((await pool.query('select 1 from auth.users where email = $1', [googleUser.email])).rowCount).toBe(0)
+    // a literal private address too, without a connection attempt
+    config.google = { ...config.google, userinfoUrl: 'http://10.255.255.1:9/userinfo' }
+    const t0 = Date.now()
+    expect(fragment(await googleLogin()).get('error_description')).toBe('Unable to exchange external code')
+    expect(Date.now() - t0).toBeLessThan(2000)
+  })
+
   it('a failing token exchange redirects with an error and never shows the secret', async () => {
     useFakeGoogle()
     tokenStatus = 400

@@ -22,7 +22,7 @@ export const docker = (...args: string[]) =>
 export const tryDocker = (...args: string[]) => {
   try { return docker(...args) } catch { return null }
 }
-const compose = (...args: string[]) => docker('compose', '-p', 'selfbase-test', '-f', join(dir, 'compose.test.yml'), ...args)
+const compose = (...args: string[]) => docker('compose', '-p', process.env.TEST_COMPOSE_PROJECT ?? 'selfbase-test', '-f', join(dir, 'compose.test.yml'), ...args)
 export const execIn = (service: string, js: string) => compose('exec', '-T', service, 'node', '-e', js)
 
 export async function up() {

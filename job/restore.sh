@@ -2,13 +2,14 @@
 # Restores a backup made by backup.sh (v2) or by v1's backup service, run as a provisioner job (selfbase-job image):
 # control stops the project's core, rest, fn and pooler, then asks the provisioner for a `restore` job, which runs
 # this in a one-off container on the project's network with
-#   /backups        the host backup directory (BACKUP_HOST_DIR)
+#   /backups/$RESTORE_DIR  that one backup, read-only (the provisioner mounts nothing else of BACKUP_HOST_DIR)
 #   /data/storage   the project's storage volume, read-write
 #   PGHOST, PGPASSWORD (PGUSER, PGDATABASE default to postgres), RESTORE_DIR (under /backups: <ref>/<ts>,
 #                   export-<ref>/<ts>, or import/<org slug>/<name> for a v1 or foreign dump an operator placed there)
 # Sequence:
 #   1. verifies the backup's MANIFEST (sizes and sha256); a missing or unlisted file or any mismatch is refused
-#      before anything changes (exit 1)
+#      before anything changes (exit 1); so is a storage archive holding anything but plain files and directories
+#      (a link, device or fifo) or a name that is absolute or has a .. part: an imported archive is foreign data
 #   2. cron: every active job is set inactive (committed) and running job sessions are terminated, so no job runs
 #      during the restore; the restore brings back the backup's job states (on failure the jobs set inactive here
 #      are set active again)
@@ -18,8 +19,9 @@
 #      project's core created is moved aside before step 3 (it would keep --clean from dropping schema selfbase) and
 #      dropped after it (moved back if step 3 fails), so core adopts the restored database at its next start and
 #      applies 0002+
-#   5. the storage volume: the archive is extracted into a temp dir inside the volume, then swapped in (a failure
-#      here, after the database was restored: exit 3)
+#   5. the storage volume: the archive is extracted into a temp dir inside the volume (owner: the volume's, modes from
+#      the umask, never the archive's), checked again for anything but files and directories, then swapped in (a
+#      failure here, after the database was restored: exit 3)
 # What it does NOT do: objects created after the backup are not removed; roles are not restored (globals.sql is for
 # a disaster restore onto a fresh cluster); the services are started again by control. Never prints a value from
 # the environment.
@@ -48,6 +50,12 @@ while read -r f size sum; do
   fi
 done < "$dir/MANIFEST"
 [ -d "$storage" ] || { echo "restore: storage directory $storage not mounted" >&2; exit 1; }
+# the MANIFEST only proves the archive is the one listed, not that it is safe to extract as root (R4)
+types=$(tar -tvzf "$dir/storage.tar.gz" | cut -c1 | sort -u | tr -d '\n') || { echo "restore: $rel/storage.tar.gz cannot be read; refusing" >&2; exit 1; }
+[[ $types =~ ^[-d]*$ ]] || { echo "restore: $rel/storage.tar.gz holds a link, device or fifo; refusing" >&2; exit 1; }
+names=$(tar -tzf "$dir/storage.tar.gz")
+! grep -qE '^/|(^|/)\.\.(/|$)' <<< "$names" ||
+  { echo "restore: $rel/storage.tar.gz holds an absolute or .. path; refusing" >&2; exit 1; }
 echo "restore: $rel verified"
 
 q() { psql -XAtq -v ON_ERROR_STOP=1 "$@"; }
@@ -104,7 +112,10 @@ echo "restore: database restored (cron jobs as in the backup)"
 t="$storage/.restoring-$$"
 rm -rf "$t"
 mkdir "$t"
-tar -xzf "$dir/storage.tar.gz" -C "$t"
+tar --no-same-owner --no-same-permissions -xzf "$dir/storage.tar.gz" -C "$t"
+[ -z "$(find "$t" ! -type f ! -type d -print -quit)" ] || { echo "restore: the extracted storage holds something other than files and directories" >&2; exit 3; }
+# core (not root) owns its storage: everything restored belongs to the volume's owner, as core wrote it
+chown -R "$(stat -c %u:%g "$storage")" "$t"
 find "$storage" -mindepth 1 -maxdepth 1 ! -name ".restoring-$$" -exec rm -rf {} +
 find "$t" -mindepth 1 -maxdepth 1 -exec mv -t "$storage" {} +
 echo "restore: storage restored"

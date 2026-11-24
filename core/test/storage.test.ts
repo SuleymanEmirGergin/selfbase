@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { randomUUID } from 'node:crypto'
-import { mkdtempSync, rmSync, existsSync, readdirSync, readFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, existsSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -218,6 +218,40 @@ describe('storage', () => {
     const anonPriv = await req(`/object/authenticated/${PRIV}/${secret}`)
     expect([400, 404]).toContain(anonPriv.status)
     expect(await anonPriv.text()).not.toContain('secret"')
+  })
+
+  it('R4: a symlink placed in storage is not served, and an upload never writes through one', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'sb-outside-'))
+    writeFileSync(join(outside, 'secret.txt'), 'outside-secret')
+    const dir = `link-${randomUUID().slice(0, 8)}`
+    const links = [join(storageDir, PUB, dir)]
+    mkdirSync(join(storageDir, PUB), { recursive: true })
+    // a directory link (a junction on Windows, which needs no privilege), as a restored archive could leave it
+    symlinkSync(outside, links[0], 'junction')
+    const names = [`${dir}/secret.txt`]
+    try {
+      symlinkSync(join(outside, 'secret.txt'), join(storageDir, PUB, `${dir}-file`))
+      links.push(join(storageDir, PUB, `${dir}-file`))
+      names.push(`${dir}-file`)
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EPERM') throw e // a file symlink needs a privilege on Windows
+    }
+    try {
+      // the rows a restored dump would carry, in a public bucket: anyone may read them
+      for (const n of names) await pool.query(`insert into storage.objects (bucket_id, name, metadata) values ($1, $2, '{"mimetype":"text/plain"}')`, [PUB, n])
+      for (const n of names) {
+        const res = await req(`/object/public/${PUB}/${enc(n)}`)
+        expect(res.status, n).toBe(404)
+        expect(await res.text(), n).not.toContain('outside-secret')
+      }
+      const up = await upload(PUB, `${dir}/new.txt`, 'evil', tokService)
+      expect(up.status).toBe(400)
+      expect(readdirSync(outside)).toEqual(['secret.txt'])
+    } finally {
+      await pool.query('delete from storage.objects where bucket_id = $1 and name like $2', [PUB, `${dir}%`])
+      for (const l of links) rmSync(l, { force: true })
+      rmSync(outside, { recursive: true, force: true })
+    }
   })
 
   it('rejects path traversal names with 400 and writes nothing outside STORAGE_DIR', async () => {

@@ -6,7 +6,7 @@ import { config } from '../config.ts'
 import { Readable } from 'node:stream'
 import { asUser, pool } from '../db.ts'
 import type { JwtClaims } from '../jwt.ts'
-import { StorageError, resolveObjectPath } from './paths.ts'
+import { StorageError, insideBucket, resolveObjectPath } from './paths.ts'
 import { logLine } from '../log.ts'
 
 export type Bucket = { id: string; public: boolean; file_size_limit: number | null; allowed_mime_types: string[] | null }
@@ -62,6 +62,7 @@ export async function uploadObject(
           params,
         ), params[0])
     await mkdir(dirname(file), { recursive: true })
+    if (!(await insideBucket(bucket.id, dirname(file)))) throw new StorageError(400, 'InvalidKey', 'Invalid key')
     // write then rename so a failed upsert never leaves a half-written file in place.
     // shortcut: the rename happens after the row write but before commit, so a failed commit can leave
     // the new file without its row (or an upsert's old file replaced); add a reconciler if that shows up
@@ -113,6 +114,8 @@ function parseRange(header: string | undefined, size: number): { start: number; 
 /** Streams the object file with Content-Type / Cache-Control from its metadata and Range support. */
 export async function fileResponse(bucket: string, name: string, meta: Meta, range: string | undefined): Promise<Response> {
   const file = resolveObjectPath(bucket, name)
+  // a symlink (left by a restored archive, say) that leads out of the bucket is not served
+  if (!(await insideBucket(bucket, file))) throw notFound()
   const size = await stat(file).then((s) => s.size, () => { throw notFound() })
   // objects share the panel's origin: never let a stored text/html run or be sniffed into script
   const headers = new Headers({
