@@ -757,6 +757,39 @@ describe('phone', () => {
     expect((await guess(s.access_token, p, payload.sms.otp)).status).toBe(403)
   })
 
+  it('B: a code spent while a global logout ends the session leaves no live session behind', async () => {
+    enablePhone()
+    const s = await session()
+    const p = phone()
+    const otp = await requestOtp(s.access_token, p)
+    const other = await (await call('POST', '/token?grant_type=password', { email: s.user.email, password: PW })).json()
+    // the code's delete sleeps before it commits, so the logout lands between the spend and the apply
+    await pool.query(`create table if not exists public.b_hold (user_id uuid primary key)`)
+    await pool.query(`create or replace function public.b_ott() returns trigger language plpgsql as $$
+      begin if exists (select 1 from public.b_hold where user_id = old.user_id) then perform pg_sleep(1.5); end if; return old; end $$`)
+    await pool.query(`create or replace trigger b_ott after delete on auth.one_time_tokens for each row execute function public.b_ott()`)
+    try {
+      await pool.query('insert into public.b_hold values ($1)', [s.user.id])
+      const verifying = guess(s.access_token, p, otp)
+      for (let i = 0; !(await pool.query(`select 1 from pg_stat_activity where wait_event = 'PgSleep'
+        and query like '%delete from auth.one_time_tokens%'`)).rowCount; i++) {
+        if (i > 100) throw new Error('the verify never reached the trigger')
+        await new Promise((r) => setTimeout(r, 20))
+      }
+      await pool.query('delete from public.b_hold')
+      const logout = app.request('/auth/v1/logout?scope=global', { method: 'POST', headers: { authorization: `Bearer ${other.access_token}` } })
+      const [v, l] = await Promise.all([verifying, logout])
+      expect(l.status).toBe(204)
+      // the phone may have changed while the session was live, but no session outlives the logout
+      expect(v.status).toBe(403)
+      expect((await pool.query('select 1 from auth.refresh_tokens where user_id = $1 and not revoked', [s.user.id])).rowCount).toBe(0)
+    } finally {
+      await pool.query('drop trigger if exists b_ott on auth.one_time_tokens')
+      await pool.query('drop function if exists public.b_ott()')
+      await pool.query('drop table if exists public.b_hold')
+    }
+  })
+
   it('verify needs the signed-in owner: anonymous is 401, another user cannot spend the attempts', async () => {
     enablePhone()
     const victim = await session()

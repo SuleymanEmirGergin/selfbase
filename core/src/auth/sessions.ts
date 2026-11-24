@@ -50,13 +50,16 @@ export const isBanned = (user: UserRow) => user.banned_until && new Date(user.ba
  * email-link session (GoTrue's names, `recovery` for a password reset link), put in its access token. `seen`: the
  * password hash the caller checked the user against (the password, or a one-time token read before a reset could
  * change it). Under the S4 lock it must still be the user's hash and the user not banned, so a reset or a ban that
- * ran since then (and ended every session) also refuses this one.
+ * ran since then (and ended every session) also refuses this one. `live`: the session the request came from (phone
+ * verify), which must still be live under the lock too, so no new session outlives a logout or reset of it.
  */
-export async function issueSession(user: UserRow, amr?: string, seen: string | null = user.encrypted_password ?? null): Promise<SessionJson> {
+export async function issueSession(user: UserRow, amr?: string, seen: string | null = user.encrypted_password ?? null,
+  live?: string): Promise<SessionJson> {
   const sessionId = randomUUID()
   const token = newToken()
   await withTx(async (c) => {
-    await lockUser(c, user.id)
+    if (live !== undefined) await lockLiveSession(c, user.id, live)
+    else await lockUser(c, user.id)
     const now = (await c.query(`select encrypted_password is not distinct from $2 as same, banned_until > now() as banned
       from auth.users where id = $1`, [user.id, seen])).rows[0]
     if (!now?.same) throw authError(400, 'invalid_credentials', 'Invalid login credentials')

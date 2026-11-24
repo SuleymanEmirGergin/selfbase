@@ -3,9 +3,9 @@ import { createHmac, randomInt, randomUUID } from 'node:crypto'
 import { pool } from '../db.ts'
 import { config } from '../config.ts'
 import type { AppEnv } from '../jwt.ts'
-import { authError, findById, toUserJson } from './users.ts'
+import { authError, findById, toUserJson, withTx } from './users.ts'
 import type { UserRow } from './users.ts'
-import { issueSession, isBanned, sessionActive } from './sessions.ts'
+import { issueSession, isBanned, lockLiveSession, sessionActive } from './sessions.ts'
 import { sha256, storeToken } from './mail.ts'
 import { logLine } from '../log.ts'
 
@@ -82,19 +82,25 @@ router.post('/verify', async (c) => {
      returning id, relates_to = $2 and token_hash = $3 and attempts <= $4 and created_at > now() - make_interval(secs => $5) as ok`,
     [user.id, phone, sha256(phone + token), MAX_ATTEMPTS, config.authOtpExpiry],
   )).rows[0]
-  // the delete decides between two concurrent correct guesses
-  if (!hit?.ok || !(await pool.query(`delete from auth.one_time_tokens where id = $1`, [hit.id])).rowCount) throw invalid()
-  const applied = await pool.query(
-    `update auth.users set phone = phone_change, phone_change = '', phone_confirmed_at = now(), updated_at = now()
-     where id = $1 and phone_change = $2`,
-    [user.id, phone],
-  ).catch((err) => {
-    if (err.code === '23505') throw authError(422, 'phone_exists', 'Phone number already registered')
-    throw err
+  if (!hit?.ok) throw invalid()
+  // spent and applied under the S4 lock, while the caller's session is still live (as PUT /user): a password change
+  // or reset that ended it, or deleted the code, wins
+  await withTx(async (tx) => {
+    await lockLiveSession(tx, user.id, claims.session_id)
+    // the delete decides between two concurrent correct guesses
+    if (!(await tx.query(`delete from auth.one_time_tokens where id = $1`, [hit.id])).rowCount) throw invalid()
+    const applied = await tx.query(
+      `update auth.users set phone = phone_change, phone_change = '', phone_confirmed_at = now(), updated_at = now()
+       where id = $1 and phone_change = $2`,
+      [user.id, phone],
+    ).catch((err) => {
+      if (err.code === '23505') throw authError(422, 'phone_exists', 'Phone number already registered')
+      throw err
+    })
+    if (!applied.rowCount) throw invalid()
   })
-  if (!applied.rowCount) throw invalid()
-  // the hash read before the code was spent: a reset since then refuses the session
-  return c.json(await issueSession((await findById(user.id))!, undefined, user.encrypted_password ?? null))
+  // the hash read before the code was spent, and the session that spent it: a reset or logout since then refuses it
+  return c.json(await issueSession((await findById(user.id))!, undefined, user.encrypted_password ?? null, claims.session_id))
 })
 
 export default router
