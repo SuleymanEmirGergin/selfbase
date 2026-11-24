@@ -1,6 +1,7 @@
 // Daily backups (plan D-7, spec 8.8): at 03:15 UTC one control.backup and one project.backup per project that should
 // be running (ACTIVE_HEALTHY, ACTIVE_UNHEALTHY, COMING_UP: a live database; one that is really down fails as a job); the heavy lane runs them one at a time. A run missed while control was down is not replayed.
 import type pg from 'pg'
+import { checkBackupSpace } from './disk.ts'
 import { DESIRED_RUNNING, enqueue, enqueueIfIdle } from './jobs/index.ts'
 
 /** Milliseconds from `now` to the next 03:15 UTC (a full day when it is 03:15 exactly). */
@@ -12,10 +13,20 @@ export function msUntilNext(now: Date): number {
 
 /** A project with a pending or running job (a pause, an upgrade, last night's backup) is skipped tonight. */
 export async function enqueueDailyBackups(db: pg.Pool): Promise<void> {
+  const { rows } = await db.query(`select id from control.projects where status = any($1) order by created_at`, [DESIRED_RUNNING])
+  // a low backup volume: tonight's backups are refused, each as a failed job with the reason (a failed job is the record)
+  const refused = await checkBackupSpace().then(() => null, (e: Error) => e.message)
+  if (refused) {
+    console.error(`schedule: daily backups refused: ${refused}`)
+    for (const projectId of [null, ...rows.map((r) => r.id)]) {
+      await db.query(`insert into control.jobs (type, project_id, lane, step, payload, status, error) values ($1, $2, 'heavy', '0', '{}', 'failed', $3)`,
+        [projectId ? 'project.backup' : 'control.backup', projectId, refused])
+    }
+    return
+  }
   // one control.backup at a time: a night whose backup is still queued or running gets no second one
   const queued = await db.query(`select 1 from control.jobs where type = 'control.backup' and status in ('pending', 'running')`)
   if (!queued.rowCount) await enqueue(db, { type: 'control.backup', payload: {}, createdBy: null })
-  const { rows } = await db.query(`select id from control.projects where status = any($1) order by created_at`, [DESIRED_RUNNING])
   for (const r of rows) await enqueueIfIdle(db, { type: 'project.backup', projectId: r.id, payload: {}, createdBy: null })
 }
 

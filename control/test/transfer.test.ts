@@ -526,6 +526,21 @@ describe('schedule', () => {
       .toBe(jobs.filter((j) => j.type === 'project.backup').length)
   })
 
+  test('S8: a night with a low backup volume queues no backup and leaves a failed job with the reason per backup', async () => {
+    await pool.query(`delete from control.jobs where type in ('project.backup', 'control.backup')`)
+    const p = await project(acme.id, { name: 'slow-disk' })
+    const space = vi.spyOn(disk, 'space').mockResolvedValue({ free: 1 * 2 ** 30, total: 100 * 2 ** 30 })
+    try {
+      await enqueueDailyBackups(pool)
+    } finally {
+      space.mockRestore()
+    }
+    const jobs = (await pool.query(`select type, project_id, status, error from control.jobs where type in ('project.backup', 'control.backup')`)).rows
+    expect(jobs.filter((j) => j.status !== 'failed')).toEqual([])
+    expect(jobs.find((j) => j.type === 'control.backup')).toMatchObject({ status: 'failed', error: expect.stringMatching(/GiB free/) })
+    expect(jobs.find((j) => j.project_id === p.id)).toMatchObject({ status: 'failed', error: expect.stringMatching(/GiB free/) })
+  })
+
   test('the next run is at 03:15 UTC; a missed one is not replayed', () => {
     expect(msUntilNext(new Date('2026-11-22T03:14:00Z'))).toBe(60_000)
     expect(msUntilNext(new Date('2026-11-22T03:15:00Z'))).toBe(86_400_000)
