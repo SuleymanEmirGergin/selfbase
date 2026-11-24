@@ -27,3 +27,13 @@ it('falls back to the plain variable, and names an unreadable file by key only',
   expect(loadConfig(plain).dbPassword).toBe('plain-db')
   expect(() => loadConfig({ ...plain, PROVISIONER_TOKEN_FILE: join(dir, 'missing') })).toThrow('config: PROVISIONER_TOKEN_FILE cannot be read')
 })
+
+it('I3: the retention settings are whole numbers (a fraction would break make_interval and the backup job)', () => {
+  expect(loadConfig(plain)).toMatchObject({ backupRetentionDays: 7, exportRetentionDays: 7, backupMaxCount: 14 })
+  expect(loadConfig({ ...plain, BACKUP_RETENTION_DAYS: '0', EXPORT_RETENTION_DAYS: '30', BACKUP_MAX_COUNT: '3' }))
+    .toMatchObject({ backupRetentionDays: 0, exportRetentionDays: 30, backupMaxCount: 3 })
+  for (const k of ['BACKUP_RETENTION_DAYS', 'EXPORT_RETENTION_DAYS']) {
+    for (const bad of ['1.5', '-1', '1e3', 'x']) expect(() => loadConfig({ ...plain, [k]: bad }), bad).toThrow(`config: ${k} must be a whole number of days`)
+  }
+  for (const bad of ['0', '2.5', '-3']) expect(() => loadConfig({ ...plain, BACKUP_MAX_COUNT: bad }), bad).toThrow('config: BACKUP_MAX_COUNT must be a whole number from 1')
+})

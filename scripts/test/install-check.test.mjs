@@ -162,6 +162,15 @@ rootTest('TRUSTED_PROXY_HOSTS takes IP addresses only and PROXY_CONTAINER a plai
   assert.equal(run({ ...good, TRUSTED_PROXY_HOSTS: '10.0.0.5, fd00::1', PROXY_CONTAINER: 'my-traefik' }).status, 0)
 })
 
+rootTest('the retention settings are whole numbers', () => {
+  const r = run({ ...good, BACKUP_RETENTION_DAYS: '1.5', EXPORT_RETENTION_DAYS: '-1', BACKUP_MAX_COUNT: '0' })
+  assert.equal(r.status, 1)
+  assert.match(r.out, /BACKUP_RETENTION_DAYS: must be a whole number of days/)
+  assert.match(r.out, /EXPORT_RETENTION_DAYS: must be a whole number of days/)
+  assert.match(r.out, /BACKUP_MAX_COUNT: must be a whole number from 1/)
+  assert.equal(run({ ...good, BACKUP_RETENTION_DAYS: '0', EXPORT_RETENTION_DAYS: '30', BACKUP_MAX_COUNT: '3' }).status, 0)
+})
+
 rootTest('OUTBOUND_ALLOW_HOSTS takes hostnames or IP addresses, never a URL or pattern', () => {
   const r = run({ ...good, OUTBOUND_ALLOW_HOSTS: 'relay.example.test,http://x.example.test' })
   assert.equal(r.status, 1)

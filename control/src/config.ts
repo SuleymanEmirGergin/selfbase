@@ -36,7 +36,13 @@ export function loadConfig(input: Record<string, string | undefined> = process.e
     if (v === undefined || v === '') return null
     return /^[1-9]\d{0,7}$/.test(v) ? Number(v) : fail(`${k} must be a whole number of MiB from 1`)
   }
-  const oneOf = <T extends string>(k: string, dflt: T, allowed: T[]) => {
+  // whole numbers only: backup.sh refuses anything else, and make_interval(days => 1.5) fails every reconcile pass
+  const whole = (k: string, dflt: number, min: 0 | 1, what: string) => {
+    const v = env[k]
+    if (v === undefined || v === '') return dflt
+    return (min ? /^[1-9]\d{0,5}$/ : /^\d{1,6}$/).test(v) ? Number(v) : fail(`${k} must be a whole number ${what}`)
+  }
+  const oneOf =<T extends string>(k: string, dflt: T, allowed: T[]) => {
     const v = (env[k] || dflt) as T
     return allowed.includes(v) ? v : fail(`${k} must be one of ${allowed.join(', ')}`)
   }
@@ -105,11 +111,13 @@ export function loadConfig(input: Record<string, string | undefined> = process.e
     legacyOrgs,
     certProbe: oneOf('CERT_PROBE', 'on', ['on', 'off']),
     logsUrl: env.LOGS_URL || 'http://selfbase-logs:9428',
-    backupRetentionDays: num('BACKUP_RETENTION_DAYS', 7),
+    backupRetentionDays: whole('BACKUP_RETENTION_DAYS', 7, 0, 'of days'),
+    // backups kept per subdirectory, the newest first (backup.sh)
+    backupMaxCount: whole('BACKUP_MAX_COUNT', 14, 1, 'from 1'),
     // the backup volume's free-space floor in MiB, as the provisioner gives the backup jobs; null: 10% or 5 GiB (disk.ts)
     backupMinFreeMib: mib('BACKUP_MIN_FREE_MIB'),
-    // days an export's backups row is listed; the job's retention removes its files (reconcile.ts)
-    exportRetentionDays: num('EXPORT_RETENTION_DAYS', 7),
+    // days an export is kept: its backups row (reconcile.ts) and, through the backup jobs, its files
+    exportRetentionDays: whole('EXPORT_RETENTION_DAYS', 7, 0, 'of days'),
     // a Studio session ends this long after sign-in, or after this long without a refresh (session.ts)
     sessionMaxAgeDays: num('STUDIO_SESSION_MAX_AGE_DAYS', 7),
     sessionIdleHours: num('STUDIO_SESSION_IDLE_HOURS', 24),

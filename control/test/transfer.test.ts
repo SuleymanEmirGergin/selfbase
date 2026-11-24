@@ -403,7 +403,8 @@ describe('backup and export', () => {
     workers()
     expect((await finished(job_id)).status).toBe('succeeded')
     expect(fake.callsOf('runJob')[0].args).toEqual([p.ref, 'backup', {},
-      { PGHOST: 'db', PGPASSWORD: p.secrets.POSTGRES_PASSWORD, BACKUP_SUBDIR: p.ref, BACKUP_RETENTION_DAYS: String(config.backupRetentionDays) }])
+      { PGHOST: 'db', PGPASSWORD: p.secrets.POSTGRES_PASSWORD, BACKUP_SUBDIR: p.ref, BACKUP_RETENTION_DAYS: String(config.backupRetentionDays),
+        EXPORT_RETENTION_DAYS: String(config.exportRetentionDays), BACKUP_MAX_COUNT: String(config.backupMaxCount) }])
     const list = await (await withToken(dev.token, 'GET', `/platform/projects/${p.ref}/backups`)).json()
     expect(list).toEqual([expect.objectContaining({ kind: 'logical', status: 'succeeded', size_bytes: 1234,
       location: `${p.ref}/20261122-031500`, started_at: expect.any(String), finished_at: expect.any(String) })])
@@ -451,7 +452,8 @@ describe('backup and export', () => {
     expect((await finished(job_id)).status).toBe('succeeded')
     const [ref, type, args, env] = fake.callsOf('runJob')[0].args
     expect([ref, type, args]).toEqual([p.ref, 'backup', {}])
-    expect(env).toMatchObject({ PGHOST: 'db', PGPASSWORD: p.secrets.POSTGRES_PASSWORD, BACKUP_SUBDIR: `export-${p.ref}` })
+    expect(env).toMatchObject({ PGHOST: 'db', PGPASSWORD: p.secrets.POSTGRES_PASSWORD, BACKUP_SUBDIR: `export-${p.ref}`,
+      EXPORT_RETENTION_DAYS: String(config.exportRetentionDays), BACKUP_MAX_COUNT: String(config.backupMaxCount) })
     const opened = await openManifest(env.MANIFEST_B64, pass)
     expect(opened.secrets).toEqual({ JWT_SECRET: p.secrets.JWT_SECRET, ANON_KEY: p.secrets.ANON_KEY, SERVICE_ROLE_KEY: p.secrets.SERVICE_ROLE_KEY })
     expect(opened.config).toEqual({ auth: { SITE_URL: 'https://e.example' } })
@@ -482,7 +484,8 @@ describe('backup and export', () => {
     workers()
     expect((await finished(id)).status).toBe('succeeded')
     expect(fake.callsOf('runJob')[0].args).toEqual(['control', 'backup', {},
-      { PGHOST: config.dbHost, PGPASSWORD: config.dbPassword, BACKUP_SUBDIR: 'control', BACKUP_RETENTION_DAYS: String(config.backupRetentionDays) }])
+      { PGHOST: config.dbHost, PGPASSWORD: config.dbPassword, BACKUP_SUBDIR: 'control', BACKUP_RETENTION_DAYS: String(config.backupRetentionDays),
+        EXPORT_RETENTION_DAYS: String(config.exportRetentionDays), BACKUP_MAX_COUNT: String(config.backupMaxCount) }])
   })
 
   test('a jobStatus timeout fails the job at once: the result is not read again', async () => {

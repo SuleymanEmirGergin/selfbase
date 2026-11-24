@@ -64,6 +64,10 @@ services:
       LEGACY_HOSTNAMES: ${LEGACY_HOSTNAMES:-}
       CERT_PROBE: ${CERT_PROBE:-}
       BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-}
+      EXPORT_RETENTION_DAYS: ${EXPORT_RETENTION_DAYS:-}
+      BACKUP_MAX_COUNT: ${BACKUP_MAX_COUNT:-}
+      STUDIO_SESSION_MAX_AGE_DAYS: ${STUDIO_SESSION_MAX_AGE_DAYS:-}
+      STUDIO_SESSION_IDLE_HOURS: ${STUDIO_SESSION_IDLE_HOURS:-}
       # the backup jobs' floor (the provisioner's below): control refuses before queueing by the same one
       BACKUP_MIN_FREE_MIB: ${BACKUP_MIN_FREE_MIB:-}
       # private hosts every project's core may call (e.g. a mail relay on this network); rendered into each project

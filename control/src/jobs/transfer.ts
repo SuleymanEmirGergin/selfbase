@@ -98,13 +98,15 @@ async function startJob(ctx: JobCtx, ref: string, type: 'backup' | 'restore', ar
 }
 
 const lastMatch = (re: RegExp, text: string) => [...text.matchAll(re)].at(-1)?.[1] ?? null
-const retention = () => String(config.backupRetentionDays)
+// every backup job prunes its own subdirectory by these (job/backup.sh)
+const retention = () => ({ BACKUP_RETENTION_DAYS: String(config.backupRetentionDays),
+  EXPORT_RETENTION_DAYS: String(config.exportRetentionDays), BACKUP_MAX_COUNT: String(config.backupMaxCount) })
 const dbPassword = async (ctx: JobCtx) => (await getSecrets(ctx.db, need(ctx))).POSTGRES_PASSWORD
 
 /** project.backup and project.export: one backup job into `subdir`, then its backups row. */
 const backupSteps = (subdir: (ctx: JobCtx) => string, extra: (ctx: JobCtx) => Record<string, string> = () => ({})) => [
   step('backup', async (ctx) => startJob(ctx, need(ctx).ref, 'backup', {},
-    { PGHOST: 'db', PGPASSWORD: await dbPassword(ctx), BACKUP_SUBDIR: subdir(ctx), BACKUP_RETENTION_DAYS: retention(), ...extra(ctx) })),
+    { PGHOST: 'db', PGPASSWORD: await dbPassword(ctx), BACKUP_SUBDIR: subdir(ctx), ...retention(), ...extra(ctx) })),
   step('record', async (ctx) => {
     const tail = await waitFor(ctx, need(ctx).ref, 'backup')
     const size = lastMatch(/^backup: size (\d+) bytes$/gm, tail)
@@ -135,7 +137,7 @@ defineJob('project.export', 'heavy', [...backupSteps((ctx) => `export-${need(ctx
 
 defineJob('control.backup', 'heavy', [
   step('backup', (ctx) => startJob(ctx, 'control', 'backup', {},
-    { PGHOST: config.dbHost, PGPASSWORD: config.dbPassword, BACKUP_SUBDIR: 'control', BACKUP_RETENTION_DAYS: retention() })),
+    { PGHOST: config.dbHost, PGPASSWORD: config.dbPassword, BACKUP_SUBDIR: 'control', ...retention() })),
   step('wait', async (ctx) => {
     await ctx.log('backed_up', { location: lastMatch(/^backup: wrote (\S+)$/gm, await waitFor(ctx, 'control', 'backup')) })
   }, false),
