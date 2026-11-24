@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -14,6 +14,7 @@ import { reconcileOnce } from '../src/reconcile.ts'
 import { enqueueDailyBackups, msUntilNext } from '../src/schedule.ts'
 import { backfillFingerprints, fingerprint, getSecrets, putSecret } from '../src/secrets.ts'
 import { forwardTarget } from '../src/forward.ts'
+import { disk } from '../src/disk.ts'
 import { FakeProvisioner } from './fake-provisioner.ts'
 import { join, org, project, resetDashboard, user, v1Env, withToken } from './helpers.ts'
 
@@ -594,5 +595,75 @@ describe('carries', () => {
     expect(job.status).toBe('failed')
     expect(job.attempts).toBe(1)
     expect(job.error).toMatch(/env could not be rendered/)
+  })
+})
+
+describe('S8: backups cannot fill the backup volume', () => {
+  const GiB = 2 ** 30
+  afterEach(() => { vi.restoreAllMocks() })
+  const manualJobs = async (projectId: string, n: number, type = 'project.backup', age = '10 minutes') => {
+    for (let i = 0; i < n; i++) {
+      await pool.query(`insert into control.jobs (type, lane, project_id, payload, status, created_by, created_at)
+        values ($1, 'heavy', $2, '{}', 'succeeded', $3, now() - $4::interval)`, [type, projectId, owner.id, age])
+    }
+  }
+
+  test('three manual backups or exports an hour per project; the fourth is 429, scheduled ones and older ones do not count', async () => {
+    const p = await project(acme.id, { name: 's8-rate' })
+    await manualJobs(p.id, 2)
+    await manualJobs(p.id, 1, 'project.export')
+    await manualJobs(p.id, 3, 'project.backup', '2 hours')
+    await pool.query(`insert into control.jobs (type, lane, project_id, payload, status, created_by) values ('project.backup', 'heavy', $1, '{}', 'succeeded', null)`, [p.id])
+    const res = await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/backups`)
+    expect(res.status).toBe(429)
+    expect(await res.json()).toMatchObject({ error: 'too_many_backups', message: expect.stringMatching(/3 .*last hour/) })
+    const exp = await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/export`, { passphrase: 'correct horse battery' })
+    expect(exp.status).toBe(429)
+    const q = await project(acme.id, { name: 's8-rate-2' })
+    await manualJobs(q.id, 2)
+    expect((await withToken(owner.token, 'POST', `/platform/projects/${q.ref}/backups`)).status).toBe(202)
+  })
+
+  test('below 10% or 5 GiB free on the backup volume, backups, exports and imports are refused with the reason', async () => {
+    const space = vi.spyOn(disk, 'space')
+    const p = await project(acme.id, { name: 's8-disk' })
+    const before = (await pool.query('select count(*)::int as n from control.jobs where project_id = $1', [p.id])).rows[0].n
+    // 9% free of 100 GiB, then 4.5 GiB free of 40 GiB (over 10%, under 5 GiB)
+    for (const [free, total] of [[9 * GiB, 100 * GiB], [4.5 * GiB, 40 * GiB]]) {
+      space.mockResolvedValue({ free, total })
+      const b = await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/backups`)
+      expect(b.status).toBe(507)
+      expect(await b.json()).toMatchObject({ error: 'backup_volume_full', message: expect.stringMatching(/GiB free/) })
+      expect((await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/export`, { passphrase: 'correct horse battery' })).status).toBe(507)
+      const i = await postForm(owner.token, form({ ...importFields({ name: 's8-import' }), env_file: envBlob(v1Env().text) }))
+      expect(i.status).toBe(507)
+    }
+    expect((await pool.query('select count(*)::int as n from control.jobs where project_id = $1', [p.id])).rows[0].n).toBe(before)
+    expect((await pool.query(`select 1 from control.projects where name = 's8-import'`)).rowCount).toBe(0)
+    // the volume cannot be read: refused too
+    space.mockRejectedValue(new Error('ENOENT'))
+    expect((await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/backups`)).status).toBe(503)
+    space.mockResolvedValue({ free: 20 * GiB, total: 100 * GiB })
+    expect((await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/backups`)).status).toBe(202)
+  })
+
+  test('the reconcile pass prunes export rows past EXPORT_RETENTION_DAYS; backups rows stay', async () => {
+    const p = await project(acme.id, { name: 's8-prune' })
+    const add = (location: string, days: number) => pool.query(`insert into control.backups (project_id, kind, status, started_at, finished_at, location)
+      values ($1, 'logical', 'succeeded', now() - make_interval(days => $2), now() - make_interval(days => $2), $3)`, [p.id, days, location])
+    await add(`export-${p.ref}/old`, 8)
+    await add(`export-${p.ref}/recent`, 6)
+    await add(`${p.ref}/old`, 8)
+    await reconcileOnce({ db: pool, provisioner: fake, probe: async () => 'ok' })
+    const left = async () => (await pool.query('select location from control.backups where project_id = $1', [p.id])).rows.map((r) => r.location).sort()
+    expect(await left()).toEqual([`${p.ref}/old`, `export-${p.ref}/recent`].sort())
+    const saved = config.exportRetentionDays
+    config.exportRetentionDays = 5
+    try {
+      await reconcileOnce({ db: pool, provisioner: fake, probe: async () => 'ok' })
+      expect(await left()).toEqual([`${p.ref}/old`])
+    } finally {
+      config.exportRetentionDays = saved
+    }
   })
 })
