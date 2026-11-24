@@ -312,6 +312,15 @@ test('H: an empty or misspelt LEGACY_HOSTNAMES deletes nothing: the name stays a
   }
 }))
 
+test('H: a listed name bound to a slug no organization has is kept, with a warning naming the slug', () => withLegacy(async (p) => {
+  config.legacyOrgs = { 'old.example.test': 'defualt' }
+  const warn = vi.mocked(console.warn)
+  warn.mockClear()
+  expect(await evictStaleLegacyNames(pool)).toEqual([])
+  expect(await domainsOf(p.id)).toContain('old.example.test')
+  expect(warn.mock.calls.flat().join('\n')).toMatch(/old\.example\.test.*defualt/)
+}))
+
 test('H: a listed name that an issued_hosts row gives the wrong org is evicted, and assertRoutable refuses it first', () => withLegacy(async (p) => {
   // as migrations 0003 and 0005 recorded a v1 name attached before them: issued to the project's own org
   await pool.query(`insert into control.issued_hosts (hostname, org_id) values ('old.example.test', $1) on conflict (hostname) do update set org_id = $1`, [orgId])

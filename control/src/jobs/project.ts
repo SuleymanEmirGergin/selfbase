@@ -121,7 +121,13 @@ export async function evictStaleLegacyNames(db: pg.Pool): Promise<string[]> {
       if (!r.counted) console.warn(`hosts: ${r.hostname} on project ${r.ref} is neither counted nor in LEGACY_HOSTNAMES; left in place, check the setting`)
       continue
     }
-    if (legacyOrgOf(r.hostname) === r.slug) continue
+    const owner = legacyOrgOf(r.hostname)
+    if (owner === r.slug) continue
+    // a slug no organization has (a typo, no `default` org) gives the name to nobody: evicting it buys nothing
+    if (!(await db.query('select 1 from control.organizations where slug = $1', [owner])).rowCount) {
+      console.warn(`hosts: ${r.hostname} on project ${r.ref} is bound by LEGACY_HOSTNAMES to ${owner}, which no organization has; left in place, check the setting`)
+      continue
+    }
     jobs.push(await enqueueCoalesced(db,
       { type: 'project.apply', projectId: r.project_id, payload: { recreate: ['core'], released: r.hostname }, createdBy: null },
       (c) => c.query(`delete from control.project_domains where project_id = $1 and hostname = $2 and kind <> 'default'`,
