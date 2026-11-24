@@ -86,7 +86,12 @@ else need=$(( total / 10 > 5242880 ? total / 10 : 5242880 )) rule='10% or 5 GiB,
 db_bytes=$(psql -XAtq -v ON_ERROR_STOP=1 -c 'select pg_database_size(current_database())')
 [[ $db_bytes =~ ^[0-9]+$ ]] || { echo "backup: the database size could not be read" >&2; exit 1; }
 est=$((db_bytes / 1024))
-[ "$sub" = control ] || est=$((est + $(du -sk "$storage" | cut -f1)))
+if [ "$sub" != control ]; then
+  # GNU du exits 1 when a file vanishes mid-walk (core deleting objects): the total it printed still counts
+  storage_k=$(du -sk "$storage" 2> /dev/null | cut -f1) || true
+  [[ $storage_k =~ ^[0-9]+$ ]] || { echo "backup: the storage size could not be read" >&2; exit 1; }
+  est=$((est + storage_k))
+fi
 [ $((avail - est)) -ge "$need" ] || { echo "backup: REFUSED: $((avail / 1024)) MiB free on the backup volume, at least $((need / 1024)) MiB ($rule) needed after this backup of up to $((est / 1024)) MiB; free space first" >&2; exit 4; }
 [ ! -e "$backups/$ts" ] || { echo "backup: $sub/$ts already exists" >&2; exit 1; }
 # leftovers of killed runs (a running backup's temp dir is never a day old)

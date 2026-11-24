@@ -225,6 +225,16 @@ check 'R4: restored storage belongs to the volume owner, not the archive owner' 
 check "I1: a plain restore keeps the backup's sessions" [ "$(sessions)" = 1,1 ]
 check "I1: a plain restore keeps the backup's other credentials" [ "$(creds)" = 1,1,1,1,1,1 ]
 
+# ---- R3: GNU du exits 1 when a file vanishes mid-walk (core deleting objects); the size it printed still counts ----
+JOB_ENV=(-e BACKUP_SUBDIR=duvanish)
+rc=0; out=$(job db "$P-storage" bash -c 'du() { command du "$@"; return 1; }; export -f du; bash /scripts/backup.sh' 2>&1) || rc=$?
+check 'R3: a du that exits 1 after printing a size does not fail the backup' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
+JOB_ENV=(-e BACKUP_SUBDIR=dunone)
+rc=0; out=$(job db "$P-storage" bash -c 'du() { return 1; }; export -f du; bash /scripts/backup.sh' 2>&1) || rc=$?
+check 'R3: a du that prints no size fails the backup (exit 1)' [ "$rc" = 1 ]
+check 'R3: and says the storage size could not be read' grep -q 'backup: the storage size could not be read' <<< "$out"
+check 'R3: and writes nothing' in_backups '[ ! -d /backups/dunone ] || [ -z "$(ls -A /backups/dunone)" ]'
+
 # ---- I1: ROTATE_KEYS=1 (an import with rotate_keys) deletes the restored sessions, before control starts core ----
 JOB_ENV=(-e RESTORE_DIR=t/$ts -e ROTATE_KEYS=yes)
 rc=0; out=$(job db "$P-storage" bash /scripts/restore.sh 2>&1) || rc=$?
