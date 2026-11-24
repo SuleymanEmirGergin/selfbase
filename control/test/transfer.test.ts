@@ -136,7 +136,9 @@ describe('import', () => {
     expect(s.POSTGRES_PASSWORD).toBeTruthy()
     expect(s.POSTGRES_PASSWORD).not.toBe(vals.POSTGRES_PASSWORD)
     const cfg = (await pool.query('select section, data from control.project_config where project_id = $1 order by section', [p.id])).rows
-    expect(cfg.find((r) => r.section === 'auth').data).toMatchObject({ SITE_URL: vals.SITE_URL, SMTP_HOST: vals.SMTP_HOST })
+    expect(cfg.find((r) => r.section === 'auth').data).toMatchObject({ SITE_URL: vals.SITE_URL, SMTP_USER: vals.SMTP_USER })
+    // S7: a server address in the file is never config
+    expect(cfg.find((r) => r.section === 'auth').data).not.toHaveProperty('SMTP_HOST')
     expect(cfg.find((r) => r.section === 'storage').data).toEqual({ STORAGE_MAX_UPLOAD_BYTES: vals.STORAGE_MAX_UPLOAD_BYTES })
     // the ensure env carries the imported config
     expect(fake.callsOf('ensure')[0].args[0].env).toMatchObject({ SITE_URL: vals.SITE_URL, JWT_SECRET: vals.JWT_SECRET })
@@ -228,6 +230,23 @@ describe('import', () => {
     expect(out).toMatchObject({ ignored: [], unknown: [] })
     const p = (await pool.query('select * from control.projects where ref = $1', [out.project.ref])).rows[0]
     expect(await getSecrets(pool, p)).toMatchObject(secrets)
+    expect((await pool.query(`select data from control.project_config where project_id = $1 and section = 'auth'`, [p.id])).rows[0].data)
+      .toEqual({ SITE_URL: 'https://exported.example' })
+  })
+
+  test('S7: a project.json import strips the keys that point core at a server', async () => {
+    const own = await project(acme.id, { name: 'exported-s7' })
+    mkdirSync(joinPath(dir, `export-${own.ref}`, '20261122-031500'), { recursive: true })
+    const sealed = await sealManifest({ config: { auth: { SITE_URL: 'https://exported.example', SMTP_HOST: '192.0.2.2',
+      GOOGLE_TOKEN_URL: 'http://192.0.2.1/' } }, secrets: { JWT_SECRET: 'exported-s7-jwt-secret-value-0123456789', ANON_KEY: 'a', SERVICE_ROLE_KEY: 's' } },
+      'correct horse battery')
+    writeFileSync(joinPath(dir, `export-${own.ref}`, '20261122-031500', 'project.json'), Buffer.from(sealed, 'base64'))
+    const res = await postForm(owner.token, form({ ...importFields({ name: 'from-export-s7', backup_dir: `export-${own.ref}/20261122-031500` }),
+      passphrase: 'correct horse battery' }))
+    expect(res.status).toBe(202)
+    const out = await res.json()
+    expect(out.ignored).toEqual(['SMTP_HOST', 'GOOGLE_TOKEN_URL'])
+    const p = (await pool.query('select id from control.projects where ref = $1', [out.project.ref])).rows[0]
     expect((await pool.query(`select data from control.project_config where project_id = $1 and section = 'auth'`, [p.id])).rows[0].data)
       .toEqual({ SITE_URL: 'https://exported.example' })
   })

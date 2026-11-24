@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { Hono } from 'hono'
 import { config } from '../config.ts'
 import { pool } from '../db.ts'
-import { configSections, EnvFileError, parseV1Env } from '../envfile.ts'
+import { configSections, EnvFileError, parseV1Env, stripImported } from '../envfile.ts'
 import { ApiError } from '../errors.ts'
 import { createProject } from '../jobs/index.ts'
 import { backupDirOf } from '../jobs/transfer.ts'
@@ -109,8 +109,8 @@ platformTransfer.post('/projects/import', async (c) => {
     }
     const m = await openManifest(text, passphrase!).catch((e) => { throw manifestError(e) })
     secrets = Object.fromEntries(CARRIED.filter((k) => typeof m.secrets[k] === 'string').map((k) => [k, m.secrets[k]]))
-    sections = Object.fromEntries(Object.entries(m.config).filter(([s, d]) => SECTIONS.includes(s)
-      && d && typeof d === 'object')) as Record<string, Record<string, unknown>>
+    ;({ sections, ignored } = stripImported(Object.fromEntries(Object.entries(m.config).filter(([s, d]) => SECTIONS.includes(s)
+      && d && typeof d === 'object')) as Record<string, Record<string, unknown>>))
   }
   // rotate_keys: the job generates a new JWT secret and keys, and deletes the sessions the backup brought
   if (rotate === 'true') for (const k of ROTATED) delete secrets[k]
