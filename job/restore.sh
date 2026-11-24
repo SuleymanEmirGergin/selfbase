@@ -10,7 +10,8 @@
 # Sequence:
 #   1. verifies the backup's MANIFEST (sizes and sha256); a missing or unlisted file or any mismatch is refused
 #      before anything changes (exit 1); so is a storage archive holding anything but plain files and directories
-#      (a link, device or fifo) or a name that is absolute or has a .. part: an imported archive is foreign data
+#      (a link, device or fifo), a name that is absolute or has a .. part, or a top-level .restoring-* (the restore's
+#      own temp dir): an imported archive is foreign data
 #   1b. adds up what the restore will write (the archive's files and the parent directories it implies, at least a
 #      block and an inode each, an estimate of the dump once restored) and refuses before anything changes (exit 6)
 #      when that would leave less than the floor free on the volume of the project's data (the floor:
@@ -79,6 +80,9 @@ types=$(cut -c1 <<< "$listing" | sort -u | tr -d '\n')
 names=$(tar -tzf "$dir/storage.tar.gz")
 ! grep -qE '^/|(^|/)\.\.(/|$)' <<< "$names" ||
   { echo "restore: $rel/storage.tar.gz holds an absolute or .. path; refusing" >&2; exit 1; }
+# the restore's temp dir in the volume is .restoring-<pid>: the archive never brings one of its own
+! grep -qE '^(\./+)*\.restoring-' <<< "$names" ||
+  { echo "restore: $rel/storage.tar.gz holds a .restoring-* name, which the restore keeps for itself; refusing" >&2; exit 1; }
 echo "restore: $rel verified"
 
 # 1b. The room on the volume of the project's data, in KiB. The job sees only the storage volume; the database's

@@ -448,6 +448,12 @@ standin many 'cd "${@: -1}"; for i in $(seq 1900); do : > i$i; done; sleep 5'
 rc=0; out=$(cramped "$small" 1 2000 'export PATH=/backups/standin/many:$PATH') || rc=$?
 check 'E: an extraction that uses the inodes past the floor is stopped (exit 6)' [ "$rc" = 6 ]; [ "$rc" = 6 ] || echo "$out" >&2
 check 'E: the stop names the floor, and nothing is left' bash -c 'grep -q "^restore: REFUSED: the volume of the project.s data reached the floor" <<< "$1" && grep -qx entries=0 <<< "$1"' _ "$out"
+# a name the restore keeps for itself: .restoring-<pid> is its temp dir in the volume
+variant restoring 'mkdir .restoring-1 && echo x > .restoring-1/x && tar -czf $a .'
+rc=0; out=$(cramped esmall/restoring) || rc=$?
+check 'E: an archive with a .restoring-* entry is refused (exit 1)' [ "$rc" = 1 ]; [ "$rc" = 1 ] || echo "$out" >&2
+check 'E: that refusal names it' grep -q "holds a .restoring-\* name" <<< "$out"
+check 'E: the database is unchanged by these' [ "$(emarker)" = after-backup ]
 # E: the watchdog. What the server writes counts too: a materialized view the dump refreshes is one short line in the
 # estimate, over a row count kept in a table (1 when it was refreshed, 2 million in the dump). The database and the
 # storage volume share one 512 MiB tmpfs, as Docker volumes share a disk; 100 MiB of room above the floor
