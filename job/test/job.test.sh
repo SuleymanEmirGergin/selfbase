@@ -342,8 +342,9 @@ check 'I1: a rotating restore of a dump without auth tables succeeds' [ "$rc" = 
 
 # ---- E: a restore is sized before anything changes: the volume of the project's data keeps its floor ----
 # cramped <RESTORE_DIR> [floor MiB]: a restore into db-empty with a 64 MiB storage volume; prints entries=<n> left on it
+# [inodes]: the volume's inode count (tmpfs nr_inodes)
 cramped() { docker run --rm --network "$NET" -e PGHOST=db-empty -e PGPASSWORD="$PW" -e "RESTORE_DIR=$1" -e "BACKUP_MIN_FREE_MIB=${2:-1}" \
-  -v "$P-backups:/backups:ro" --mount type=tmpfs,destination=/data/storage,tmpfs-size=64m "$IMAGE" \
+  -v "$P-backups:/backups:ro" --tmpfs "/data/storage:size=64m${3:+,nr_inodes=$3}" "$IMAGE" \
   bash -c 'rc=0; bash /scripts/restore.sh || rc=$?; echo "entries=$(ls -A /data/storage | wc -l)"; exit $rc' 2>&1; }
 emarker() { sql db-empty 'select v from public.e_marker'; }
 sql db-empty "create table public.e_marker (v text); insert into public.e_marker values ('in-backup')" > /dev/null
@@ -374,6 +375,19 @@ check 'E: a dump that restores past the room above the floor is refused (exit 6)
 check 'E: that refusal says more than the room' grep -qE "needed after this restore of more than [0-9]+ MiB; free space first$" <<< "$out"
 check 'E: the database is unchanged by the refused dump' [ "$(emarker)" = after-backup ]
 check 'E: and the dump was not restored' [ "$(sql db-empty "select to_regclass('public.e_bomb') is null")" = t ]
+# E: every entry takes at least a block and an inode, however empty
+in_backups "set -e; for k in dirs files; do cp -a /backups/$small /backups/esmall/empty-\$k; done; w=\$(mktemp -d)
+  mkdir \$w/d \$w/f; (cd \$w/d && seq -f 'd%g' 20000 | xargs mkdir); (cd \$w/f && seq -f 'f%g' 1900 | xargs touch)
+  tar -czf /backups/esmall/empty-dirs/storage.tar.gz -C \$w/d .; tar -czf /backups/esmall/empty-files/storage.tar.gz -C \$w/f .
+  rm -rf \$w; for k in dirs files; do cd /backups/esmall/empty-\$k
+    sed -i \"s|^storage.tar.gz .*|storage.tar.gz \$(stat -c %s storage.tar.gz) \$(sha256sum < storage.tar.gz | cut -d' ' -f1)|\" MANIFEST; done"
+rc=0; out=$(cramped esmall/empty-dirs) || rc=$?
+check 'E: 20000 empty directories count a block each and are refused (exit 6)' [ "$rc" = 6 ]; [ "$rc" = 6 ] || echo "$out" >&2
+check 'E: that refusal counts them at 4 KiB each' grep -qE "needed after this restore of about 7[0-9] MiB; free space first$" <<< "$out"
+rc=0; out=$(cramped esmall/empty-files 1 2000) || rc=$?
+check 'E: 1900 empty files on a volume of 2000 inodes are refused (exit 6)' [ "$rc" = 6 ]; [ "$rc" = 6 ] || echo "$out" >&2
+check 'E: that refusal names the inodes' grep -q "^restore: REFUSED: [0-9]* inodes free on the volume of the project's data" <<< "$out"
+check 'E: the database is unchanged by both' [ "$(emarker)" = after-backup ]
 # the v1 dump below drops schema auth: a table it does not hold would block that
 sql db "drop table auth.sessions, auth.mfa_factors, $(sed 's/\([a-z_]*\)/auth.\1/g; s/ /, /g' <<< "$FOREIGN_CREDS")" > /dev/null
 
