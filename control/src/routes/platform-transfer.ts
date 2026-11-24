@@ -20,6 +20,7 @@ export const platformTransfer = new Hono<Env>()
 const ENV_FILE_MAX = 64 * 1024
 // what an export carries and an import takes over; POSTGRES_PASSWORD and the rest are generated for the new project
 const CARRIED = ['JWT_SECRET', 'ANON_KEY', 'SERVICE_ROLE_KEY', 'SMTP_PASS', 'GOOGLE_CLIENT_SECRET', 'AUTH_SMS_HOOK_SECRET']
+const ROTATED = ['JWT_SECRET', 'ANON_KEY', 'SERVICE_ROLE_KEY']
 const SECTIONS = ['auth', 'postgrest', 'storage', 'realtime', 'database', 'pooler', 'functions']
 const CAN_BACKUP = (s: string) => s === 'ACTIVE_HEALTHY' || s === 'ACTIVE_UNHEALTHY'
 
@@ -80,6 +81,8 @@ platformTransfer.post('/projects/import', async (c) => {
   const envFile = form.get('env_file')
   const passphrase = field('passphrase')
   if ((envFile !== null) === (passphrase !== undefined)) throw bad('give exactly one of env_file and passphrase')
+  const rotate = field('rotate_keys') ?? 'false'
+  if (rotate !== 'true' && rotate !== 'false') throw bad('rotate_keys must be true or false')
 
   let secrets: Record<string, string>
   let sections: Record<string, Record<string, unknown>>
@@ -109,8 +112,11 @@ platformTransfer.post('/projects/import', async (c) => {
     sections = Object.fromEntries(Object.entries(m.config).filter(([s, d]) => SECTIONS.includes(s)
       && d && typeof d === 'object')) as Record<string, Record<string, unknown>>
   }
+  // rotate_keys: the job generates a new JWT secret and keys, and deletes the sessions the backup brought
+  if (rotate === 'true') for (const k of ROTATED) delete secrets[k]
   const { project, jobId } = await createProject(pool, { orgId: org.id, name, size, pool: 'project', createdBy: c.get('user').id,
-    reuseSecrets: secrets, config: sections, job: { type: 'project.import', status: 'RESTORING', payload: { backup_dir: dir } } })
+    reuseSecrets: secrets, config: sections,
+    job: { type: 'project.import', status: 'RESTORING', payload: { backup_dir: dir, ...(rotate === 'true' ? { rotate_keys: true } : {}) } } })
   c.set('audit', { ...c.get('audit'), projectId: project.id, target: project.ref })
   return c.json({ project: platformProject({ ...project, org_slug: org.slug, certificate: 'pending' } as ProjectRow), job_id: jobId,
     ignored, unknown }, 202)

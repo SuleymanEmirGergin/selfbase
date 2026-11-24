@@ -34,6 +34,12 @@ const unreachable = () => new ApiError(502, 'project_unreachable', 'project is n
 /** Sends one request (`path`: /admin/..., with its query) to the project's core admin listener with its token, acting for `actor`. */
 export async function adminFetch(p: Target, actor: string, path: string, init: { method: string; headers?: Headers; body?: BodyInit | null }) {
   if (!DESIRED_RUNNING.includes(p.status)) throw new ApiError(409, 'project_not_running', `the project is ${p.status}`)
+  return adminRequest(p, actor, path, init)
+}
+
+/** adminFetch without the status check: for a job whose project is not running yet (an import's RESTORING). */
+export async function adminRequest(p: Omit<Target, 'status'>, actor: string, path: string,
+  init: { method: string; headers?: Headers; body?: BodyInit | null }) {
   const url = new URL(path, await forwardTarget.url(p.ref))
   const headers = init.headers ?? new Headers()
   headers.set('authorization', `Bearer ${(await getSecrets(pool, p)).ADMIN_TOKEN}`)

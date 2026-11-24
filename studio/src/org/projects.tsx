@@ -233,6 +233,8 @@ export function ImportProject({ org, canManage }: OrgProps) {
                 <input name="env_file" type="file" />
               </label>
               <p className="muted small">{t('import.keysHint')}</p>
+              <label className="check"><input name="rotate_keys" type="checkbox" value="true" />{t('import.rotateKeys')}</label>
+              <p className="muted small">{t('import.rotateHint')}</p>
               </div></section>
               {error && <ErrorBox message={error} />}
               <div className="row-actions end">

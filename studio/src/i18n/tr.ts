@@ -235,6 +235,8 @@ export const tr: Messages = {
   'import.envFile': 'Env dosyası',
   'import.keysHint': 'Dışa aktarılan bir yedek için şifresini, v1 yedeği için kurulumun env dosyasını ver, ikisinden yalnızca birini. Değerler sunucuda şifrelenir, dosya saklanmaz.',
   'import.sending': 'Gönderiliyor…',
+  'import.rotateKeys': 'Yeni anahtarlar',
+  'import.rotateHint': 'Yeni bir JWT sırrı, anon ve service_role anahtarı üretir; kopyadaki bütün kullanıcıların oturumunu kapatır. Dışa aktarılan proje bu sunucuda hâlâ çalışıyorsa gerekir. Uygulamalar bundan sonra yeni anahtarları kullanır.',
 
   // organization: members, tokens, audit log, capacity
   'role.owner': 'Sahip',

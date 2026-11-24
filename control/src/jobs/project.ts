@@ -9,7 +9,7 @@ import { allocateHost, assertRoutable, hostsOf, precheckHost, releaseHost } from
 import { newRef } from '../ids.ts'
 import { loadProjectEnv } from '../project-env.ts'
 import { generateProjectSecrets } from '../project-secrets.ts'
-import { getSecrets, putSecret } from '../secrets.ts'
+import { getSecrets, jwtSecretInUse, putSecret } from '../secrets.ts'
 import { allocateSubnet } from '../subnets.ts'
 import { defineJob, enqueue, DESIRED_RUNNING, type JobCtx, type Project } from './engine.ts'
 
@@ -60,13 +60,18 @@ export type CreateInput = { orgId: string; name: string; size: Size; pool: 'proj
  */
 export async function createProject(pool: pg.Pool, input: CreateInput): Promise<{ project: Project; jobId: string }> {
   const ref = newRef()
-  const given = { ...input.reuseSecrets, ...(input.dbPass ? { POSTGRES_PASSWORD: input.dbPass } : {}) }
+  const given: Record<string, string> = { ...input.reuseSecrets, ...(input.dbPass ? { POSTGRES_PASSWORD: input.dbPass } : {}) }
   try {
     generateProjectSecrets(ref, given)
   } catch (e) {
     throw new ApiError(400, 'invalid_secrets', (e as Error).message)
   }
   return withAdmission(pool, async (c) => {
+    // under the admission lock: two imports of one export cannot both pass
+    if (given.JWT_SECRET && await jwtSecretInUse(c, given.JWT_SECRET)) {
+      throw new ApiError(409, 'keys_in_use', 'This export is already live here as another project: its JWT secret and keys are in use. '
+        + 'Import it with new keys (rotate_keys), or delete the other project first.')
+    }
     await admit(c, { size: input.size })
     await precheckHost(c, input.pool)
     const version = (await c.query(`select value from control.settings where key = 'current_template_version'`)).rows[0]?.value

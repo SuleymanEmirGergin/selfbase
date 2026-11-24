@@ -1,6 +1,6 @@
 // Project secrets at rest (spec 7.4, AC-10): AES-256-GCM under SELFBASE_MASTER_KEY, a random 96-bit nonce per
 // value, AAD '<ref>:<name>' so a row cannot be moved to another project or name. Errors never carry a value.
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
+import { createCipheriv, createDecipheriv, createHmac, randomBytes } from 'node:crypto'
 import { config } from './config.ts'
 import type { Db } from './db.ts'
 
@@ -34,16 +34,42 @@ export function decrypt(ref: string, name: string, row: SecretRow): string {
   }
 }
 
+/** What two projects holding the same JWT secret share (0004-jwt-fingerprint.sql); the secret cannot be read back from it. */
+export const fingerprint = (jwtSecret: string): Buffer =>
+  createHmac('sha256', config.masterKey).update('selfbase jwt-secret fingerprint\0').update(jwtSecret).digest()
+
 export async function putSecret(db: Db, project: { id: string; ref: string }, name: string, kind: 'platform' | 'function',
   value: string): Promise<void> {
   const row = encrypt(project.ref, name, value)
   await db.query(
-    `insert into control.project_secrets (project_id, name, kind, ciphertext, nonce, key_version) values ($1, $2, $3, $4, $5, $6)
+    `insert into control.project_secrets (project_id, name, kind, ciphertext, nonce, key_version, fingerprint) values ($1, $2, $3, $4, $5, $6, $7)
      on conflict (project_id, name) do update
        set kind = excluded.kind, ciphertext = excluded.ciphertext, nonce = excluded.nonce, key_version = excluded.key_version,
-           updated_at = now()`,
-    [project.id, name, kind, row.ciphertext, row.nonce, row.keyVersion],
+           fingerprint = excluded.fingerprint, updated_at = now()`,
+    [project.id, name, kind, row.ciphertext, row.nonce, row.keyVersion, name === 'JWT_SECRET' && kind === 'platform' ? fingerprint(value) : null],
   )
+}
+
+/** Whether a project that is not REMOVED holds this JWT secret. */
+export async function jwtSecretInUse(db: Db, jwtSecret: string): Promise<boolean> {
+  return !!(await db.query(
+    `select 1 from control.project_secrets s join control.projects p on p.id = s.project_id
+      where s.name = 'JWT_SECRET' and s.fingerprint = $1 and p.status <> 'REMOVED' limit 1`, [fingerprint(jwtSecret)])).rowCount
+}
+
+/** Fingerprints for JWT_SECRET rows written before the column existed; a row that cannot be decrypted is named and left. */
+export async function backfillFingerprints(db: Db): Promise<void> {
+  const { rows } = await db.query(
+    `select s.id, s.name, s.ciphertext, s.nonce, s.key_version as "keyVersion", p.ref from control.project_secrets s
+       join control.projects p on p.id = s.project_id where s.name = 'JWT_SECRET' and s.kind = 'platform' and s.fingerprint is null`)
+  for (const r of rows) {
+    try {
+      await db.query('update control.project_secrets set fingerprint = $2 where id = $1', [r.id, fingerprint(decrypt(r.ref, r.name, r))])
+    } catch (e) {
+      if (!(e instanceof SecretError)) throw e
+      console.error(`fingerprint backfill: ${e.message}`)
+    }
+  }
 }
 
 export async function getSecrets(db: Db, project: { id: string; ref: string }): Promise<Record<string, string>> {

@@ -5,6 +5,7 @@
 import { config } from '../config.ts'
 import type { Db } from '../db.ts'
 import { ApiError } from '../errors.ts'
+import { adminRequest } from '../forward.ts'
 import { ProvisionerError } from '../provisioner.ts'
 import { getSecrets } from '../secrets.ts'
 import { defineJob, type JobCtx } from './engine.ts'
@@ -127,6 +128,22 @@ defineJob('control.backup', 'heavy', [
   }, false),
 ])
 
+// rotate_keys: the restored sessions were issued under the old secret; their refresh tokens would mint access tokens
+// signed with the new one. Right after core is healthy (it has to run to take SQL): the gap is that one step.
+const END_SESSIONS = `do $$ begin
+  if to_regclass('auth.refresh_tokens') is not null then delete from auth.refresh_tokens; end if;
+  if to_regclass('auth.sessions') is not null then delete from auth.sessions; end if;
+end $$`
+async function endSessions(ctx: JobCtx) {
+  if (ctx.job.payload.rotate_keys !== true) return
+  const res = await adminRequest(need(ctx), 'selfbase-control', '/admin/sql', {
+    method: 'POST', headers: new Headers({ 'content-type': 'application/json' }), body: JSON.stringify({ query: END_SESSIONS }) })
+  const out = await res.json().catch(() => null)
+  // the message only: a SQL error here names tables, never a value
+  if (!res.ok || out?.error) throw new Error(`deleting the restored sessions failed: ${out?.error?.message ?? `status ${res.status}`}`)
+  await ctx.log('sessions_deleted')
+}
+
 // The project comes up empty as a create would (status RESTORING until the data is back), then the backup replaces its
 // database and storage with core, rest, fn and pooler stopped; core applies the platform migrations when it starts
 // again. COMING_UP before the certificate wait: a late certificate fails the job there, and reconcile activates a
@@ -147,6 +164,7 @@ defineJob('project.import', 'heavy', [
   step('restored', (ctx) => waitFor(ctx, need(ctx).ref, 'restore'), false),
   step('start', (ctx) => ctx.provisioner.start(need(ctx).ref, RESTORE_STOPS)),
   step('started', healthy, false),
+  step('sessions', endSessions),
   healthySteps[1], // warm
   step('coming_up', (ctx) => setStatus(ctx, 'COMING_UP')),
   step('certificate', certificate, false),

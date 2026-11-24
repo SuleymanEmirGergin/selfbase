@@ -12,7 +12,8 @@ import { openManifest, sealManifest } from '../src/manifest.ts'
 import { ProvisionerError, setProvisioner } from '../src/provisioner.ts'
 import { reconcileOnce } from '../src/reconcile.ts'
 import { enqueueDailyBackups, msUntilNext } from '../src/schedule.ts'
-import { getSecrets } from '../src/secrets.ts'
+import { backfillFingerprints, fingerprint, getSecrets, putSecret } from '../src/secrets.ts'
+import { forwardTarget } from '../src/forward.ts'
 import { FakeProvisioner } from './fake-provisioner.ts'
 import { join, org, project, resetDashboard, user, v1Env, withToken } from './helpers.ts'
 
@@ -23,7 +24,14 @@ let owner: Awaited<ReturnType<typeof user>>
 let dev: Awaited<ReturnType<typeof user>>
 let cert: 'ok' | 'pending' = 'ok'
 const running: { stop(): Promise<void> }[] = []
-const stub = createServer((_req, res) => res.writeHead(200).end('{}'))
+// core's API and admin listeners in one: records what the admin listener was sent
+const adminSeen: { url: string; body: string }[] = []
+const stub = createServer(async (req, res) => {
+  let body = ''
+  for await (const chunk of req) body += chunk
+  if (req.url?.startsWith('/admin/')) adminSeen.push({ url: req.url, body })
+  res.writeHead(200, { 'content-type': 'application/json' }).end('{}')
+})
 const workers = (waits: Record<string, number> = {}) => {
   const port = (stub.address() as AddressInfo).port
   const w = startWorkers({ db: pool, provisioner: fake, backoffMs: 1, idleMs: 20, probe: async () => cert,
@@ -70,6 +78,7 @@ beforeAll(async () => {
   dir = mkdtempSync(joinPath(tmpdir(), 'sb-backups-'))
   config.backupDir = dir
   await new Promise<void>((r) => stub.listen(0, '127.0.0.1', r))
+  forwardTarget.url = () => `http://127.0.0.1:${(stub.address() as AddressInfo).port}`
   await resetDashboard()
   await pool.query('delete from control.jobs where project_id is null')
   budget = (await pool.query('select memory_budget_mb from control.nodes')).rows[0].memory_budget_mb
@@ -224,15 +233,103 @@ describe('import', () => {
   })
 })
 
+describe('S1: an import never shares live keys', () => {
+  const projectsCount = async () => (await pool.query('select count(*)::int as n from control.projects')).rows[0].n
+  const fp = async (projectId: string) =>
+    (await pool.query(`select fingerprint from control.project_secrets where project_id = $1 and name = 'JWT_SECRET'`, [projectId])).rows[0]?.fingerprint
+
+  test('an env file whose JWT secret a live project holds is refused with 409 keys_in_use, naming no value', async () => {
+    const { text, vals } = v1Env({ JWT_SECRET: 'live-jwt-secret-value-0123456789abcdef' })
+    expect((await postForm(owner.token, form({ ...importFields({ name: 'live-1' }), env_file: envBlob(text) }))).status).toBe(202)
+    const before = await projectsCount()
+    const again = await postForm(owner.token, form({ ...importFields({ name: 'live-2' }), env_file: envBlob(text) }))
+    expect(again.status).toBe(409)
+    const body = await again.text()
+    expect(JSON.parse(body)).toMatchObject({ error: 'keys_in_use' })
+    expect(body).toMatch(/already live/)
+    expect(body).toMatch(/rotate_keys/)
+    for (const v of [vals.JWT_SECRET, vals.ANON_KEY, vals.SERVICE_ROLE_KEY]) expect(body).not.toContain(v)
+    expect(await projectsCount()).toBe(before)
+  })
+
+  test('an export of a live project here (A imported as B) is refused; once A is deleted it imports', async () => {
+    const a = await project(acme.id, { name: 'source-a' })
+    mkdirSync(joinPath(dir, `export-${a.ref}`, '20261123-031500'), { recursive: true })
+    const secrets = { JWT_SECRET: a.secrets.JWT_SECRET, ANON_KEY: a.secrets.ANON_KEY, SERVICE_ROLE_KEY: a.secrets.SERVICE_ROLE_KEY }
+    writeFileSync(joinPath(dir, `export-${a.ref}`, '20261123-031500', 'project.json'),
+      Buffer.from(await sealManifest({ config: {}, secrets }, 'correct horse battery'), 'base64'))
+    const fields = () => form({ ...importFields({ name: 'copy-b', backup_dir: `export-${a.ref}/20261123-031500` }), passphrase: 'correct horse battery' })
+    const res = await postForm(owner.token, fields())
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ error: 'keys_in_use' })
+    // project.delete removes the secrets and leaves the row REMOVED
+    await pool.query(`update control.projects set status = 'REMOVED' where id = $1`, [a.id])
+    await pool.query('delete from control.project_secrets where project_id = $1', [a.id])
+    expect((await postForm(owner.token, fields())).status).toBe(202)
+  })
+
+  test('rotate_keys: new JWT secret and keys, third-party secrets kept, sessions of the restored database deleted', async () => {
+    const { text, vals } = v1Env({ JWT_SECRET: 'rotated-jwt-secret-value-0123456789abcdef' })
+    expect((await postForm(owner.token, form({ ...importFields({ name: 'rot-1' }), env_file: envBlob(text) }))).status).toBe(202)
+    const res = await postForm(owner.token, form({ ...importFields({ name: 'rot-2' }), env_file: envBlob(text), rotate_keys: 'true' }))
+    expect(res.status).toBe(202)
+    const out = await res.json()
+    expect((await pool.query('select payload from control.jobs where id = $1', [out.job_id])).rows[0].payload)
+      .toEqual({ backup_dir: 'import/acme/corteqs-v1', rotate_keys: true })
+    adminSeen.length = 0
+    workers()
+    expect((await finished(out.job_id)).status).toBe('succeeded')
+    const p = (await pool.query('select * from control.projects where ref = $1', [out.project.ref])).rows[0]
+    const s = await getSecrets(pool, p)
+    expect(s.JWT_SECRET).toBeTruthy()
+    for (const k of ['JWT_SECRET', 'ANON_KEY', 'SERVICE_ROLE_KEY']) expect(s[k], k).not.toBe(vals[k])
+    expect(s).toMatchObject({ SMTP_PASS: vals.SMTP_PASS, GOOGLE_CLIENT_SECRET: vals.GOOGLE_CLIENT_SECRET })
+    const sql = adminSeen.filter((r) => r.url === '/admin/sql')
+    expect(sql).toHaveLength(1)
+    const query = JSON.parse(sql[0].body).query as string
+    expect(query).toMatch(/delete from auth\.refresh_tokens/)
+    expect(query).toMatch(/auth\.sessions/)
+    // the sessions go before the project is warmed and activated
+    const steps = (await pool.query(`select step from control.job_events where job_id = $1 and status = 'succeeded' order by id`, [out.job_id]))
+      .rows.map((r) => r.step)
+    expect(steps.indexOf('sessions')).toBeGreaterThan(steps.indexOf('started'))
+    expect(steps.indexOf('sessions')).toBeLessThan(steps.indexOf('warm'))
+  })
+
+  test('rotate_keys must be true or false', async () => {
+    const res = await postForm(owner.token, form({ ...importFields({ name: 'rot-bad' }), env_file: envBlob(v1Env().text), rotate_keys: 'yes' }))
+    expect(res.status).toBe(400)
+  })
+
+  test('an import without rotate_keys deletes no session', async () => {
+    const out = await (await postForm(owner.token, form({ ...importFields({ name: 'keep-sessions' }), env_file: envBlob(v1Env().text) }))).json()
+    adminSeen.length = 0
+    workers()
+    expect((await finished(out.job_id)).status).toBe('succeeded')
+    expect(adminSeen.filter((r) => r.url === '/admin/sql')).toEqual([])
+  })
+
+  test('the fingerprint is an HMAC under the master key, stored at create; backfill fills rows written before it', async () => {
+    const p = await project(acme.id, { name: 'fp' })
+    expect(Buffer.compare(await fp(p.id), fingerprint(p.secrets.JWT_SECRET))).toBe(0)
+    expect((await pool.query(`select count(*)::int as n from control.project_secrets
+      where project_id = $1 and name <> 'JWT_SECRET' and fingerprint is not null`, [p.id])).rows[0].n).toBe(0)
+    await pool.query('update control.project_secrets set fingerprint = null where project_id = $1', [p.id])
+    await backfillFingerprints(pool)
+    expect(Buffer.compare(await fp(p.id), fingerprint(p.secrets.JWT_SECRET))).toBe(0)
+    await putSecret(pool, p, 'JWT_SECRET', 'platform', 'changed-jwt-secret-value-0123456789')
+    expect(Buffer.compare(await fp(p.id), fingerprint('changed-jwt-secret-value-0123456789'))).toBe(0)
+  })
+})
+
 describe('backup_dir belongs to the caller', () => {
   test("another organization's backups are the same 404 as an unknown one; bare or odd shapes are 400", async () => {
     const other = await org('other')
     const theirs = await project(other.id, { name: 'theirs' })
     const mine = await project(acme.id, { name: 'mine' })
     const gone = await project(acme.id, { name: 'gone', status: 'REMOVED' })
-    const env = envBlob(v1Env().text)
     const status = async (d: string) => {
-      const res = await postForm(owner.token, form({ ...importFields({ name: 'own-check' }), backup_dir: d, env_file: env }))
+      const res = await postForm(owner.token, form({ ...importFields({ name: 'own-check' }), backup_dir: d, env_file: envBlob(v1Env().text) }))
       return { status: res.status, body: await res.json() }
     }
     const unknownRef = 'zzzzzzzzzzzzzzzzzzzz'

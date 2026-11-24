@@ -234,6 +234,8 @@ export const en = {
   'import.envFile': 'Env file',
   'import.keysHint': 'The passphrase for an exported backup, or the installation’s env file for a v1 backup: only one. Values are encrypted on the server; the file is not kept.',
   'import.sending': 'Sending…',
+  'import.rotateKeys': 'New keys',
+  'import.rotateHint': 'Generates a new JWT secret, anon key and service_role key, and signs out every user of the copy. Needed while the exported project is still live on this server; apps then switch to the new keys.',
 
   // organization: members, tokens, audit log, capacity
   'role.owner': 'Owner',
