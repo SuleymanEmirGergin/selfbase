@@ -289,7 +289,7 @@ check 'the restored database is the backup' [ "$(sql db 'select v from public.ma
 check 'a v2 dump keeps its ledger' [ "$(ledger)" = "$current" ]
 check 'mail_log rows (links in clear) are not in the backup' [ "$(sql db 'select count(*) from selfbase.mail_log')" = 0 ]
 check 'storage is the backup' docker run --rm -v "$P-storage:/s" "$IMAGE" bash -c \
-  '[ "$(cat /s/stub/b/v2.txt)" = v2-file ] && [ ! -e /s/stub/b/later.txt ] && ! ls -a /s | grep -q "^.restoring"'
+  '[ "$(cat /s/stub/b/v2.txt)" = v2-file ] && [ ! -e /s/stub/b/later.txt ] && ! ls -A /s | grep -q "restoring-"'
 check 'R4: restored storage belongs to the volume owner, not the archive owner' docker run --rm -v "$P-storage:/s" "$IMAGE" bash -c \
   '[ "$(stat -c %u:%g /s/stub /s/stub/b/v2.txt | sort -u)" = 1000:1000 ]'
 check "I1: a plain restore keeps the backup's sessions" [ "$(sessions)" = 1,1 ]
@@ -399,7 +399,7 @@ check 'I1: a rotating restore of a dump without auth tables succeeds' [ "$rc" = 
 cramped() { docker run --rm --network "$NET" -e PGHOST=db-empty -e PGPASSWORD="$PW" -e "RESTORE_DIR=$1" -e "BACKUP_MIN_FREE_MIB=${2:-1}" \
   -e "PREFIX=${4:-}" -v "$P-backups:/backups:ro" --tmpfs "/data/storage:size=64m${3:+,nr_inodes=$3}" "$IMAGE" \
   bash -c 'eval "$PREFIX"; rc=0; bash /scripts/restore.sh || rc=$?; echo "entries=$(ls -A /data/storage | wc -l)"
-    echo "tars=$(pgrep -cx tar)"; exit $rc' 2>&1; }
+    echo "tars=$(pgrep -cx tar)"; [ "$(ls -A /data/storage | wc -l)" -gt 20 ] || ls -A /data/storage | sed "s/^/name=/"; exit $rc' 2>&1; }
 # variant <name> <script>: esmall/<name>, a copy of the small backup whose storage archive the script writes to $a,
 # run in a temp dir; its MANIFEST line is made to match
 variant() { in_backups "set -e; cp -a /backups/$small /backups/esmall/$1; a=/backups/esmall/$1/storage.tar.gz; w=\$(mktemp -d); cd \$w
@@ -484,25 +484,35 @@ standin many 'cd "${@: -1}"; for i in $(seq 1900); do : > i$i; done; sleep 5'
 rc=0; out=$(cramped "$small" 1 2000 'export PATH=/backups/standin/many:$PATH') || rc=$?
 check 'E: an extraction that uses the inodes past the floor is stopped (exit 6)' [ "$rc" = 6 ]; [ "$rc" = 6 ] || echo "$out" >&2
 check 'E: the stop names the floor, and nothing is left' bash -c 'grep -q "^restore: REFUSED: the volume of the project.s data reached the floor" <<< "$1" && grep -qx entries=0 <<< "$1"' _ "$out"
-# a name the restore keeps for itself: .restoring-<pid> is its temp dir in the volume; 300 of them, so one is the pid
-# the restore has in its new container
+# 4: the restore's temp dir in the volume is \restoring-<pid>, a name no bucket can have (core refuses a backslash in
+# a key). An archive carrying a \restoring-* name at the top is refused
+variant reserved 'mkdir "\\restoring-1" && echo x > "\\restoring-1/x" && tar -czf $a .'
+rc=0; out=$(cramped esmall/reserved) || rc=$?
+check '4: an archive holding a \restoring-* name at the top is refused (exit 1)' [ "$rc" = 1 ]; [ "$rc" = 1 ] || echo "$out" >&2
+check '4: that refusal names it' grep -qF 'holds a \restoring-* name' <<< "$out"
+check 'E: the database is unchanged by these' [ "$(emarker)" = after-backup ]
+# .restoring-<digits> are ordinary names again: 300 of them (one is the pid the restore has in its new container)
 variant restoring 'for i in $(seq 300); do mkdir .restoring-$i && echo x > .restoring-$i/x; done; tar -czf $a .'
 rc=0; out=$(cramped esmall/restoring) || rc=$?
-check "E: an archive holding the name of the restore's own temp dir is refused (exit 1)" [ "$rc" = 1 ]; [ "$rc" = 1 ] || echo "$out" >&2
-check 'E: that refusal names it' grep -qE "holds \.restoring-[0-9]+, the name of this restore's temp dir" <<< "$out"
-check 'E: the database is unchanged by these' [ "$(emarker)" = after-backup ]
-# M3: a restore killed outright (SIGKILL) leaves its temp dir in the volume: the next backup leaves it out, and the
-# next restore removes it first, even one it then refuses
-leftover='mkdir -p /data/storage/.restoring-4242 && echo x > /data/storage/.restoring-4242/f'
-docker run --rm -v "$P-empty-storage:/data/storage" "$IMAGE" bash -c "$leftover"
+check '4: an archive of .restoring-<digits> directories restores them all' bash -c '[ "$1" = 0 ] && grep -qx entries=300 <<< "$2"' _ "$rc" "$out"
+[ "$rc" = 0 ] || echo "$out" >&2
+# a bucket named .restoring-4242 is kept by a backup and a restore; a leftover \restoring-4242 (a restore killed
+# outright) is neither backed up nor kept: the next restore removes it first, even one it then refuses
+bucket='mkdir -p /data/storage/.restoring-4242 && echo x > /data/storage/.restoring-4242/f'
+leftover='mkdir -p "/data/storage/\\restoring-4242" && echo x > "/data/storage/\\restoring-4242/f"'
+docker run --rm -v "$P-empty-storage:/data/storage" "$IMAGE" bash -c "$bucket && $leftover"
 JOB_ENV=(-e BACKUP_SUBDIR=eleft)
 eleft=$(job db-empty "$P-empty-storage" bash /scripts/backup.sh | tail -n1); eleft=${eleft#backup: wrote }
-docker run --rm -v "$P-empty-storage:/data/storage" "$IMAGE" rm -rf /data/storage/.restoring-4242
-check 'M3: a leftover temp dir is not in the next backup' in_backups "! tar -tzf /backups/$eleft/storage.tar.gz | grep -q restoring-4242"
+docker run --rm -v "$P-empty-storage:/data/storage" "$IMAGE" bash -c 'rm -rf /data/storage/.restoring-4242 "/data/storage/\\restoring-4242"'
+names=$(in_backups "tar -tzf /backups/$eleft/storage.tar.gz")
+check '4: a backup keeps a bucket named .restoring-4242' grep -qx './.restoring-4242/f' <<< "$names"
+check '4: and leaves the leftover \restoring-4242 out' bash -c '! grep -vF ./.restoring-4242 <<< "$1" | grep -qF restoring-4242' _ "$names"
 rc=0; out=$(cramped "$eleft" 1 '' "$leftover") || rc=$?
-check 'M3: nor does a leftover in the volume block the next restore' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
+check '4: its restore brings the bucket back and removes the leftover' \
+  bash -c '[ "$1" = 0 ] && grep -qx name=.restoring-4242 <<< "$2" && ! grep -qxF "name=\\restoring-4242" <<< "$2"' _ "$rc" "$out"
+[ "$rc" = 0 ] || echo "$out" >&2
 rc=0; out=$(cramped esmall/storage-bomb 1 '' "$leftover") || rc=$?
-check 'M3: a refused restore removes the leftover all the same' bash -c '[ "$1" = 6 ] && grep -qx entries=0 <<< "$2"' _ "$rc" "$out"
+check '4: a refused restore removes the leftover all the same' bash -c '[ "$1" = 6 ] && grep -qx entries=0 <<< "$2"' _ "$rc" "$out"
 [ "$rc" = 6 ] || echo "$out" >&2
 sql db-empty "update public.e_marker set v = 'after-backup'" > /dev/null
 # a writer that ended well as the stop reached it (pg_restore had committed) is no rollback: here a stand-in tar

@@ -16,7 +16,7 @@
 # signal is ignored) exits 4 too. That also bounds globals.sql, which no database size counts, and a database that
 # grows after the estimate. The cap counts one file only, so a watchdog reads the free space every second while each
 # writer runs and stops it below the floor, whatever else fills the volume (exit 4, no backup written).
-# The storage archive leaves out the .restoring-<pid> temp dirs of restores (job/restore.sh).
+# The storage archive leaves out the \restoring-<pid> temp dirs of restores (job/restore.sh).
 # BACKUP_MIN_FREE_MIB (the provisioner's node setting, never a request's) replaces that floor, e.g. on a small test disk.
 # Writes /backups/$BACKUP_SUBDIR/<YYYYMMDD-HHMMSS UTC>/{db.dump (pg_dump -Fc), globals.sql (roles, without
 # passwords; for a disaster restore onto a fresh cluster only), storage.tar.gz, project.json (exports only),
@@ -151,12 +151,10 @@ capped "$tmp/globals.sql" pg_dumpall --globals-only --no-role-passwords -f "$tmp
 if [ "$sub" != control ]; then
   # GNU tar exits 1 when a file changed while it was read (core kept writing); the archive is still
   # usable, so only exit 2 and above fail the backup.
-  # .restoring-<pid> (1 to 7 digits, as pid_max allows) is a restore's temp dir, one a killed restore left: never
-  # project data (core serves no bucket named so), and restore.sh removes it
-  skip=() p='./.restoring-'
-  for _ in 1 2 3 4 5 6 7; do p+='[0-9]'; skip+=("--exclude=$p"); done
+  # \restoring-<pid> at the top is a restore's temp dir, one a killed restore left: never project data (no bucket
+  # name has a backslash), and restore.sh removes it. In tar's pattern \\ is one literal backslash
   rc=0
-  capped "$tmp/storage.tar.gz" tar -czf "$tmp/storage.tar.gz" "${skip[@]}" -C "$storage" . || rc=$?
+  capped "$tmp/storage.tar.gz" tar -czf "$tmp/storage.tar.gz" --anchored --exclude='./\\restoring-*' -C "$storage" . || rc=$?
   [ "$rc" -le 1 ] || exit "$rc"
   [ "$rc" = 0 ] || echo "backup: WARNING: storage files changed while archiving; they are as tar read them" >&2
 fi
