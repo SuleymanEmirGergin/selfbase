@@ -454,6 +454,14 @@ rc=0; out=$(cramped esmall/restoring) || rc=$?
 check 'E: an archive with a .restoring-* entry is refused (exit 1)' [ "$rc" = 1 ]; [ "$rc" = 1 ] || echo "$out" >&2
 check 'E: that refusal names it' grep -q "holds a .restoring-\* name" <<< "$out"
 check 'E: the database is unchanged by these' [ "$(emarker)" = after-backup ]
+# a writer that ended well as the stop reached it (pg_restore had committed) is no rollback: here a stand-in tar
+# extracts, fills the volume, and exits 0 when it is stopped (taking its filler with it); the restore goes on
+standin fills '/usr/bin/tar "$@" || exit; trap "rm -f /data/storage/.fill; exit 0" TERM
+  head -c 100M /dev/zero > /data/storage/.fill 2> /dev/null; sleep 30 & wait; exit 0'
+rc=0; out=$(cramped "$small" 1 '' 'export PATH=/backups/standin/fills:$PATH') || rc=$?
+check 'E: a writer that exits 0 when stopped at the floor lets the restore finish' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
+check 'E: and no rollback is reported' bash -c '! grep -q "rolled back" <<< "$1"' _ "$out"
+sql db-empty "update public.e_marker set v = 'after-backup'" > /dev/null
 # E: the watchdog. What the server writes counts too: a materialized view the dump refreshes is one short line in the
 # estimate, over a row count kept in a table (1 when it was refreshed, 2 million in the dump). The database and the
 # storage volume share one 512 MiB tmpfs, as Docker volumes share a disk; 100 MiB of room above the floor

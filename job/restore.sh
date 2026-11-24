@@ -24,7 +24,8 @@
 #   watchdog: while tar (1c) and pg_restore (3) run, the free space and inodes are read every second; at the floor
 #      the writer is stopped (the database's client sessions are terminated, so pg_restore's one transaction rolls back), the temp
 #      dir removed, and the restore ends with exit 6, nothing changed: what the server writes for the dump (a
-#      materialized view it refreshes, an index it builds) is no line of the dump, so no estimate can bound it
+#      materialized view it refreshes, an index it builds) is no line of the dump, so no estimate can bound it. A
+#      writer that exits 0 as it is stopped had already finished (pg_restore committed): the restore goes on
 #   2. cron: every active job is set inactive (committed) and running job sessions are terminated, so no job runs
 #      during the restore; the restore brings back the backup's job states (on failure the jobs set inactive here
 #      are set active again)
@@ -176,7 +177,9 @@ watched() {
     if at_floor; then
       [ -z "$stop" ] || "$stop" || true
       kill -TERM -- "-$w" 2> /dev/null || kill -TERM "$w" 2> /dev/null || true
-      wait "$w" 2> /dev/null || true
+      wait "$w" 2> /dev/null || rc=$?
+      # a writer that exited 0 had finished before the stop reached it (pg_restore committed): nothing to roll back
+      [ "$rc" != 0 ] || return 0
       echo "restore: REFUSED: the volume of the project's data reached the floor; at least $((need / 1024)) MiB ($rule) and 10% of its inodes must stay free; the restore was stopped and rolled back, nothing was changed; free space first" >&2
       exit 6
     fi
