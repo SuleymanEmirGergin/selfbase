@@ -8,6 +8,9 @@
 //   job's onFail sets the project's status. An ApiError below 500 (admission, host cap) and a permanent provisioner
 //   refusal (ProvisionerError.permanent) are not retried.
 // - jobs.attempts counts the tries of the current step (reset when the next step starts).
+// - One job per project at a time across both lanes: a worker also holds a session advisory lock on the job's project
+//   (RUN_NS) while it runs the job, and skips a job whose project another worker holds. enqueueIfIdle checks and
+//   inserts under a transaction lock on the project (ENQUEUE_NS), so two requests cannot both see it idle.
 import pg from 'pg'
 import type { Db } from '../db.ts'
 import { probeCertificate } from '../cert.ts'
@@ -39,6 +42,9 @@ export type WorkerDeps = { db: pg.Pool; provisioner: Provisioner; probe?: JobCtx
 const defs = new Map<string, Def>()
 const MAX_ATTEMPTS = 3
 const LOCK_NS = 7213017
+// separate namespaces: a transaction lock of enqueueIfIdle must not wait for a worker's session lock on the project
+const ENQUEUE_NS = 7213019
+const RUN_NS = 7213020
 const APP_NAME = 'selfbase-jobs'
 const FORBIDDEN = new Set<string>([...SECRET_ENV, ...THIRD_PARTY_SECRET_ENV])
 const MAX_VALUE = 2048
@@ -81,8 +87,26 @@ export async function enqueue(db: Db, j: EnqueueInput): Promise<string> {
   return (await insertJob(db, j, false))!
 }
 
-/** Enqueues only when the project has no pending or running job, in one statement; null when it had one. */
-export const enqueueIfIdle = (db: Db, j: EnqueueInput & { projectId: string }) => insertJob(db, j, true)
+/**
+ * Enqueues only when the project has no pending or running job; null when it had one. The check and the insert run
+ * under a per-project transaction lock: under READ COMMITTED, `insert ... where not exists` alone lets two concurrent
+ * calls both see the project idle. Its own transaction, so it takes the pool, never a client.
+ */
+export async function enqueueIfIdle(db: pg.Pool, j: EnqueueInput & { projectId: string }): Promise<string | null> {
+  const c = await db.connect()
+  try {
+    await c.query('begin')
+    await c.query('select pg_advisory_xact_lock($1, hashtext($2))', [ENQUEUE_NS, j.projectId])
+    const id = await insertJob(c, j, true)
+    await c.query('commit')
+    return id
+  } catch (e) {
+    await c.query('rollback').catch(() => {})
+    throw e
+  } finally {
+    c.release()
+  }
+}
 
 const ignore = () => {}
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -109,6 +133,11 @@ export function startWorkers(deps: WorkerDeps): { stop(): Promise<void> } {
       )).rows as Job[]
       for (const job of rows) {
         if (!(await c.query('select pg_try_advisory_lock($1, hashtext($2)) as ok', [LOCK_NS, job.id])).rows[0].ok) continue
+        // the other lane runs a job of this project: this one waits its turn
+        if (job.project_id && !(await c.query('select pg_try_advisory_lock($1, hashtext($2)) as ok', [RUN_NS, job.project_id])).rows[0].ok) {
+          await c.query('select pg_advisory_unlock($1, hashtext($2))', [LOCK_NS, job.id])
+          continue
+        }
         await c.query(`update control.jobs set status = 'running', updated_at = now() where id = $1`, [job.id])
         await c.query('commit')
         return job
@@ -193,6 +222,7 @@ export function startWorkers(deps: WorkerDeps): { stop(): Promise<void> } {
         await c.query(`set application_name = '${APP_NAME}'`)
         await run(c, job)
         await c.query('select pg_advisory_unlock($1, hashtext($2))', [LOCK_NS, job.id])
+        if (job.project_id) await c.query('select pg_advisory_unlock($1, hashtext($2))', [RUN_NS, job.project_id])
         await c.query('reset application_name')
         c.off('error', ignore)
         c.release()
