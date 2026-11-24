@@ -157,6 +157,12 @@ test('backup jobs get the node floor BACKUP_MIN_FREE_MIB; a request can never se
   assert.ok(!restore.some((e) => e.startsWith('BACKUP_MIN_FREE_MIB=')))
 })
 
+test('I1: a restore job takes ROTATE_KEYS (an import with new keys ends the restored sessions in the job)', () => {
+  const restore = buildJob({ ref: REF, type: 'restore', args: { dir: `${REF}/20260101-000000` },
+    env: { PGHOST: 'db', PGPASSWORD: 'x', ROTATE_KEYS: '1' } }, NODE).body.Env as string[]
+  assert.ok(restore.includes('ROTATE_KEYS=1'))
+})
+
 test('json-file logs when no syslog address', () => {
   const { containers } = buildProject(input(), tpl, SIZES, { ...NODE, logSyslogAddr: '', cgroupParent: 'selfbase.slice' })
   const hc = containers[0].body.HostConfig as any

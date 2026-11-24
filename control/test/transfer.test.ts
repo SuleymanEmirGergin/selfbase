@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -20,6 +21,8 @@ import { FakeProvisioner } from './fake-provisioner.ts'
 import { join, org, project, resetDashboard, user, v1Env, withToken } from './helpers.ts'
 
 const FOUR = ['core', 'rest', 'fn', 'pooler']
+// what restore.sh prints when ROTATE_KEYS=1 deleted the restored sessions
+const ROTATED_TAIL = 'restore: database restored\nrestore: the restored sessions are deleted (ROTATE_KEYS)\nrestore: storage restored\n'
 let fake: FakeProvisioner
 let acme: { id: string; slug: string }
 let owner: Awaited<ReturnType<typeof user>>
@@ -121,7 +124,7 @@ describe('import', () => {
     expect(out.ignored).toEqual(expect.arrayContaining(['POSTGRES_PASSWORD', 'PANEL_ADMIN_PASSWORD_HASH']))
     const p = (await pool.query('select * from control.projects where ref = $1', [out.project.ref])).rows[0]
     expect((await pool.query('select type, payload from control.jobs where id = $1', [out.job_id])).rows[0])
-      .toEqual({ type: 'project.import', payload: { backup_dir: 'import/acme/corteqs-v1' } })
+      .toEqual({ type: 'project.import', payload: { backup_dir: 'import/acme/corteqs-v1', job_version: 2 } })
 
     workers()
     expect((await finished(out.job_id)).status).toBe('succeeded')
@@ -290,15 +293,16 @@ describe('S1: an import never shares live keys', () => {
     expect((await postForm(owner.token, fields())).status).toBe(202)
   })
 
-  test('rotate_keys: new JWT secret and keys, third-party secrets kept, sessions of the restored database deleted', async () => {
+  test('rotate_keys: new JWT secret and keys, third-party secrets kept, the restore job told to delete the sessions', async () => {
     const { text, vals } = v1Env({ JWT_SECRET: 'rotated-jwt-secret-value-0123456789abcdef' })
     expect((await postForm(owner.token, form({ ...importFields({ name: 'rot-1' }), env_file: envBlob(text) }))).status).toBe(202)
     const res = await postForm(owner.token, form({ ...importFields({ name: 'rot-2' }), env_file: envBlob(text), rotate_keys: 'true' }))
     expect(res.status).toBe(202)
     const out = await res.json()
     expect((await pool.query('select payload from control.jobs where id = $1', [out.job_id])).rows[0].payload)
-      .toEqual({ backup_dir: 'import/acme/corteqs-v1', rotate_keys: true })
+      .toEqual({ backup_dir: 'import/acme/corteqs-v1', rotate_keys: true, job_version: 2 })
     adminSeen.length = 0
+    fake.jobResult = () => ({ status: 'succeeded', exitCode: 0, tail: ROTATED_TAIL })
     workers()
     expect((await finished(out.job_id)).status).toBe('succeeded')
     const p = (await pool.query('select * from control.projects where ref = $1', [out.project.ref])).rows[0]
@@ -306,16 +310,10 @@ describe('S1: an import never shares live keys', () => {
     expect(s.JWT_SECRET).toBeTruthy()
     for (const k of ['JWT_SECRET', 'ANON_KEY', 'SERVICE_ROLE_KEY']) expect(s[k], k).not.toBe(vals[k])
     expect(s).toMatchObject({ SMTP_PASS: vals.SMTP_PASS, GOOGLE_CLIENT_SECRET: vals.GOOGLE_CLIENT_SECRET })
-    const sql = adminSeen.filter((r) => r.url === '/admin/sql')
-    expect(sql).toHaveLength(1)
-    const query = JSON.parse(sql[0].body).query as string
-    expect(query).toMatch(/delete from auth\.refresh_tokens/)
-    expect(query).toMatch(/auth\.sessions/)
-    // the sessions go before the project is warmed and activated
-    const steps = (await pool.query(`select step from control.job_events where job_id = $1 and status = 'succeeded' order by id`, [out.job_id]))
-      .rows.map((r) => r.step)
-    expect(steps.indexOf('sessions')).toBeGreaterThan(steps.indexOf('started'))
-    expect(steps.indexOf('sessions')).toBeLessThan(steps.indexOf('warm'))
+    // the restore job deletes them while core is stopped: control sends no SQL of its own
+    const env = fake.callsOf('runJob').find((c) => c.args[0] === p.ref)!.args[3]
+    expect({ ...env, PGPASSWORD: env.PGPASSWORD === s.POSTGRES_PASSWORD }).toEqual({ PGHOST: 'db', PGPASSWORD: true, ROTATE_KEYS: '1' })
+    expect(adminSeen.filter((r) => r.url === '/admin/sql')).toEqual([])
   })
 
   test('rotate_keys must be true or false', async () => {
@@ -329,6 +327,7 @@ describe('S1: an import never shares live keys', () => {
     workers()
     expect((await finished(out.job_id)).status).toBe('succeeded')
     expect(adminSeen.filter((r) => r.url === '/admin/sql')).toEqual([])
+    expect(fake.callsOf('runJob')[0].args[3]).not.toHaveProperty('ROTATE_KEYS')
   })
 
   test('the fingerprint is an HMAC under the master key, stored at create; backfill fills rows written before it', async () => {
@@ -689,16 +688,23 @@ describe('fix round 2', () => {
   const GiB = 2 ** 30
   afterEach(() => { vi.restoreAllMocks() })
 
-  test('S1: with rotate_keys, core never runs on the restored database with the stored JWT secret before its sessions are gone', async () => {
+  test('I1: with rotate_keys no core starts before the restore job ended the sessions; then a plain start with the stored keys', async () => {
     const order: string[] = []
-    const ensure = fake.ensure.bind(fake)
-    const start = fake.start.bind(fake)
-    const runJob = fake.runJob.bind(fake)
-    fake.ensure = async (input) => { order.push(`ensure:${input.env.JWT_SECRET}`); return ensure(input) }
-    fake.start = async (ref, services) => { order.push('start'); return start(ref, services) }
-    fake.runJob = async (ref, type, args, env) => { order.push(`job:${type}`); return runJob(ref, type, args, env) }
-    const push = adminSeen.push.bind(adminSeen)
-    adminSeen.push = (...r) => { order.push(`admin:${r[0].url}`); return push(...r) }
+    const saved = { ensure: fake.ensure, start: fake.start, runJob: fake.runJob, jobStatus: fake.jobStatus }
+    let polls = 0
+    adminSeen.length = 0
+    // a digest of the secret: never the value in a failure message
+    const tag = (secret: string) => `ensure:${createHash('sha256').update(secret).digest('hex').slice(0, 8)}`
+    fake.ensure = async (input) => { order.push(tag(input.env.JWT_SECRET)); return saved.ensure.call(fake, input) }
+    fake.start = async (ref, services) => { order.push('start'); return saved.start.call(fake, ref, services) }
+    fake.runJob = async (ref, type, args, env) => { order.push(`job:${type}:${env.ROTATE_KEYS ?? '-'}`); return saved.runJob.call(fake, ref, type, args, env) }
+    // the restore runs for two polls, then succeeds
+    fake.jobStatus = async (ref, type) => {
+      await saved.jobStatus.call(fake, ref, type)
+      const done = ++polls > 2
+      order.push(done ? 'restored' : 'restoring')
+      return done ? { status: 'succeeded', exitCode: 0, tail: ROTATED_TAIL } : { status: 'running', exitCode: null, tail: '' }
+    }
     try {
       const res = await postForm(owner.token, form({ ...importFields({ name: 'rot-window' }), env_file: envBlob(v1Env().text), rotate_keys: 'true' }))
       expect(res.status).toBe(202)
@@ -706,22 +712,43 @@ describe('fix round 2', () => {
       workers()
       expect((await finished(out.job_id)).status).toBe('succeeded')
       const p = (await pool.query('select * from control.projects where ref = $1', [out.project.ref])).rows[0]
-      const stored = `ensure:${(await getSecrets(pool, p)).JWT_SECRET}`
-      const restore = order.indexOf('job:restore')
-      const deleted = order.indexOf('admin:/admin/sql')
-      expect(restore).toBeGreaterThan(-1)
-      expect(deleted).toBeGreaterThan(restore)
-      // between the restore and the deletes: no start with the stored env, no ensure with the stored secret
-      const between = order.slice(restore + 1, deleted)
-      expect(between.length).toBeGreaterThan(0)
-      expect(between.filter((e) => e === 'start' || e === stored)).toEqual([])
-      // and the throwaway secret core ran with meanwhile is never used again
-      const throwaway = between.find((e) => e.startsWith('ensure:'))!
-      expect(order.slice(deleted)).not.toContain(throwaway)
-      expect(order.slice(deleted)).toContain(stored)
+      const stored = tag((await getSecrets(pool, p)).JWT_SECRET)
+      // the empty project comes up with the stored keys, the restore job deletes the sessions, then the plain start
+      expect(order).toEqual([stored, 'job:restore:1', 'restoring', 'restoring', 'restored', 'start'])
+      expect(adminSeen.filter((r) => r.url === '/admin/sql')).toEqual([])
     } finally {
-      adminSeen.push = push
+      Object.assign(fake, saved)
     }
+  })
+
+  test('I1: a rotating restore that could not delete the sessions (exit 5) never starts the project', async () => {
+    fake.jobResult = () => ({ status: 'failed', exitCode: 5, tail: 'restore: FAILED: the DATABASE WAS RESTORED' })
+    const out = await (await postForm(owner.token, form({ ...importFields({ name: 'rot-kept' }), env_file: envBlob(v1Env().text),
+      rotate_keys: 'true' }))).json()
+    workers()
+    const job = await finished(out.job_id)
+    expect(job).toMatchObject({ status: 'failed', error: expect.stringMatching(/sessions .*could not be deleted.*delete this project, then import again/) })
+    expect(fake.callsOf('start')).toEqual([])
+  })
+
+  test('I1: a rotating restore whose job does not confirm the deletes (an older job image) never starts the project', async () => {
+    const out = await (await postForm(owner.token, form({ ...importFields({ name: 'rot-old-image' }), env_file: envBlob(v1Env().text),
+      rotate_keys: 'true' }))).json()
+    workers()
+    const job = await finished(out.job_id)
+    expect(job).toMatchObject({ status: 'failed', error: expect.stringMatching(/did not confirm .*sessions.*delete this project, then import again/) })
+    expect(fake.callsOf('start')).toEqual([])
+  })
+
+  test('I1: an import an earlier control left in flight after its restore (the old rekey steps) fails instead of starting', async () => {
+    const p = await project(acme.id, { name: 'rot-inflight', status: 'RESTORING' })
+    // the old job had 16 steps: at index 8 it had started core on the throwaway secret and was waiting for it ('started')
+    const id = (await pool.query(`insert into control.jobs (type, lane, project_id, step, status, payload)
+      values ('project.import', 'heavy', $1, '8', 'running', $2) returning id`, [p.id, { backup_dir: 'import/acme/v1-dump', rotate_keys: true }])).rows[0].id
+    workers()
+    expect(await finished(id)).toMatchObject({ status: 'failed', error: expect.stringMatching(/earlier version of control.*delete this project, then import again/) })
+    expect(fake.calls.filter((c) => ['ensure', 'start'].includes(c.method))).toEqual([])
+    expect((await row(p.id)).status).toBe('INIT_FAILED')
   })
 
   test('S7: a manifest whose config.auth.__proto__ carries endpoints installs none of them', async () => {

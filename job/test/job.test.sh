@@ -16,7 +16,7 @@ NET=${P}_default
 compose() { docker compose -p "$P" -f template/compose.test.yml "$@"; }
 cleanup() {
   compose down -v --remove-orphans > /dev/null 2>&1 || true
-  docker volume rm -f "$P-backups" "$P-storage" "$P-v1-storage" > /dev/null 2>&1 || true
+  docker volume rm -f "$P-backups" "$P-storage" "$P-v1-storage" "$P-empty-storage" > /dev/null 2>&1 || true
 }
 trap cleanup EXIT
 fails=0
@@ -47,14 +47,19 @@ current=$(ls db/platform | grep -E '^[0-9]{4}-' | cut -c1-4 | paste -sd, -)
 echo "# building $IMAGE and starting $P"
 docker build -q -f job/Dockerfile -t "$IMAGE" . > /dev/null
 cleanup
-compose up -d --build --wait db db-v1 > /dev/null 2>&1
+compose up -d --build --wait db db-v1 db-empty > /dev/null 2>&1
 migrate > /dev/null
 docker volume create "$P-storage" > /dev/null
 docker volume create "$P-v1-storage" > /dev/null
+docker volume create "$P-empty-storage" > /dev/null
 docker run --rm -v "$P-storage:/s" "$IMAGE" bash -c 'mkdir -p /s/stub/b && echo v2-file > /s/stub/b/v2.txt'
 docker run --rm -v "$P-v1-storage:/s" "$IMAGE" bash -c 'mkdir -p /s/stub/avatars && echo v1-file > /s/stub/avatars/me.png'
 sql db "create table public.marker (v text); insert into public.marker values ('in-backup')" > /dev/null
 sql db "insert into selfbase.mail_log (to_email, subject, html) values ('a@example.test', 'link', 'secret-link')" > /dev/null
+# a session the backup carries (refresh token rows; auth.sessions as a foreign dump may have it)
+sql db "insert into auth.refresh_tokens (token, session_id) values ('restored-token', gen_random_uuid());
+  create table auth.sessions (id uuid primary key); insert into auth.sessions values (gen_random_uuid())" > /dev/null
+sessions() { sql db "select (select count(*) from auth.refresh_tokens) || ',' || (select count(*) from auth.sessions)"; }
 
 # ---- backup of a v2 database ----
 JOB_ENV=(-e BACKUP_SUBDIR=t)
@@ -165,6 +170,38 @@ check 'storage is the backup' docker run --rm -v "$P-storage:/s" "$IMAGE" bash -
   '[ "$(cat /s/stub/b/v2.txt)" = v2-file ] && [ ! -e /s/stub/b/later.txt ] && ! ls -a /s | grep -q "^.restoring"'
 check 'R4: restored storage belongs to the volume owner, not the archive owner' docker run --rm -v "$P-storage:/s" "$IMAGE" bash -c \
   '[ "$(stat -c %u:%g /s/stub /s/stub/b/v2.txt | sort -u)" = 1000:1000 ]'
+check "I1: a plain restore keeps the backup's sessions" [ "$(sessions)" = 1,1 ]
+
+# ---- I1: ROTATE_KEYS=1 (an import with rotate_keys) deletes the restored sessions, before control starts core ----
+JOB_ENV=(-e RESTORE_DIR=t/$ts -e ROTATE_KEYS=yes)
+rc=0; out=$(job db "$P-storage" bash /scripts/restore.sh 2>&1) || rc=$?
+check 'I1: a ROTATE_KEYS other than 0 or 1 is refused (exit 2)' [ "$rc" = 2 ]
+check 'I1: the sessions are unchanged after that refusal' [ "$(sessions)" = 1,1 ]
+JOB_ENV=(-e RESTORE_DIR=t/$ts -e ROTATE_KEYS=1)
+rc=0; out=$(job db "$P-storage" bash /scripts/restore.sh 2>&1) || rc=$?
+check 'I1: a rotating restore succeeds' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
+check 'I1: a rotating restore leaves no refresh token and no session' [ "$(sessions)" = 0,0 ]
+check 'I1: a rotating restore says so' grep -qx 'restore: the restored sessions are deleted (ROTATE_KEYS)' <<< "$out"
+check 'I1: the rest of the database is the backup' [ "$(sql db 'select v from public.marker')" = in-backup ]
+# a delete that fails (a trigger the backup carries): the job fails with exit 5, never as a success
+sql db "create function public.keep_tokens() returns trigger language plpgsql as \$\$ begin raise exception 'kept'; end \$\$;
+  create trigger keep_tokens before delete on auth.refresh_tokens execute function public.keep_tokens()" > /dev/null
+JOB_ENV=(-e BACKUP_SUBDIR=kept)
+kept=$(job db "$P-storage" bash /scripts/backup.sh | tail -n1)
+JOB_ENV=(-e "RESTORE_DIR=${kept#backup: wrote }" -e ROTATE_KEYS=1)
+rc=0; out=$(job db "$P-storage" bash /scripts/restore.sh 2>&1) || rc=$?
+check 'I1: sessions that cannot be deleted fail the restore with exit 5' [ "$rc" = 5 ]
+check 'I1: that failure says the database was restored and to import again' grep -q 'DATABASE WAS RESTORED .* sessions could not be deleted .*delete this project, then import again' <<< "$out"
+sql db "drop trigger keep_tokens on auth.refresh_tokens; drop function public.keep_tokens()" > /dev/null
+# a foreign dump with neither table: nothing to delete, no error (into a database with pg_cron, as every project's is)
+sql db-empty "create extension if not exists pg_cron" > /dev/null
+JOB_ENV=(-e BACKUP_SUBDIR=empty)
+last=$(job db-empty "$P-empty-storage" bash /scripts/backup.sh | tail -n1)
+JOB_ENV=(-e "RESTORE_DIR=${last#backup: wrote }" -e ROTATE_KEYS=1)
+rc=0; out=$(job db-empty "$P-empty-storage" bash /scripts/restore.sh 2>&1) || rc=$?
+check 'I1: a rotating restore of a dump without auth tables succeeds' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
+# the v1 dump below drops schema auth: a table it does not hold would block that
+sql db "drop table auth.sessions" > /dev/null
 
 # ---- a v1 database restores into a v2 database and is adopted by core ----
 sql db-v1 "insert into auth.users (id, email) values ('11111111-1111-1111-1111-111111111111', 'v1@example.test')" > /dev/null

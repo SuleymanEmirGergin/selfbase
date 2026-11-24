@@ -5,12 +5,10 @@
 import { config } from '../config.ts'
 import type { Db } from '../db.ts'
 import { ApiError } from '../errors.ts'
-import { adminRequest } from '../forward.ts'
 import { ProvisionerError } from '../provisioner.ts'
 import { getSecrets } from '../secrets.ts'
 import { defineJob, type JobCtx } from './engine.ts'
-import { randomBytes } from 'node:crypto'
-import { activate, certificate, createSteps, ensure, failTo, healthy, healthySteps, need, setStatus, step } from './project.ts'
+import { activate, certificate, createSteps, failTo, healthy, healthySteps, need, setStatus, step } from './project.ts'
 
 // what an import stops for the restore; db keeps running (the restore job connects to it)
 export const RESTORE_STOPS = ['core', 'rest', 'fn', 'pooler']
@@ -48,6 +46,9 @@ async function waitFor(ctx: JobCtx, ref: string, type: 'backup' | 'restore'): Pr
     if (tail && s.status === 'succeeded') await ctx.log(`${type}_output`, { tail })
     if (s.status === 'succeeded') return s.tail
     if (type === 'restore' && s.exitCode === 10) throw new Error('the restore failed and rolled back: the database was not changed')
+    if (type === 'restore' && s.exitCode === 5) {
+      throw new Error('the database was restored but its sessions could not be deleted (rotate_keys): delete this project, then import again')
+    }
     if (type === 'restore' && s.exitCode === 3) {
       throw new Error('the database was restored but the storage files were not (or only partly): delete this project, then import again')
     }
@@ -129,24 +130,10 @@ defineJob('control.backup', 'heavy', [
   }, false),
 ])
 
-// rotate_keys: the restored refresh tokens would mint access tokens signed with the new secret, and core is publicly
-// routed as soon as it runs (it has to run to take the deletes). So core first comes up on the restored database with a
-// throwaway JWT secret, never stored: whatever it signs before the sessions are gone dies with that secret. Only then
-// is it recreated with the project's real secret, on a database without the restored sessions.
+// rotate_keys: the restored refresh tokens would mint access tokens signed with the new secret. The restore job deletes
+// them (ROTATE_KEYS=1) while core, rest, fn and pooler are stopped, so the plain start brings up a database without them.
 const rotating = (ctx: JobCtx) => ctx.job.payload.rotate_keys === true
-const END_SESSIONS = `do $$ begin
-  if to_regclass('auth.refresh_tokens') is not null then delete from auth.refresh_tokens; end if;
-  if to_regclass('auth.sessions') is not null then delete from auth.sessions; end if;
-end $$`
-async function endSessions(ctx: JobCtx) {
-  if (!rotating(ctx)) return
-  const res = await adminRequest(need(ctx), 'selfbase-control', '/admin/sql', {
-    method: 'POST', headers: new Headers({ 'content-type': 'application/json' }), body: JSON.stringify({ query: END_SESSIONS }) })
-  const out = await res.json().catch(() => null)
-  // the message only: a SQL error here names tables, never a value
-  if (!res.ok || out?.error) throw new Error(`deleting the restored sessions failed: ${out?.error?.message ?? `status ${res.status}`}`)
-  await ctx.log('sessions_deleted')
-}
+const SESSIONS_DELETED = /^restore: the restored sessions are deleted \(ROTATE_KEYS\)$/m
 
 // The project comes up empty as a create would (status RESTORING until the data is back), then the backup replaces its
 // database and storage with core, rest, fn and pooler stopped; core applies the platform migrations when it starts
@@ -163,19 +150,21 @@ defineJob('project.import', 'heavy', [
     if (!org || (await backupDirOf(ctx.db, org, String(ctx.job.payload.backup_dir))) !== 'ok') {
       throw new ApiError(400, 'invalid_backup_dir', "backup_dir is not one of this organization's backups")
     }
-    await startJob(ctx, p.ref, 'restore', { dir: ctx.job.payload.backup_dir }, { PGHOST: 'db', PGPASSWORD: await dbPassword(ctx) })
+    await startJob(ctx, p.ref, 'restore', { dir: ctx.job.payload.backup_dir },
+      { PGHOST: 'db', PGPASSWORD: await dbPassword(ctx), ...(rotating(ctx) ? { ROTATE_KEYS: '1' } : {}) })
   }),
-  step('restored', (ctx) => waitFor(ctx, need(ctx).ref, 'restore'), false),
-  step('start', (ctx) => rotating(ctx)
-    ? ensure(ctx, [], { JWT_SECRET: randomBytes(32).toString('base64url') })
-    : ctx.provisioner.start(need(ctx).ref, RESTORE_STOPS)),
+  step('restored', async (ctx) => {
+    const tail = await waitFor(ctx, need(ctx).ref, 'restore')
+    // a job image that ignores ROTATE_KEYS would leave them: never start on its word alone
+    if (rotating(ctx) && !SESSIONS_DELETED.test(tail)) {
+      throw new Error('the restore job did not confirm that it deleted the restored sessions (rotate_keys): delete this project, then import again')
+    }
+  }, false),
+  step('start', (ctx) => ctx.provisioner.start(need(ctx).ref, RESTORE_STOPS)),
   step('started', healthy, false),
-  step('sessions', endSessions),
-  // the real secret: core, rest and fn are recreated with it
-  step('rekey', async (ctx) => { if (rotating(ctx)) await ensure(ctx) }),
-  step('rekeyed', async (ctx) => { if (rotating(ctx)) await healthy(ctx) }, false),
   healthySteps[1], // warm
   step('coming_up', (ctx) => setStatus(ctx, 'COMING_UP')),
   step('certificate', certificate, false),
   activate,
-], failTo('INIT_FAILED', ['certificate']))
+// version 2: the sessions moved into the restore job; an import an earlier control left past its restore fails (I1)
+], { ...failTo('INIT_FAILED', ['certificate']), version: 2 })

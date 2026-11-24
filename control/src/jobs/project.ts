@@ -100,11 +100,9 @@ export const need = (ctx: JobCtx): Project => ctx.project ?? (() => { throw new 
 export const setStatus = (ctx: JobCtx, status: string) => ctx.db.query('update control.projects set status = $2 where id = $1', [need(ctx).id, status])
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-/** `override` replaces env values for this ensure only (never stored): project.import's throwaway JWT secret. */
-export async function ensure(ctx: JobCtx, recreate: string[] = [], override: Record<string, string> = {}) {
+export async function ensure(ctx: JobCtx, recreate: string[] = []) {
   const p = need(ctx)
-  const { env: stored, hosts } = await loadProjectEnv(ctx.db, p)
-  const env = { ...stored, ...override }
+  const { env, hosts } = await loadProjectEnv(ctx.db, p)
   // every host gets the resolver: only counted ones (a slot, an issued host) or LEGACY_HOSTNAMES may route
   await assertRoutable(ctx.db, p.id, hosts)
   await ctx.provisioner.ensure({ ref: p.ref, templateVersion: p.template_version ?? config.templateVersion, size: p.size,

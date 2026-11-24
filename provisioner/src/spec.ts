@@ -58,7 +58,7 @@ const HOST_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)
 const RESTORE_DIR_RE = /^(export-)?[a-z]{20}\/\d{8}-\d{6}$|^import\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/
 const JOB_TYPES: string[] = ['backup', 'restore', 'clone', 'basebackup', 'volume-copy', 'migra-diff']
 const JOB_CMD: Partial<Record<JobType, string[]>> = { backup: ['bash', '/scripts/backup.sh'], restore: ['bash', '/scripts/restore.sh'] }
-const JOB_ENV = new Set(['PGHOST', 'PGPASSWORD', 'PGUSER', 'PGDATABASE', 'BACKUP_SUBDIR', 'BACKUP_RETENTION_DAYS', 'EXPORT_RETENTION_DAYS', 'BACKUP_MAX_COUNT', 'RESTORE_DIR', 'MANIFEST_B64', 'CONTROL_GID'])
+const JOB_ENV = new Set(['PGHOST', 'PGPASSWORD', 'PGUSER', 'PGDATABASE', 'BACKUP_SUBDIR', 'BACKUP_RETENTION_DAYS', 'EXPORT_RETENTION_DAYS', 'BACKUP_MAX_COUNT', 'RESTORE_DIR', 'MANIFEST_B64', 'CONTROL_GID', 'ROTATE_KEYS'])
 const JOB_RES: SizeEntry = { mem_mb: 512, cpus: 0.5, pids: 512 }
 const NS: Record<string, number> = { ms: 1e6, s: 1e9, m: 6e10, h: 3.6e12 }
 

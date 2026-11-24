@@ -5,7 +5,8 @@
 #   /backups/$RESTORE_DIR  that one backup, read-only (the provisioner mounts nothing else of BACKUP_HOST_DIR)
 #   /data/storage   the project's storage volume, read-write
 #   PGHOST, PGPASSWORD (PGUSER, PGDATABASE default to postgres), RESTORE_DIR (under /backups: <ref>/<ts>,
-#                   export-<ref>/<ts>, or import/<org slug>/<name> for a v1 or foreign dump an operator placed there)
+#                   export-<ref>/<ts>, or import/<org slug>/<name> for a v1 or foreign dump an operator placed there),
+#                   ROTATE_KEYS (1: an import with new keys, step 4b)
 # Sequence:
 #   1. verifies the backup's MANIFEST (sizes and sha256); a missing or unlisted file or any mismatch is refused
 #      before anything changes (exit 1); so is a storage archive holding anything but plain files and directories
@@ -19,6 +20,10 @@
 #      project's core created is moved aside before step 3 (it would keep --clean from dropping schema selfbase) and
 #      dropped after it (moved back if step 3 fails), so core adopts the restored database at its next start and
 #      applies 0002+
+#   4b. ROTATE_KEYS=1: every row of auth.refresh_tokens and auth.sessions (where the dump has them) is deleted right
+#      after step 3 commits, while core, rest, fn and pooler are still stopped, so no session the backup carried ever
+#      meets a core signing with the new keys. pg_restore owns step 3's transaction, so this is the next one; when it
+#      fails the job fails (exit 5) and control does not start the project
 #   5. the storage volume: the archive is extracted into a temp dir inside the volume (owner: the volume's, modes from
 #      the umask, never the archive's), checked again for anything but files and directories, then swapped in (a
 #      failure here, after the database was restored: exit 3)
@@ -31,6 +36,8 @@ rel=${RESTORE_DIR:?RESTORE_DIR is required}
 [[ $rel =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)?$ || $rel =~ ^import/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] && [[ ! /$rel/ =~ /\.\.?/ ]] ||
   { echo "restore: RESTORE_DIR must be one or two plain path segments, or import/<a>/<b>" >&2; exit 2; }
 dir=/backups/$rel
+rotate=${ROTATE_KEYS:-0}
+[[ $rotate =~ ^[01]$ ]] || { echo "restore: ROTATE_KEYS must be 0 or 1" >&2; exit 2; }
 storage=/data/storage
 
 [ -f "$dir/MANIFEST" ] || { echo "restore: there is no backup $rel (no MANIFEST)" >&2; exit 1; }
@@ -106,6 +113,16 @@ if [ "$v1" = 1 ]; then
   else
     echo "restore: WARNING: the old platform ledger is left in schema $HOLD; the restore itself succeeded and core adopts"       "the database at its next start; drop it by hand: drop schema $HOLD cascade" >&2
   fi
+fi
+if [ "$rotate" = 1 ]; then
+  # step 3 is committed: the cleanup trap must neither undo the cron or ledger steps nor call this a storage failure
+  q -c "do \$\$ begin
+    if to_regclass('auth.refresh_tokens') is not null then delete from auth.refresh_tokens; end if;
+    if to_regclass('auth.sessions') is not null then delete from auth.sessions; end if;
+  end \$\$" || { trap - EXIT
+    echo "restore: FAILED: the DATABASE WAS RESTORED from $rel but its sessions could not be deleted (ROTATE_KEYS); delete this project, then import again" >&2
+    exit 5; }
+  echo "restore: the restored sessions are deleted (ROTATE_KEYS)"
 fi
 db_done=1
 echo "restore: database restored (cron jobs as in the backup)"

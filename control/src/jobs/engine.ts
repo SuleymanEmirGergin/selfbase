@@ -32,7 +32,7 @@ export type JobCtx = { db: pg.Pool; provisioner: Provisioner; job: Job; project:
   log(event: string, fields?: Record<string, unknown>): Promise<void> }
 /** retry: false for a step that polls on its own budget; its first failure fails the job */
 export type Step = { name: string; retry?: boolean; run(ctx: JobCtx): Promise<void> }
-type Def = { type: string; lane: Lane; steps: Step[]; onFail?: (ctx: JobCtx, error: Error) => Promise<void> }
+type Def = { type: string; lane: Lane; steps: Step[]; onFail?: (ctx: JobCtx, error: Error) => Promise<void>; version: number }
 
 export type WorkerDeps = { db: pg.Pool; provisioner: Provisioner; probe?: JobCtx['probe']; waits?: Partial<Waits>
   coreUrl?: JobCtx['coreUrl']
@@ -54,8 +54,12 @@ export const DESIRED_RUNNING = ['ACTIVE_HEALTHY', 'ACTIVE_UNHEALTHY', 'COMING_UP
 /** The step names of a job type, in order (Studio shows them). */
 export const stepsOf = (type: string): string[] => defs.get(type)?.steps.map((s) => s.name) ?? []
 
-export function defineJob(type: string, lane: Lane, steps: Step[], opts: { onFail?: Def['onFail'] } = {}): void {
-  defs.set(type, { type, lane, steps, onFail: opts.onFail })
+/**
+ * `version`: raise it when a change to `steps` must not meet a job a previous control left in flight (jobs.step is an
+ * index, so the job would resume at another step). Such a job fails instead; one that never started runs the new steps.
+ */
+export function defineJob(type: string, lane: Lane, steps: Step[], opts: { onFail?: Def['onFail']; version?: number } = {}): void {
+  defs.set(type, { type, lane, steps, onFail: opts.onFail, version: opts.version ?? 1 })
 }
 
 function checkPayload(v: unknown, path: string): void {
@@ -76,10 +80,11 @@ async function insertJob(db: Db, j: EnqueueInput, ifIdle: boolean): Promise<stri
   const def = defs.get(j.type)
   if (!def) throw new Error(`unknown job type ${j.type}`)
   checkPayload(j.payload, 'payload')
+  const payload = def.version === 1 ? j.payload : { ...j.payload, job_version: def.version }
   return (await db.query(
     `insert into control.jobs (type, project_id, lane, step, payload, created_by) select $1, $2, $3, '0', $4, $5
      where not $6 or not exists (select 1 from control.jobs where project_id = $2 and status in ('pending', 'running')) returning id`,
-    [j.type, j.projectId ?? null, def.lane, j.payload, j.createdBy, ifIdle],
+    [j.type, j.projectId ?? null, def.lane, payload, j.createdBy, ifIdle],
   )).rows[0]?.id ?? null
 }
 
@@ -184,8 +189,20 @@ export function startWorkers(deps: WorkerDeps): { stop(): Promise<void> } {
       await c.query('commit')
     }
     if (!def) return fail('-', new Error(`unknown job type ${job.type}`))
+    const at = Number(job.step ?? 0)
+    if ((job.payload.job_version ?? 1) !== def.version) {
+      if (at > 0) {
+        return fail(def.steps[at]?.name ?? '-', new Error(`the ${job.type} job was started by an earlier version of control whose steps differ, `
+          + 'so it cannot resume safely: start it again (an import: delete this project, then import again)'))
+      }
+      // not started yet: it runs this version's steps, and resumes under them after a restart
+      job.payload = { ...job.payload, job_version: def.version }
+      await c.query(`update control.jobs set payload = $2 where id = $1`, [job.id, job.payload])
+    } else if (at > 0 && at >= def.steps.length) {
+      return fail('-', new Error(`the ${job.type} job is past its last step and cannot resume`))
+    }
 
-    for (let i = Number(job.step ?? 0); i < def.steps.length; i++) {
+    for (let i = at; i < def.steps.length; i++) {
       if (stopping) return
       const step = def.steps[i]
       for (;;) {
