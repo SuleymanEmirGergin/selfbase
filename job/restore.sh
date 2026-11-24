@@ -328,7 +328,8 @@ stop_restore() {
 t="$storage/\\restoring-$$"
 rm -rf "$t"
 mkdir "$t"
-watched '' tar --no-same-owner --no-same-permissions -xzf "$dir/storage.tar.gz" -C "$t" ||
+# --no-unquote: GNU tar reads a backslash in a name it is given (-C too) as an escape
+watched '' tar --no-same-owner --no-same-permissions --no-unquote -xzf "$dir/storage.tar.gz" -C "$t" ||
   { echo "restore: $rel/storage.tar.gz could not be extracted; nothing was changed" >&2; exit 1; }
 [ -z "$(find "$t" ! -type f ! -type d -print -quit)" ] ||
   { echo "restore: the extracted storage holds something other than files and directories; nothing was changed" >&2; exit 1; }
