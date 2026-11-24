@@ -1223,6 +1223,11 @@ yeni bir projeye `--from-empty` ile bir migration uygulandı, tablo oluştu, Pos
   yüzden bir core başka bir projenin core'unun adını çözebilir ve onun `:8080`'ine ulaşır. Bu, o projenin
   zaten herkese açık adresinin sunduğu şey. Yönetim portu (`:8081`) başka projeden `403` döner,
   veritabanlarına ulaşılamaz (`docs/proofs/wave1-cutover.md`, "Isolation").
+- **fn sunucunun kendisine ulaşabiliyor.** Proje ağları üçe bölünüyor: kontrol ve core'un yönetim portu
+  fn'den, rest'ten ve db'den görünmüyor. Docker 28 ve sonrasında db, rest ve pooler ne internete ne
+  sunucuya çıkabiliyor. fn'in ise dışarı çıkması gerekiyor, bu yüzden sunucunun kendi portlarına da
+  ulaşabiliyor. Bunu kapatmak istersen sunucuya eklenecek iki güvenlik duvarı kuralı
+  `docs/network-isolation.md`'de. selfbase sunucunun güvenlik duvarına dokunmuyor.
 - **`/rest/v1/` `apikey` olmadan 200 dönüyor.** PostgREST'in kök adresi (şemanın OpenAPI açıklaması)
   anahtarsız isteğe de cevap veriyor. Tablolardaki veri yine RLS ile korunur.
 - **Yeni bir micro projede `/rest/v1/` kökü 500 dönüyor** (`canceling statement due to statement
