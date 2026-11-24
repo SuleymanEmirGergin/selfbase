@@ -539,6 +539,8 @@ sql db-empty "update cron.job set active = true where jobname = 'e_job';
 JOB_ENV=(-e BACKUP_SUBDIR=eslow)
 eslow=$(job db-empty "$P-empty-storage" bash /scripts/backup.sh | tail -n1); eslow=${eslow#backup: wrote }
 sql db-empty 'drop materialized view public.e_slow; drop function public.e_nap(); drop table public.knob3' > /dev/null
+# the brim restore above restored $small, whose e_marker eslow now holds too: live, a value eslow does not hold
+sql db-empty "update public.e_marker set v = 'after-backup'" > /dev/null
 sql db-empty 'create database e_other' > /dev/null
 others() { sql db-empty "select count(*) from pg_stat_activity where datname = 'e_other'"; }
 compose exec -T db-empty psql -XAtq -U postgres -d e_other -c 'select pg_sleep(120)' > /dev/null 2>&1 & other=$!
