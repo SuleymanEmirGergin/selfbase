@@ -19,12 +19,15 @@ import type { Env } from '../session.ts'
 export const platformAuth = new Hono<Env>()
 
 /** Calls core's auth router in-process, with the caller's connection and X-Forwarded-For (rate limits, bans). */
-function callCore(c: Context, method: string, path: string, opts: { body?: string; bearer?: string } = {}) {
+// endCallerSession: PUT /user ends the caller's own session too, in its password transaction (core reads it from the
+// in-process env, which no request can set)
+function callCore(c: Context, method: string, path: string, opts: { body?: string; bearer?: string; endCallerSession?: boolean } = {}) {
   const headers = new Headers({ 'content-type': 'application/json' })
   const xff = c.req.header('x-forwarded-for')
   if (xff) headers.set('x-forwarded-for', xff)
   if (opts.bearer) headers.set('authorization', opts.bearer)
-  return coreAuth.fetch(new Request(`http://core${path}`, { method, headers, body: opts.body }), c.env)
+  const env = opts.endCallerSession ? { ...(c.env as object), endCallerSession: true } : c.env
+  return coreAuth.fetch(new Request(`http://core${path}`, { method, headers, body: opts.body }), env)
 }
 
 /** core's GoTrue error {code, error_code, msg} as control's {error, message}. */
@@ -150,11 +153,10 @@ platformAuth.put('/auth/v1/user', async (c) => {
     const check = await passOn(await callCore(c, 'POST', '/token?grant_type=password', { body: JSON.stringify({ email, password: b.current_password }) }))
     await revokeSession((await verify((await check.json()).access_token)).session_id!)
   }
-  const res = await passOn(await callCore(c, 'PUT', '/user', { body: JSON.stringify({ password: b.password }), bearer }))
-  // a recovery link sets one password: its session ends with the reset and the user signs in fresh (Studio's reset
+  // a recovery link sets one password: its session ends in the same locked transaction as the write, so a second PUT
+  // with the same link (a stolen copy racing the owner) finds it revoked; the user signs in fresh (Studio's reset
   // screen sends them to the sign-in screen)
-  if (recovery && claims.session_id) await revokeSession(claims.session_id)
-  return res
+  return passOn(await callCore(c, 'PUT', '/user', { body: JSON.stringify({ password: b.password }), bearer, endCallerSession: recovery }))
 })
 
 // ---- personal access tokens (org.tokens: every user, for their own tokens) ----

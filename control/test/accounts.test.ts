@@ -506,6 +506,36 @@ describe('the password route', () => {
     expect((await put(await recoveryAccess(), { password: PASSWORD })).status).toBe(200)
   })
 
+  test('C: two PUTs racing with one recovery token: exactly one sets a password, and the session ends with it', async () => {
+    const access = await recoveryAccess()
+    const sid = await sessionOfJwt(access)
+    // the first password write sleeps before it commits, so the second PUT is already queued on the user's lock
+    await pool.query(`create table if not exists public.c_hold (user_id uuid primary key)`)
+    await pool.query(`create or replace function public.c_hold() returns trigger language plpgsql as $$
+      begin delete from public.c_hold where user_id = new.id; if found then perform pg_sleep(1); end if; return new; end $$`)
+    await pool.query(`create or replace trigger c_hold after update of encrypted_password on auth.users for each row execute function public.c_hold()`)
+    let statuses: number[]
+    try {
+      await pool.query(`insert into public.c_hold select id from auth.users where email = $1`, [OWNER])
+      statuses = (await Promise.all([put(access, { password: PASSWORD }), put(access, { password: 'a-racing-password-1' })]))
+        .map((r) => r.status)
+    } finally {
+      await pool.query('drop trigger if exists c_hold on auth.users')
+      await pool.query('drop function if exists public.c_hold()')
+      await pool.query('drop table if exists public.c_hold')
+    }
+    expect(statuses.filter((s) => s === 200)).toHaveLength(1)
+    expect((await pool.query('select 1 from auth.refresh_tokens where session_id = $1 and not revoked', [sid])).rowCount).toBe(0)
+    // back to the password the other tests use, whichever won
+    resetRateLimits()
+    if (statuses[1] === 200) {
+      const jwt = accessOf(await login(OWNER, 'a-racing-password-1'))
+      expect((await put(jwt, { password: PASSWORD, current_password: 'a-racing-password-1' })).status).toBe(200)
+    }
+    resetRateLimits()
+    expect((await login(OWNER, PASSWORD)).length).toBeGreaterThan(0)
+  })
+
   test('a token minted before the absolute deadline is refused after it, and so is an idle session', async () => {
     const access = await recoveryAccess()
     const sid = await sessionOfJwt(access)

@@ -141,8 +141,10 @@ router.put('/user', async (c) => {
     // first, so the S4 lock comes before the row writes (its order); under it the caller's session must still be
     // live, or a reset that revoked it during the hash above would lose to this write
     await lockLiveSession(tx, user.id, claims.session_id)
-    // the caller's session stays
-    if (hash) await endSessionsForNewPassword(tx, user.id, claims.session_id ?? null)
+    // the caller's session stays, except where control's reset route says it ends too (a recovery link sets one
+    // password): an in-process binding, never a request's header or body, so only control can set it
+    const endCaller = (c.env as { endCallerSession?: boolean } | undefined)?.endCallerSession === true
+    if (hash) await endSessionsForNewPassword(tx, user.id, endCaller ? null : claims.session_id ?? null)
     if (data !== undefined)
       // GoTrue merges top-level keys; a null value removes the key
       await tx.query(
