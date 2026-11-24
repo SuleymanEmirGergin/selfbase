@@ -24,7 +24,7 @@ beforeAll(async () => {
   dev = await user('dev@example.test')
   await join(acme.id, owner.id, 'owner')
   await join(acme.id, dev.id, 'developer')
-  p = await project(acme.id, { name: 'corteqs', size: 'small' })
+  p = await project(acme.id, { name: 'shop', size: 'small' })
   fake.running(p.ref, 'test')
 })
 beforeEach(() => resetRateLimits())
@@ -182,7 +182,7 @@ test('capacity numbers add up (single organization)', async () => {
   const running = c.projects.filter((x: any) => x.status !== 'INACTIVE' && x.status !== 'REMOVED')
   expect(c.used_mb).toBe(running.reduce((s: number, x: any) => s + x.cap_mb, 0))
   expect(c.free_mb).toBe(c.budget_mb - c.reserved_mb - c.job_slot_mb - c.used_mb)
-  expect(c.projects.find((x: any) => x.ref === p.ref)).toEqual({ ref: p.ref, name: 'corteqs', size: 'small', cap_mb: projectCapMb('small'),
+  expect(c.projects.find((x: any) => x.ref === p.ref)).toEqual({ ref: p.ref, name: 'shop', size: 'small', cap_mb: projectCapMb('small'),
     status: 'ACTIVE_HEALTHY', mem_usage_mb: 0 })
   expect(c).toMatchObject({ new_hosts_this_week: expect.any(Number), max_new_hosts_per_week: config.maxNewHostsPerWeek })
 })

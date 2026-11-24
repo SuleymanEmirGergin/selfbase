@@ -70,7 +70,7 @@ const postForm = (token: string, f: FormData | ReadableStream, headers: Record<s
     ...(f instanceof ReadableStream ? { duplex: 'half' } : {}) } as RequestInit)
 const envBlob = (text: string) => new Blob([text], { type: 'text/plain' })
 const importFields = (over: Record<string, string | Blob> = {}) =>
-  ({ organization_slug: 'acme', name: 'imported', size: 'micro', backup_dir: 'import/acme/corteqs-v1', ...over })
+  ({ organization_slug: 'acme', name: 'imported', size: 'micro', backup_dir: 'import/acme/v1-dump', ...over })
 // helpers' project() has a default domain but no host slot; ensure needs one
 const slotted = async (o: Parameters<typeof project>[1]) => {
   const p = await project(acme.id, o)
@@ -127,7 +127,7 @@ describe('import', () => {
     expect(out.ignored).toEqual(expect.arrayContaining(['POSTGRES_PASSWORD', 'PANEL_ADMIN_PASSWORD_HASH']))
     const p = (await pool.query('select * from control.projects where ref = $1', [out.project.ref])).rows[0]
     expect((await pool.query('select type, payload from control.jobs where id = $1', [out.job_id])).rows[0])
-      .toEqual({ type: 'project.import', payload: { backup_dir: 'import/acme/corteqs-v1', job_version: 2 } })
+      .toEqual({ type: 'project.import', payload: { backup_dir: 'import/acme/v1-dump', job_version: 2 } })
 
     workers()
     expect((await finished(out.job_id)).status).toBe('succeeded')
@@ -136,7 +136,7 @@ describe('import', () => {
     expect(fake.callsOf('stop')[0].args).toEqual([p.ref, FOUR])
     expect(fake.callsOf('start')[0].args).toEqual([p.ref, FOUR])
     const [ref, type, args, env] = fake.callsOf('runJob')[0].args
-    expect([ref, type, args]).toEqual([p.ref, 'restore', { dir: 'import/acme/corteqs-v1' }])
+    expect([ref, type, args]).toEqual([p.ref, 'restore', { dir: 'import/acme/v1-dump' }])
     const s = await getSecrets(pool, p)
     expect(env).toEqual({ PGHOST: 'db', PGPASSWORD: s.POSTGRES_PASSWORD })
     expect((await row(p.id)).status).toBe('ACTIVE_HEALTHY')
@@ -303,7 +303,7 @@ describe('S1: an import never shares live keys', () => {
     expect(res.status).toBe(202)
     const out = await res.json()
     expect((await pool.query('select payload from control.jobs where id = $1', [out.job_id])).rows[0].payload)
-      .toEqual({ backup_dir: 'import/acme/corteqs-v1', rotate_keys: true, job_version: 2 })
+      .toEqual({ backup_dir: 'import/acme/v1-dump', rotate_keys: true, job_version: 2 })
     adminSeen.length = 0
     fake.jobResult = () => ({ status: 'succeeded', exitCode: 0, tail: ROTATED_TAIL })
     workers()
@@ -357,7 +357,7 @@ describe('backup_dir belongs to the caller', () => {
       return { status: res.status, body: await res.json() }
     }
     const unknownRef = 'zzzzzzzzzzzzzzzzzzzz'
-    const refused404 = [`${theirs.ref}/20261121-031500`, `export-${theirs.ref}/20261121-031500`, 'import/other/corteqs-v1',
+    const refused404 = [`${theirs.ref}/20261121-031500`, `export-${theirs.ref}/20261121-031500`, 'import/other/v1-dump',
       `${unknownRef}/20261121-031500`, `export-${unknownRef}/20261121-031500`, 'import/nope/x']
     const bodies = []
     for (const d of refused404) {
@@ -372,7 +372,7 @@ describe('backup_dir belongs to the caller', () => {
       expect(r.status, d).toBe(400)
       expect(r.body.error).toBe('invalid_backup_dir')
     }
-    for (const d of [`${mine.ref}/20261121-031500`, `export-${mine.ref}/20261121-031500`, `${gone.ref}/20261121-031500`, 'import/acme/corteqs-v1']) {
+    for (const d of [`${mine.ref}/20261121-031500`, `export-${mine.ref}/20261121-031500`, `${gone.ref}/20261121-031500`, 'import/acme/v1-dump']) {
       expect((await status(d)).status, d).toBe(202)
     }
   })

@@ -237,12 +237,12 @@ JOB_ENV=(-e BACKUP_SUBDIR=v1)
 last=$(job db-v1 "$P-v1-storage" bash /scripts/backup.sh | tail -n1)
 v1ts=${last#backup: wrote v1/}
 # the drop area for v1 dumps: import/<org slug>/<name>
-in_backups "mkdir -p /backups/import/acme && mv /backups/v1/$v1ts /backups/import/acme/corteqs-v1"
+in_backups "mkdir -p /backups/import/acme && mv /backups/v1/$v1ts /backups/import/acme/v1-dump"
 # the hold schema cannot be dropped: the restore still succeeds and the old ledger is never moved back over it
 sql db "create function public.block_hold_drop() returns event_trigger language plpgsql as \$\$ begin
   if current_query() ilike '%selfbase_restore_hold%cascade%' then raise exception 'blocked by the test'; end if; end \$\$;
   create event trigger block_hold_drop on ddl_command_start execute function public.block_hold_drop()" > /dev/null
-JOB_ENV=(-e RESTORE_DIR=import/acme/corteqs-v1)
+JOB_ENV=(-e RESTORE_DIR=import/acme/v1-dump)
 rc=0; out=$(job db "$P-storage" bash /scripts/restore.sh 2>&1) || rc=$?
 check 'a v1 backup restores into a migrated database' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
 check 'the ledger is gone from selfbase after a v1 restore' [ "$(sql db "select to_regclass('selfbase.platform_migrations') is null")" = t ]
