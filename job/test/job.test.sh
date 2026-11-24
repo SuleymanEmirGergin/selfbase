@@ -248,6 +248,28 @@ rc=0; out=$(job db "$P-storage" bash /scripts/restore.sh 2>&1) || rc=$?
 check 'I1: sessions that cannot be deleted fail the restore with exit 5' [ "$rc" = 5 ]
 check 'I1: that failure says the database was restored and to import again' grep -q 'DATABASE WAS RESTORED .* sessions could not be deleted .*delete this project, then import again' <<< "$out"
 sql db "drop trigger keep_tokens on auth.refresh_tokens; drop function public.keep_tokens()" > /dev/null
+# a delete the dump turns into a silent no-op (a row trigger returning NULL, a DO INSTEAD rule): counted, so exit 5
+silent() { # <name> <create sql> <drop sql>; the rotating restore above emptied the tables: a row each to delete
+  sql db "insert into auth.refresh_tokens (token, session_id) values ('$1-token', gen_random_uuid());
+    insert into auth.one_time_tokens (user_id, token_type, token_hash, relates_to)
+      values ('22222222-2222-2222-2222-222222222222', 'recovery_token', '$1-hash', 'u@example.test') on conflict do nothing; $2" > /dev/null
+  JOB_ENV=(-e "BACKUP_SUBDIR=$1")
+  local b; b=$(job db "$P-storage" bash /scripts/backup.sh | tail -n1)
+  sql db "$3" > /dev/null
+  JOB_ENV=(-e "RESTORE_DIR=${b#backup: wrote }" -e ROTATE_KEYS=1)
+  rc=0; out=$(job db "$P-storage" bash /scripts/restore.sh 2>&1) || rc=$?
+  sql db "$3" > /dev/null
+}
+silent nulltrig "create function public.skip_delete() returns trigger language plpgsql as \$\$ begin return null; end \$\$;
+  create trigger skip_delete before delete on auth.refresh_tokens for each row execute function public.skip_delete()" \
+  "drop trigger if exists skip_delete on auth.refresh_tokens; drop function if exists public.skip_delete()"
+check 'R2: a delete a BEFORE DELETE trigger skips fails the restore with exit 5' [ "$rc" = 5 ]
+check 'R2: and does not say the sessions are deleted' bash -c '! grep -q "sessions are deleted" <<< "$1"' _ "$out"
+check 'R2: the count caught it (names auth.refresh_tokens)' grep -q 'auth.refresh_tokens still has rows after the delete' <<< "$out"
+silent rule "create rule keep_links as on delete to auth.one_time_tokens do instead nothing" \
+  "drop rule if exists keep_links on auth.one_time_tokens"
+check 'R2: a delete a DO INSTEAD rule swallows fails the restore with exit 5' [ "$rc" = 5 ]
+check 'R2: the count caught it (names auth.one_time_tokens)' grep -q 'auth.one_time_tokens still has rows after the delete' <<< "$out"
 # a foreign dump with neither table: nothing to delete, no error (into a database with pg_cron, as every project's is)
 sql db-empty "create extension if not exists pg_cron" > /dev/null
 JOB_ENV=(-e BACKUP_SUBDIR=empty)
