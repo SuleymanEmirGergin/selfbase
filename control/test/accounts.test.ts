@@ -425,44 +425,38 @@ describe('password reset', () => {
     expect(frag.get('type')).toBe('recovery')
     const access = frag.get('access_token')!
 
-    const put = await app.request('/platform/auth/v1/user', {
+    const putWith = (body: unknown) => app.request('/platform/auth/v1/user', {
       method: 'PUT',
       headers: { authorization: `Bearer ${access}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ password: 'a-brand-new-password' }),
+      body: JSON.stringify(body),
     })
+    // refusals first: they leave the recovery session as it was
+    const short = await putWith({ password: 'short' })
+    expect(short.status).toBe(422)
+    expect(await short.json()).toEqual({ error: 'weak_password', message: expect.any(String) })
+    expect((await putWith({ email: 'hijack@example.test' })).status).toBe(400)
+    // only the password is passed on to core
+    const put = await putWith({ password: 'a-brand-new-password', email: 'hijack@example.test', data: { a: 1 } })
     expect(put.status).toBe(200)
+    expect((await pool.query(`select email, raw_user_meta_data from auth.users where email in ($1, 'hijack@example.test')`, [OWNER])).rows)
+      .toEqual([{ email: OWNER, raw_user_meta_data: {} }])
     // the reset ended the other sessions: the old access cookie and the old refresh cookie are dead
     expect((await as(old, 'GET', '/platform/me')).status).toBe(401)
     expect((await app.request('/platform/refresh', { method: 'POST', headers: { cookie: oldRefresh, origin: ORIGIN } })).status).toBe(401)
-    // only the password is passed on to core
-    const other = await app.request('/platform/auth/v1/user', {
-      method: 'PUT',
-      headers: { authorization: `Bearer ${access}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ email: 'hijack@example.test' }),
-    })
-    expect(other.status).toBe(400)
-    await app.request('/platform/auth/v1/user', {
-      method: 'PUT',
-      headers: { authorization: `Bearer ${access}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ password: 'a-brand-new-password', email: 'hijack@example.test', data: { a: 1 } }),
-    })
-    expect((await pool.query(`select email, raw_user_meta_data from auth.users where email in ($1, 'hijack@example.test')`, [OWNER])).rows)
-      .toEqual([{ email: OWNER, raw_user_meta_data: {} }])
+    // C: and the recovery session itself: the link's token sets one password, then the user signs in fresh
+    const recoverySession = (await coreVerify(access)).session_id
+    expect((await pool.query('select 1 from auth.refresh_tokens where session_id = $1 and not revoked', [recoverySession])).rowCount).toBe(0)
+    expect((await putWith({ password: 'a-second-new-password' })).status).toBe(401)
     resetRateLimits()
-    expect((await login(OWNER, 'a-brand-new-password')).length).toBeGreaterThan(0)
-    const short = await app.request('/platform/auth/v1/user', {
-      method: 'PUT',
-      headers: { authorization: `Bearer ${access}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ password: 'short' }),
-    })
-    expect(short.status).toBe(422)
-    expect(await short.json()).toEqual({ error: 'weak_password', message: expect.any(String) })
+    const fresh = await login(OWNER, 'a-brand-new-password')
+    expect(fresh.length).toBeGreaterThan(0)
     // back to the password the other tests use
-    await app.request('/platform/auth/v1/user', {
+    const freshAccess = decodeURIComponent(fresh.split('; ').find((c) => c.startsWith('__Host-sb_studio='))!.split('=')[1])
+    expect((await app.request('/platform/auth/v1/user', {
       method: 'PUT',
-      headers: { authorization: `Bearer ${access}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ password: PASSWORD }),
-    })
+      headers: { authorization: `Bearer ${freshAccess}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ password: PASSWORD, current_password: 'a-brand-new-password' }),
+    })).status).toBe(200)
   })
 })
 

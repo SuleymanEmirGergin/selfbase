@@ -141,7 +141,8 @@ platformAuth.put('/auth/v1/user', async (c) => {
     if (claims.session_id) await revokeSession(claims.session_id)
     throw new ApiError(401, 'unauthorized', 'Unauthorized')
   }
-  if (!claims.amr?.some((a) => a?.method === 'recovery')) {
+  const recovery = claims.amr?.some((a) => a?.method === 'recovery')
+  if (!recovery) {
     if (typeof b.current_password !== 'string')
       throw new ApiError(403, 'reauthentication_needed', 'current_password is required without a recovery link')
     // through core's password grant, so its sign-in rate limit and ban check apply; the session it starts ends at once
@@ -149,7 +150,11 @@ platformAuth.put('/auth/v1/user', async (c) => {
     const check = await passOn(await callCore(c, 'POST', '/token?grant_type=password', { body: JSON.stringify({ email, password: b.current_password }) }))
     await revokeSession((await verify((await check.json()).access_token)).session_id!)
   }
-  return passOn(await callCore(c, 'PUT', '/user', { body: JSON.stringify({ password: b.password }), bearer }))
+  const res = await passOn(await callCore(c, 'PUT', '/user', { body: JSON.stringify({ password: b.password }), bearer }))
+  // a recovery link sets one password: its session ends with the reset and the user signs in fresh (Studio's reset
+  // screen sends them to the sign-in screen)
+  if (recovery && claims.session_id) await revokeSession(claims.session_id)
+  return res
 })
 
 // ---- personal access tokens (org.tokens: every user, for their own tokens) ----
