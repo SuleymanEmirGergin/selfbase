@@ -1,7 +1,11 @@
-import { beforeAll, expect, test } from 'vitest'
+import { beforeAll, describe, expect, test } from 'vitest'
+import { app } from '../src/app.ts'
+import { resetRateLimits } from '../src/core.ts'
 import { pool } from '../src/db.ts'
+import { reconcileOnce } from '../src/reconcile.ts'
 import { createConfirmedUser } from '../src/routes/platform-auth.ts'
-import { as, login, resetDashboard, withToken } from './helpers.ts'
+import { FakeProvisioner } from './fake-provisioner.ts'
+import { ORIGIN, as, login, resetDashboard, withToken } from './helpers.ts'
 
 const PASSWORD = 'correct-horse-battery'
 let cookie: string
@@ -68,4 +72,75 @@ test('audit-log pages by id, newest first', async () => {
   const next = await (await withToken(token, 'GET', `/platform/organizations/acme/audit-log?limit=2&before=${first[1].id}`)).json()
   expect(next.map((r: any) => r.id)).toEqual([first[1].id - 1])
   expect((await withToken(token, 'GET', '/platform/organizations/acme/audit-log?before=2026-01-01')).status).toBe(400)
+})
+
+describe('S6: anonymous requests cannot grow the audit log', () => {
+  const anon = (path: string, body: unknown, ip = '203.0.113.7') => app.request(path, { method: 'POST',
+    headers: { 'content-type': 'application/json', origin: ORIGIN, 'x-forwarded-for': ip }, body: JSON.stringify(body) })
+
+  test('an anonymous write to an unknown path under a public prefix writes no row', async () => {
+    resetRateLimits()
+    await pool.query(`truncate control.audit_log`)
+    for (const path of ['/platform/auth/v1/nope', '/platform/auth/v1/x/y', '/platform/auth/v1/token'])
+      expect((await anon(path, { k0: 0 })).status, path).toBe(404)
+    expect(await rows()).toEqual([])
+  })
+
+  test('a row keeps at most 32 body key names, each cut to 64 characters', async () => {
+    resetRateLimits()
+    await pool.query(`truncate control.audit_log`)
+    const body = Object.fromEntries([['k'.repeat(100), 1], ...Array.from({ length: 5000 }, (_, i) => [`k${i}`, i])])
+    expect((await anon('/platform/login', body)).status).toBe(400)
+    const [row, ...rest] = await rows()
+    expect(rest).toEqual([])
+    expect(row.details.body_keys).toHaveLength(32)
+    expect(row.details.body_keys[0]).toBe('k'.repeat(64))
+    expect(row.details.body_keys.every((k: string) => k.length <= 64)).toBe(true)
+    // a signed-in caller's row is capped the same way
+    await as(cookie, 'POST', '/platform/access-tokens', body)
+    expect((await rows()).at(-1).details.body_keys).toHaveLength(32)
+  })
+
+  test('the 6th failed sign-in from one IP is refused (429) and writes no row', async () => {
+    resetRateLimits()
+    await pool.query(`truncate control.audit_log`)
+    const statuses = []
+    for (let i = 0; i < 6; i++) statuses.push((await anon('/platform/login', { email: 'owner@example.test', password: 'wrong-password-value' }, '203.0.113.8')).status)
+    expect(statuses).toEqual([400, 400, 400, 400, 400, 429])
+    expect((await rows()).map((r) => r.details.status)).toEqual([400, 400, 400, 400, 400])
+  })
+
+  test('other public writes are limited per IP before audit', async () => {
+    resetRateLimits()
+    await pool.query(`truncate control.audit_log`)
+    const statuses = []
+    for (let i = 0; i < 6; i++) statuses.push((await anon('/platform/invitations/accept', { token: 'x', password: 'y' }, '203.0.113.9')).status)
+    expect(statuses.slice(0, 5).every((s) => s !== 429)).toBe(true)
+    expect(statuses[5]).toBe(429)
+    expect((await rows())).toHaveLength(5)
+  })
+
+  test('login and refresh refused before core (bad Origin, no cookie) write no row, however often', async () => {
+    resetRateLimits()
+    await pool.query(`truncate control.audit_log`)
+    const post = (path: string, headers: Record<string, string>) => app.request(path, { method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers }, body: '{}' })
+    const shapes: [string, Record<string, string>, number][] = [
+      ['/platform/login', {}, 403],
+      ['/platform/login', { origin: 'https://elsewhere.example.test' }, 403],
+      ['/platform/refresh', {}, 403],
+      ['/platform/refresh', { origin: 'https://elsewhere.example.test' }, 403],
+      ['/platform/refresh', { origin: ORIGIN }, 401],
+    ]
+    for (const [path, headers, status] of shapes)
+      for (let i = 0; i < 20; i++) expect((await post(path, headers)).status, `${path} ${JSON.stringify(headers)}`).toBe(status)
+    expect(await rows()).toEqual([])
+  })
+
+  test('the reconcile pass prunes audit rows older than 90 days', async () => {
+    await pool.query(`truncate control.audit_log`)
+    await pool.query(`insert into control.audit_log (actor, action, at) values ('a', 'old', now() - interval '91 days'), ('a', 'recent', now() - interval '89 days')`)
+    await reconcileOnce({ db: pool, provisioner: new FakeProvisioner(), probe: async () => 'ok' })
+    expect((await rows()).map((r) => r.action)).toEqual(['recent'])
+  })
 })

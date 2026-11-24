@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { join as joinPath } from 'node:path'
 import { app } from '../src/app.ts'
 import { config } from '../src/config.ts'
+import { disk } from '../src/disk.ts'
 import { pool } from '../src/db.ts'
 import { enqueue, startWorkers } from '../src/jobs/index.ts'
 import { setProvisioner } from '../src/provisioner.ts'
@@ -58,6 +59,8 @@ beforeAll(async () => {
   vi.spyOn(process.stdout, 'write').mockImplementation(keep(process.stdout.write.bind(process.stdout)) as never)
   vi.spyOn(process.stderr, 'write').mockImplementation(keep(process.stderr.write.bind(process.stderr)) as never)
   for (const m of ['log', 'info', 'warn', 'error', 'debug'] as const) vi.spyOn(console, m).mockImplementation(keep(() => {}) as never)
+  // no core runs here to report the project's size
+  vi.spyOn(disk, 'projectBytes').mockResolvedValue(0)
 })
 afterAll(() => {
   config.maxNewHostsPerWeek = cap
@@ -120,13 +123,15 @@ test('no secret value reaches jobs, events, audit rows, responses or logs', { ti
     await request('GET', `/platform/projects/${imp.json.project.ref}`)
 
     // import of the export with its passphrase (a wrong one first), whose restore exits 10 as well
-    const pf = (passphrase: string) => {
+    const pf = (passphrase: string, rotate = 'true') => {
       const g = new FormData()
       for (const [k, v] of Object.entries({ organization_slug: 'acme', name: 'leak-export', size: 'micro',
-        backup_dir: `export-${ref}/20261122-031500`, passphrase })) g.set(k, v)
+        backup_dir: `export-${ref}/20261122-031500`, passphrase, rotate_keys: rotate })) g.set(k, v)
       return g
     }
     expect((await request('POST', '/platform/projects/import', pf('wrong leak passphrase'))).status).toBe(400)
+    // the source project is live: its keys are refused (and named nowhere), new keys are not
+    expect((await request('POST', '/platform/projects/import', pf(PASS, 'false'))).status).toBe(409)
     const pimp = await request('POST', '/platform/projects/import', pf(PASS))
     expect(pimp.status).toBe(202)
     expect(await finished(pimp.json.job_id)).toBe('failed')

@@ -2,17 +2,21 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { config } from '../src/config.ts'
 import { pool } from '../src/db.ts'
 import { newRef } from '../src/ids.ts'
-import { addDomain, allocateHost, assertRoutable, HostError, hostsOf, newHostsThisWeek, precheckHost, releaseHost, removeDomain } from '../src/hosts.ts'
+import { addDomain, allocateHost, assertRoutable, HostError, hostsOf, newHostsThisWeek, precheckHost, releaseDomains, releaseHost,
+  removeDomain } from '../src/hosts.ts'
 
 const BASE = config.baseDomain
 let orgId: string
+let orgSlug: string
 let n = 0
-const project = async () => {
+const project = async (inOrg = orgId) => {
   const ref = newRef()
   const id = (await pool.query(`insert into control.projects (ref, org_id, name, status, size, subnet) values ($1, $2, 'p', 'COMING_UP', 'micro', $3) returning id`,
-    [ref, orgId, `10.207.${Math.floor(n / 8)}.${(n++ % 8) * 32}/27`])).rows[0].id
+    [ref, inOrg, `10.207.${Math.floor(n / 8)}.${(n++ % 8) * 32}/27`])).rows[0].id
   return { projectId: id as string, ref }
 }
+const newOrg = async (slug = `o-${newRef()}`) =>
+  (await pool.query(`insert into control.organizations (slug, name) values ($1, 'o') returning id`, [slug])).rows[0].id as string
 const setControlHost = (when: string) =>
   pool.query(`insert into control.settings (key, value) values ('control_host_first_issued_at', $1)
               on conflict (key) do update set value = excluded.value`, [when])
@@ -24,7 +28,8 @@ beforeEach(async () => {
   await pool.query('delete from control.host_slots')
   await pool.query('delete from control.issued_hosts')
   await pool.query(`delete from control.settings where key = 'control_host_first_issued_at'`)
-  orgId = (await pool.query(`insert into control.organizations (slug, name) values ($1, 'o') returning id`, [`o-${newRef()}`])).rows[0].id
+  orgSlug = `o-${newRef()}`
+  orgId = await newOrg(orgSlug)
   n = 0
 })
 
@@ -49,14 +54,14 @@ describe('host slots and the weekly cap', () => {
 
   test('the pre-check refuses a create at the cap unless a free slot of its pool is there', async () => {
     await setControlHost(new Date().toISOString())
-    await precheckHost(pool, 'project')
+    await precheckHost(pool, 'project', orgId)
     const a = await project()
     await allocateHost(pool, { ...a, pool: 'project' })
     await allocateHost(pool, { ...(await project()), pool: 'project' })
-    expect((await refusal(precheckHost(pool, 'project'))).code).toBe('new_host_cap')
+    expect((await refusal(precheckHost(pool, 'project', orgId))).code).toBe('new_host_cap')
     await releaseHost(pool, a.projectId)
-    await precheckHost(pool, 'project')
-    expect((await refusal(precheckHost(pool, 'test'))).code).toBe('new_host_cap')
+    await precheckHost(pool, 'project', orgId)
+    expect((await refusal(precheckHost(pool, 'test', orgId))).code).toBe('new_host_cap')
   })
 
   test('release then allocate returns the freed hostname with isNew false, and it does not count again', async () => {
@@ -128,9 +133,119 @@ describe('host slots and the weekly cap', () => {
   })
 })
 
+describe('S2: a hostname never crosses an organization', () => {
+  afterEach(() => {
+    config.legacyHostnames = []
+    config.legacyOrgs = {}
+  })
+
+  test('a released slot keeps its org: another org gets a new host, the same org gets the slot back', async () => {
+    const a = await project()
+    const { hostname } = await allocateHost(pool, { ...a, pool: 'project' })
+    await releaseHost(pool, a.projectId)
+    // tombstone: no project, still the org's
+    expect((await pool.query('select project_id, org_id from control.host_slots where hostname = $1', [hostname])).rows[0])
+      .toEqual({ project_id: null, org_id: orgId })
+    const other = await project(await newOrg())
+    const theirs = await allocateHost(pool, { ...other, pool: 'project' })
+    expect(theirs).toEqual({ hostname: `${other.ref}.${BASE}`, isNew: true })
+    const again = await project()
+    expect(await allocateHost(pool, { ...again, pool: 'project' })).toEqual({ hostname, isNew: false })
+  })
+
+  test('a deleted project row leaves the slot to its org, not to the next org', async () => {
+    const a = await project()
+    const { hostname } = await allocateHost(pool, { ...a, pool: 'project' })
+    await pool.query('delete from control.projects where id = $1', [a.projectId])
+    const other = await project(await newOrg())
+    expect((await allocateHost(pool, { ...other, pool: 'project' })).hostname).not.toBe(hostname)
+  })
+
+  test('a free slot whose org is unknown (from before the binding) is never handed out', async () => {
+    await pool.query(`insert into control.host_slots (hostname, pool, first_issued_at) values ($1, 'project', now() - interval '30 days')`, [`orphan.${BASE}`])
+    const a = await project()
+    expect(await allocateHost(pool, { ...a, pool: 'project' })).toEqual({ hostname: `${a.ref}.${BASE}`, isNew: true })
+  })
+
+  test("the pre-check does not count another org's free slot", async () => {
+    await setControlHost(new Date().toISOString())
+    const a = await project()
+    await allocateHost(pool, { ...a, pool: 'project' })
+    await allocateHost(pool, { ...(await project()), pool: 'project' })
+    await releaseHost(pool, a.projectId)
+    await precheckHost(pool, 'project', orgId)
+    expect((await refusal(precheckHost(pool, 'project', await newOrg()))).code).toBe('new_host_cap')
+  })
+
+  test("the test host released by one org is busy for another, reused by its own", async () => {
+    const a = await project()
+    await allocateHost(pool, { ...a, pool: 'test' })
+    await releaseHost(pool, a.projectId)
+    expect((await refusal(allocateHost(pool, { ...(await project(await newOrg())), pool: 'test' }))).code).toBe('test_host_busy')
+    expect(await allocateHost(pool, { ...(await project()), pool: 'test' })).toEqual({ hostname: config.testHost, isNew: false })
+  })
+
+  test('LEGACY_HOSTNAMES binds each name to an org (host=org_slug); a bare host binds to the default org', async () => {
+    const { loadConfig } = await import('../src/config.ts')
+    const env = { ...process.env }
+    const c = loadConfig({ ...env, LEGACY_HOSTNAMES: ' Old.Example.test=acme , bare.example.test' })
+    expect(c.legacyHostnames).toEqual(['old.example.test', 'bare.example.test'])
+    expect(c.legacyOrgs).toEqual({ 'old.example.test': 'acme', 'bare.example.test': 'default' })
+    for (const bad of ['a.example.test=', 'a.example.test=Bad Slug', '=acme', 'a.example.test=acme=x'])
+      expect(() => loadConfig({ ...env, LEGACY_HOSTNAMES: bad }), bad).toThrow(/config: LEGACY_HOSTNAMES/)
+  })
+
+  test('a legacy name bound to another org is refused at add and at routing', async () => {
+    const other = await project(await newOrg())
+    const mine = await project()
+    config.legacyHostnames = [`v1.${BASE}`, `bare.${BASE}`]
+    config.legacyOrgs = { [`v1.${BASE}`]: orgSlug, [`bare.${BASE}`]: 'default' }
+    expect((await refusal(addDomain(pool, other.projectId, `v1.${BASE}`, 'legacy'))).code).toBe('legacy_not_allowed')
+    // bare: the default org only
+    expect((await refusal(addDomain(pool, mine.projectId, `bare.${BASE}`, 'legacy'))).code).toBe('legacy_not_allowed')
+    await addDomain(pool, mine.projectId, `v1.${BASE}`, 'legacy')
+    await expect(assertRoutable(pool, mine.projectId, [`v1.${BASE}`])).resolves.toBeUndefined()
+    await expect(assertRoutable(pool, other.projectId, [`v1.${BASE}`])).rejects.toThrow(/another organization/)
+    const dflt = await project((await pool.query(`select id from control.organizations where slug = 'default'`)).rows[0]?.id ?? await newOrg('default'))
+    await addDomain(pool, dflt.projectId, `bare.${BASE}`, 'legacy')
+  })
+
+  test('a custom name removed by org A is refused to org B for 30 days; A can take it back; B can after the hold', async () => {
+    const a = await project()
+    const b = await project(await newOrg())
+    await addDomain(pool, a.projectId, 'api.example.com', 'custom')
+    expect(await removeDomain(pool, a.projectId, 'api.example.com')).toBe(true)
+    const e = await refusal(addDomain(pool, b.projectId, 'api.example.com', 'custom'))
+    expect(e.code).toBe('hostname_taken')
+    expect(e.message).toMatch(/30 days/)
+    // the routing guard agrees: the name is not B's
+    await pool.query(`insert into control.project_domains (project_id, hostname, kind) values ($1, 'api.example.com', 'custom')`, [b.projectId])
+    await expect(assertRoutable(pool, b.projectId, ['api.example.com'])).rejects.toThrow(/never counted/)
+    await pool.query(`delete from control.project_domains where hostname = 'api.example.com'`)
+    // the same org takes it back within the hold
+    await addDomain(pool, a.projectId, 'api.example.com', 'custom')
+    await releaseDomains(pool, a.projectId)
+    expect(await hostsOf(pool, a.projectId)).toEqual([])
+    expect((await refusal(addDomain(pool, b.projectId, 'api.example.com', 'custom'))).code).toBe('hostname_taken')
+    await pool.query(`update control.issued_hosts set released_at = now() - interval '31 days' where hostname = 'api.example.com'`)
+    const before = await newHostsThisWeek(pool)
+    await addDomain(pool, b.projectId, 'api.example.com', 'custom')
+    expect(await newHostsThisWeek(pool)).toBe(before)
+    expect((await pool.query(`select org_id, released_at from control.issued_hosts where hostname = 'api.example.com'`)).rows[0])
+      .toEqual({ org_id: (await pool.query('select org_id from control.projects where id = $1', [b.projectId])).rows[0].org_id, released_at: null })
+    await expect(assertRoutable(pool, b.projectId, ['api.example.com'])).resolves.toBeUndefined()
+  })
+})
+
 describe('domains', () => {
-  beforeEach(() => { config.legacyHostnames = [`legacy.${BASE}`] })
-  afterEach(() => { config.legacyHostnames = [] })
+  beforeEach(() => {
+    config.legacyHostnames = [`legacy.${BASE}`]
+    config.legacyOrgs = { [`legacy.${BASE}`]: orgSlug }
+  })
+  afterEach(() => {
+    config.legacyHostnames = []
+    config.legacyOrgs = {}
+  })
 
   test('custom under the base domain is refused; a custom name elsewhere counts once, a listed legacy name never', async () => {
     const a = await project()
@@ -156,6 +271,7 @@ describe('domains', () => {
     const { hostname } = await allocateHost(pool, { ...a, pool: 'project' })
     // listed, so the refusal below is the slot's, not the legacy list's
     config.legacyHostnames.push(hostname)
+    config.legacyOrgs[hostname] = orgSlug
     await addDomain(pool, a.projectId, 'api.example.com', 'custom')
     expect((await refusal(addDomain(pool, b.projectId, 'api.example.com', 'custom'))).code).toBe('hostname_taken')
     expect((await refusal(addDomain(pool, b.projectId, hostname, 'legacy'))).code).toBe('hostname_taken')
@@ -174,6 +290,7 @@ describe('domains', () => {
     const a = await project()
     const control = new URL(config.publicUrl).host
     config.legacyHostnames.push(control, config.testHost)
+    Object.assign(config.legacyOrgs, { [control]: orgSlug, [config.testHost]: orgSlug })
     for (const h of [control, config.testHost, control.toUpperCase()])
       for (const kind of ['legacy', 'custom'] as const)
         expect((await refusal(addDomain(pool, a.projectId, h, kind))).code).toBe('hostname_taken')

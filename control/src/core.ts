@@ -19,9 +19,9 @@ process.env.PUBLIC_URL = config.publicUrl
 /** core's /auth/v1 router; control calls it in-process and never mounts it whole. */
 export const coreAuth = authMod.default
 export const { verify } = jwt
-export const { sessionActive } = sessions
+export const { revokeSession } = sessions
 export const { findByEmail, hashPassword } = users
-export const { resetRateLimits } = ratelimit
+export const { resetRateLimits, take } = ratelimit
 export const { clientIp, trustProxies } = ip
 export const closeCoreDb = coreDb.closeDb
 export const { background, smtpOptions } = mail

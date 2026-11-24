@@ -67,6 +67,22 @@ test('sends the multipart fields with the token, polls the job, prints names onl
   }
 })
 
+test('--rotate-keys sends rotate_keys=true', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sb-import-'))
+  const envPath = join(dir, '.env')
+  writeFileSync(envPath, ENV)
+  const { seen, server, url } = await stub()
+  try {
+    const { code, out } = await run(['--url', url, '--org', 'acme', '--name', 'p', '--size', 'small',
+      '--backup-dir', 'import/acme/p', '--env-file', envPath, '--rotate-keys'])
+    assert.equal(code, 0, out)
+    assert.equal(seen.fields.rotate_keys, 'true')
+  } finally {
+    server.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('an export: --passphrase - reads it from stdin and sends it instead of an env file; it is never printed', async () => {
   const { seen, server, url } = await stub()
   const pass = 'stub export passphrase value'

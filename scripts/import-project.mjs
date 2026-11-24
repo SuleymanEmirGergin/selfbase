@@ -3,6 +3,7 @@
 //   SELFBASE_ACCESS_TOKEN=sbp_... node scripts/import-project.mjs --url https://selfbase.<BASE> --org <slug> \
 //     --name <name> --size micro|small|medium --backup-dir import/<org slug>/<name> --env-file <v1 .env>
 //   ... --backup-dir export-<ref>/<ts> --passphrase -          (an export: its passphrase on stdin, or a file name)
+//   ... --rotate-keys      a new JWT secret and keys, and the copy's sessions deleted (needed while the source is live here)
 // --passphrase names where the passphrase is (a file, or - for stdin), never the passphrase itself: argv is visible to
 // every user of the machine. Give exactly one of --env-file and --passphrase.
 // --backup-dir is relative to the host backup directory: a v1 or foreign dump goes in the drop area
@@ -32,8 +33,8 @@ try {
 async function main() {
   let opts
   try {
-    opts = parseArgs({ options: Object.fromEntries(['url', 'org', 'name', 'size', 'backup-dir', 'env-file', 'passphrase']
-      .map((k) => [k, { type: 'string' }])) }).values
+    opts = parseArgs({ options: { ...Object.fromEntries(['url', 'org', 'name', 'size', 'backup-dir', 'env-file', 'passphrase']
+      .map((k) => [k, { type: 'string' }])), 'rotate-keys': { type: 'boolean' } } }).values
   } catch (e) {
     die(e.message)
   }
@@ -53,6 +54,7 @@ async function main() {
   form.set('name', opts.name)
   form.set('size', opts.size)
   form.set('backup_dir', opts['backup-dir'])
+  if (opts['rotate-keys']) form.set('rotate_keys', 'true')
   // the error names the code only: a passphrase typed in place of a file name must not be printed back
   const read = (path, what) => {
     try {

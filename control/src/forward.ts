@@ -9,7 +9,7 @@ import { coreIp, forgetCoreIp } from './core-addr.ts'
 import { ApiError } from './errors.ts'
 import { provisioner } from './provisioner.ts'
 import { DESIRED_RUNNING } from './jobs/index.ts'
-import { projectConfig } from './project-env.ts'
+import { CONFIG_DEFAULTS, projectConfig } from './project-env.ts'
 import { getSecrets } from './secrets.ts'
 import type { Env } from './session.ts'
 
@@ -34,6 +34,12 @@ const unreachable = () => new ApiError(502, 'project_unreachable', 'project is n
 /** Sends one request (`path`: /admin/..., with its query) to the project's core admin listener with its token, acting for `actor`. */
 export async function adminFetch(p: Target, actor: string, path: string, init: { method: string; headers?: Headers; body?: BodyInit | null }) {
   if (!DESIRED_RUNNING.includes(p.status)) throw new ApiError(409, 'project_not_running', `the project is ${p.status}`)
+  return adminRequest(p, actor, path, init)
+}
+
+/** adminFetch without the status check: for a job whose project is not running yet (an import's RESTORING). */
+export async function adminRequest(p: Omit<Target, 'status'>, actor: string, path: string,
+  init: { method: string; headers?: Headers; body?: BodyInit | null }) {
   const url = new URL(path, await forwardTarget.url(p.ref))
   const headers = init.headers ?? new Headers()
   headers.set('authorization', `Bearer ${(await getSecrets(pool, p)).ADMIN_TOKEN}`)
@@ -51,22 +57,46 @@ export async function adminFetch(p: Target, actor: string, path: string, init: {
   }
 }
 
-// platform schemas hold password hashes, tokens, decrypted secrets and internal queues: reading their rows is as much
-// as running SQL (/admin/users, which leaves the secrets out, stays a read)
-const PLATFORM_SCHEMAS = ['auth', 'vault', 'selfbase', 'pgsodium', 'net', 'supabase_functions', 'storage', 'realtime', 'extensions']
+// System, platform and extension schemas hold password verifiers (pg_authid), live query text (pg_stat_activity), job
+// commands with keys (cron.job), migration SQL, tokens and decrypted secrets: reading them is as much as running SQL.
+// Core reads them as the superuser, so the line is drawn here. read_only reads only user schemas: an allowlist
+// (public plus the project's PGRST_DB_SCHEMAS), minus these even when listed. /admin/users (no secrets) stays a read.
+const SYSTEM_SCHEMAS = new Set(['information_schema', 'auth', 'storage', 'realtime', 'vault', 'cron', 'net', 'pgmq', 'graphql',
+  'extensions', 'supabase_migrations', 'supabase_functions', 'selfbase', 'pgsodium', 'pgbouncer'])
+const isSystem = (schema: string) => schema.startsWith('pg_') || SYSTEM_SCHEMAS.has(schema)
+
+/** The schemas read_only may browse, lowercased. */
+async function userSchemas(projectId: string): Promise<Set<string>> {
+  const exposed = String((await projectConfig(pool, projectId)).PGRST_DB_SCHEMAS ?? CONFIG_DEFAULTS.PGRST_DB_SCHEMAS)
+  return new Set(['public', ...exposed.split(',').map((s) => s.trim().toLowerCase())].filter((s) => s && !isSystem(s)))
+}
 
 /** The admin path the way core will route it (decoded, slashes collapsed, case folded): for the permission check only. */
-function actionFor(method: string, pathname: string): Action {
+async function actionFor(method: string, url: URL, projectId: string): Promise<Action> {
   let path: string
   try {
-    path = decodeURIComponent(pathname)
+    path = decodeURIComponent(url.pathname)
   } catch {
     throw new ApiError(400, 'invalid_path', 'the path is not valid')
   }
   const canon = path.toLowerCase().replace(/\/{2,}/g, '/').replace(/\/+$/, '')
-  const schema = /^\/admin\/rows\/([^/]+)\//.exec(canon)?.[1]
-  if (canon === '/admin/sql' || (schema && PLATFORM_SCHEMAS.includes(schema))) return 'project.sql'
-  return method === 'GET' || method === 'HEAD' ? 'project.read' : 'project.write'
+  const rowSchema = /^\/admin\/rows\/([^/]+)\//.exec(canon)?.[1]
+  if (canon === '/admin/sql' || (rowSchema !== undefined && isSystem(rowSchema))) return 'project.sql'
+  // writes need developer, which has project.sql as well: only reads have a schema line to draw
+  if (method !== 'GET' && method !== 'HEAD') return 'project.write'
+  // every read that names a schema: the rows, a schema's relations (with their columns), its policies
+  const query = url.searchParams.getAll('schema')
+  let schemas: string[] = []
+  if (rowSchema !== undefined) schemas = [rowSchema]
+  // core lists `public` for no schema or an empty one
+  else if (canon === '/admin/tables') schemas = query.length ? query.map((s) => s || 'public') : ['public']
+  // no schema (or an empty one) lists every schema's policies
+  else if (canon === '/admin/policies') schemas = query.length ? query : ['']
+  if (schemas.length) {
+    const allowed = await userSchemas(projectId)
+    if (!schemas.every((s) => allowed.has(s.toLowerCase()))) return 'project.sql'
+  }
+  return 'project.read'
 }
 
 export async function forwardAdmin(c: Context<Env>, p: Target): Promise<Response> {
@@ -78,7 +108,7 @@ export async function forwardAdmin(c: Context<Env>, p: Target): Promise<Response
   // `..` (also as %2e%2e) is resolved by URL: whatever is left must still be under /admin
   if (!url.pathname.startsWith('/admin/')) throw new ApiError(404, 'not_found', 'not found')
   const method = c.req.method
-  await authorize(c, actionFor(method, url.pathname), { orgId: p.org_id, projectId: p.id })
+  await authorize(c, await actionFor(method, url, p.id), { orgId: p.org_id, projectId: p.id })
   // which admin call it was, without the query
   c.set('audit', { ...c.get('audit'), path: url.pathname })
 

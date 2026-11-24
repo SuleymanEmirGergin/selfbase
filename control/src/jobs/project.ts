@@ -5,11 +5,11 @@ import { admit, AdmissionError, type Size } from '../admission.ts'
 import { config } from '../config.ts'
 import { forgetCoreIp } from '../core-addr.ts'
 import { ApiError } from '../errors.ts'
-import { allocateHost, assertRoutable, hostsOf, precheckHost, releaseHost } from '../hosts.ts'
+import { allocateHost, assertRoutable, hostsOf, precheckHost, releaseDomains, releaseHost } from '../hosts.ts'
 import { newRef } from '../ids.ts'
 import { loadProjectEnv } from '../project-env.ts'
 import { generateProjectSecrets } from '../project-secrets.ts'
-import { getSecrets, putSecret } from '../secrets.ts'
+import { getSecrets, jwtSecretInUse, putSecret } from '../secrets.ts'
 import { allocateSubnet } from '../subnets.ts'
 import { defineJob, enqueue, DESIRED_RUNNING, type JobCtx, type Project } from './engine.ts'
 
@@ -60,15 +60,20 @@ export type CreateInput = { orgId: string; name: string; size: Size; pool: 'proj
  */
 export async function createProject(pool: pg.Pool, input: CreateInput): Promise<{ project: Project; jobId: string }> {
   const ref = newRef()
-  const given = { ...input.reuseSecrets, ...(input.dbPass ? { POSTGRES_PASSWORD: input.dbPass } : {}) }
+  const given: Record<string, string> = { ...input.reuseSecrets, ...(input.dbPass ? { POSTGRES_PASSWORD: input.dbPass } : {}) }
   try {
     generateProjectSecrets(ref, given)
   } catch (e) {
     throw new ApiError(400, 'invalid_secrets', (e as Error).message)
   }
   return withAdmission(pool, async (c) => {
+    // under the admission lock: two imports of one export cannot both pass
+    if (given.JWT_SECRET && await jwtSecretInUse(c, given.JWT_SECRET)) {
+      throw new ApiError(409, 'keys_in_use', 'This export is already live here as another project: its JWT secret and keys are in use. '
+        + 'Import it with new keys (rotate_keys), or delete the other project first.')
+    }
     await admit(c, { size: input.size })
-    await precheckHost(c, input.pool)
+    await precheckHost(c, input.pool, input.orgId)
     const version = (await c.query(`select value from control.settings where key = 'current_template_version'`)).rows[0]?.value
       ?? config.templateVersion
     let project!: Project
@@ -95,9 +100,11 @@ export const need = (ctx: JobCtx): Project => ctx.project ?? (() => { throw new 
 export const setStatus = (ctx: JobCtx, status: string) => ctx.db.query('update control.projects set status = $2 where id = $1', [need(ctx).id, status])
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-async function ensure(ctx: JobCtx, recreate: string[] = []) {
+/** `override` replaces env values for this ensure only (never stored): project.import's throwaway JWT secret. */
+export async function ensure(ctx: JobCtx, recreate: string[] = [], override: Record<string, string> = {}) {
   const p = need(ctx)
-  const { env, hosts } = await loadProjectEnv(ctx.db, p)
+  const { env: stored, hosts } = await loadProjectEnv(ctx.db, p)
+  const env = { ...stored, ...override }
   // every host gets the resolver: only counted ones (a slot, an issued host) or LEGACY_HOSTNAMES may route
   await assertRoutable(ctx.db, p.id, hosts)
   await ctx.provisioner.ensure({ ref: p.ref, templateVersion: p.template_version ?? config.templateVersion, size: p.size,
@@ -230,8 +237,8 @@ defineJob('project.delete', 'light', [
   step('remove', (ctx) => ctx.provisioner.remove(need(ctx).ref, true)),
   step('release', async (ctx) => {
     await releaseHost(ctx.db, need(ctx).id)
-    // legacy and custom names too: they become free for another project
-    await ctx.db.query('delete from control.project_domains where project_id = $1', [need(ctx).id])
+    // legacy and custom names too: free for the org's other projects at once, for other orgs after the hold
+    await releaseDomains(ctx.db, need(ctx).id)
   }),
   step('secrets', (ctx) => ctx.db.query('delete from control.project_secrets where project_id = $1', [need(ctx).id])),
   step('removed', (ctx) => setStatus(ctx, 'REMOVED')),

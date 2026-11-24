@@ -189,6 +189,8 @@ test('capacity numbers add up (single organization)', async () => {
 
 describe('domains', () => {
   test('add enqueues project.apply with core recreated; list and remove', async () => {
+    // the name outlives the org truncate: a previous run's org would hold it for 30 days (S2)
+    await pool.query(`delete from control.issued_hosts where hostname = 'api.example.com'`)
     const q = await project(acme.id)
     expect((await withToken(dev.token, 'POST', `/platform/projects/${q.ref}/domains`, { hostname: 'api.example.com', kind: 'custom' })).status).toBe(403)
     const res = await withToken(owner.token, 'POST', `/platform/projects/${q.ref}/domains`, { hostname: 'api.example.com', kind: 'custom' })
@@ -205,6 +207,50 @@ describe('domains', () => {
     const taken = await withToken(owner.token, 'POST', `/platform/projects/${q.ref}/domains`, { hostname: `x.${config.baseDomain}`, kind: 'custom' })
     expect(taken.status).toBe(409)
     expect(await taken.json()).toMatchObject({ error: 'custom_under_base', message: expect.any(String) })
+  })
+})
+
+describe('S5: domain changes', () => {
+  // custom names are new hosts: lift the weekly cap; a fresh tag per run, as issued names are held across runs
+  const cap = config.maxNewHostsPerWeek
+  const tag = Math.random().toString(36).slice(2, 8)
+  beforeAll(() => { config.maxNewHostsPerWeek = 1000 })
+  afterAll(async () => {
+    config.maxNewHostsPerWeek = cap
+    // issued names outlive the org truncate and count against the weekly cap of later runs
+    await pool.query(`delete from control.issued_hosts where hostname like $1`, [`${tag}-%`])
+  })
+  test('while another job runs, domain changes coalesce into one pending apply', async () => {
+    const q = await project(acme.id)
+    await pool.query(`insert into control.jobs (type, lane, project_id, payload, status) values ('project.backup', 'heavy', $1, '{}', 'running')`, [q.id])
+    try {
+      const ids: string[] = []
+      for (const h of [`${tag}-a1.example.org`, `${tag}-a2.example.org`, `${tag}-a3.example.org`]) {
+        const r = await withToken(owner.token, 'POST', `/platform/projects/${q.ref}/domains`, { hostname: h, kind: 'custom' })
+        expect(r.status).toBe(202)
+        ids.push((await r.json()).job_id)
+      }
+      const del = await withToken(owner.token, 'DELETE', `/platform/projects/${q.ref}/domains`, { hostname: `${tag}-a1.example.org` })
+      expect(del.status).toBe(202)
+      ids.push((await del.json()).job_id)
+      expect(new Set(ids).size).toBe(1)
+      expect((await pool.query(`select count(*)::int as n from control.jobs where project_id = $1 and status = 'pending'`, [q.id])).rows[0].n).toBe(1)
+    } finally {
+      await pool.query(`update control.jobs set status = 'failed' where project_id = $1 and status in ('pending', 'running')`, [q.id])
+    }
+  })
+
+  test('20 concurrent domain changes give one pending apply', async () => {
+    const q = await project(acme.id)
+    await pool.query(`insert into control.jobs (type, lane, project_id, payload, status) values ('project.backup', 'heavy', $1, '{}', 'running')`, [q.id])
+    try {
+      const all = await Promise.all(Array.from({ length: 20 }, (_, i) =>
+        withToken(owner.token, 'POST', `/platform/projects/${q.ref}/domains`, { hostname: `${tag}-c${i}.example.org`, kind: 'custom' })))
+      expect(all.map((r) => r.status)).toEqual(Array(20).fill(202))
+      expect((await pool.query(`select count(*)::int as n from control.jobs where project_id = $1 and status = 'pending'`, [q.id])).rows[0].n).toBe(1)
+    } finally {
+      await pool.query(`update control.jobs set status = 'failed' where project_id = $1 and status in ('pending', 'running')`, [q.id])
+    }
   })
 })
 

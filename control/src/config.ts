@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url'
 
 export type Config = ReturnType<typeof loadConfig>
 
+// organization slugs as platform-orgs.ts makes them
+const SLUG_RE = /^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$/
 export const HOSTNAME_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
 
 export function loadConfig(input: Record<string, string | undefined> = process.env) {
@@ -39,10 +41,18 @@ export function loadConfig(input: Record<string, string | undefined> = process.e
   const jwtSecret = need('CONTROL_JWT_SECRET')
   if (jwtSecret.length < 32) fail('CONTROL_JWT_SECRET must be at least 32 characters')
   const base = need('BASE_DOMAIN')
-  const legacyHostnames = (env.LEGACY_HOSTNAMES || '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean)
+  // host=org_slug: the name may be added by that organization only; a bare host is the default organization's
+  const legacyOrgs: Record<string, string> = {}
+  for (const entry of (env.LEGACY_HOSTNAMES || '').split(',').map((h) => h.trim()).filter(Boolean)) {
+    const [host, slug = 'default', extra] = entry.split('=')
+    if (extra !== undefined || !HOSTNAME_RE.test(host.toLowerCase()) || !SLUG_RE.test(slug)) {
+      fail('LEGACY_HOSTNAMES must be a comma-separated list of hostname or hostname=org_slug')
+    }
+    legacyOrgs[host.toLowerCase()] = slug
+  }
+  const legacyHostnames = Object.keys(legacyOrgs)
   const publicUrl = env.PUBLIC_URL || `https://selfbase.${base}`
   if (!/^https?:$/.test(URL.parse(publicUrl)?.protocol ?? '') || !URL.parse(publicUrl)?.hostname) fail('PUBLIC_URL must be an http(s) URL with a hostname')
-  for (const h of legacyHostnames) if (!HOSTNAME_RE.test(h)) fail('LEGACY_HOSTNAMES must be a comma-separated list of hostnames')
   const proxyMode = oneOf('PROXY_MODE', 'coolify', ['coolify', 'own'])
   const trustedProxyIps = (env.TRUSTED_PROXY_HOSTS || '').split(',').map((h) => h.trim()).filter(Boolean)
   if (trustedProxyIps.some((h) => !isIP(h))) fail('TRUSTED_PROXY_HOSTS takes IP addresses only (the proxy container is PROXY_CONTAINER)')
@@ -77,9 +87,16 @@ export function loadConfig(input: Record<string, string | undefined> = process.e
     testHost: env.TEST_HOST || `sb-test.${base}`,
     // hostnames under BASE_DOMAIN that already hold a certificate (v1's host); the only legacy names allowed there
     legacyHostnames,
+    // the organization slug each legacy name belongs to (hosts.ts)
+    legacyOrgs,
     certProbe: oneOf('CERT_PROBE', 'on', ['on', 'off']),
     logsUrl: env.LOGS_URL || 'http://selfbase-logs:9428',
     backupRetentionDays: num('BACKUP_RETENTION_DAYS', 7),
+    // days an export's backups row is listed; the job's retention removes its files (reconcile.ts)
+    exportRetentionDays: num('EXPORT_RETENTION_DAYS', 7),
+    // a Studio session ends this long after sign-in, or after this long without a refresh (session.ts)
+    sessionMaxAgeDays: num('STUDIO_SESSION_MAX_AGE_DAYS', 7),
+    sessionIdleHours: num('STUDIO_SESSION_IDLE_HOURS', 24),
     // the host backup directory as control sees it (mounted read-only): an import reads project.json there
     backupDir: env.BACKUP_DIR || '/backups',
     smtp: {

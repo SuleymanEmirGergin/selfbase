@@ -3,6 +3,7 @@
 // whose ref has no project row are reported, never removed.
 import type pg from 'pg'
 import { probeCertificate } from './cert.ts'
+import { config } from './config.ts'
 import { hostsOf } from './hosts.ts'
 import { DESIRED_RUNNING, enqueueIfIdle, type Project } from './jobs/index.ts'
 import type { Provisioner, ProjectState } from './provisioner.ts'
@@ -21,11 +22,18 @@ const backoffMs = (n: number) => Math.min(60_000 * 2 ** (n - 1), 3_600_000)
 // finished applies reconcile made are history nobody reads after a week: the job table stays bounded
 const PRUNE = `delete from control.jobs where type = 'project.apply' and created_by is null and status in ('succeeded', 'failed')
   and created_at < now() - interval '7 days'`
+// audit retention: 90 days
+const PRUNE_AUDIT = `delete from control.audit_log where at < now() - interval '90 days'`
+// exports are listed for EXPORT_RETENTION_DAYS; their files are the backup job's to remove
+const PRUNE_EXPORTS = `delete from control.backups where location like 'export-%'
+  and coalesce(finished_at, started_at) < now() - make_interval(days => $1)`
 
 export async function reconcileOnce(deps: ReconcileDeps): Promise<ReconcileReport> {
   const probe = deps.probe ?? probeCertificate
   const report: ReconcileReport = { checked: [], skipped: [], actions: [], orphans: [], errors: [] }
   await deps.db.query(PRUNE)
+  await deps.db.query(PRUNE_AUDIT)
+  await deps.db.query(PRUNE_EXPORTS, [config.exportRetentionDays])
   const projects = (await deps.db.query(
     `select p.*, ${BUSY} as busy from control.projects p`,
   )).rows as (Project & { busy: boolean })[]

@@ -35,6 +35,7 @@ const TASK5_KEYS = ['POSTGRES_PASSWORD', 'AUTHENTICATOR_PASSWORD', 'JWT_SECRET',
 let fake: FakeProvisioner
 let cert: 'ok' | 'pending'
 let orgId: string
+let orgSlug: string
 const running: { stop(): Promise<void> }[] = []
 // stands in for every project's core: records the warm-up requests, answers restStatus
 let restStatus = 200
@@ -84,11 +85,14 @@ beforeEach(async () => {
   warmed.length = 0
   await pool.query('delete from control.projects')
   await pool.query('delete from control.host_slots')
+  // a custom name keeps the org that claimed it (S2): every test starts with none
+  await pool.query('delete from control.issued_hosts')
   // jobs without a project (other files) are not removed by the cascade
   await pool.query('delete from control.jobs')
   fake = new FakeProvisioner()
   cert = 'ok'
-  orgId = (await pool.query(`insert into control.organizations (slug, name) values ($1, 'o') returning id`, [`o-${newRef()}`])).rows[0].id
+  orgSlug = `o-${newRef()}`
+  orgId = (await pool.query(`insert into control.organizations (slug, name) values ($1, 'o') returning id`, [orgSlug])).rows[0].id
 })
 afterEach(async () => { await Promise.all(running.splice(0).map((w) => w.stop())) })
 
@@ -292,9 +296,10 @@ test('healthy and certificate fail on their first timeout, without retries', asy
   expect((await project(second.project.id)).status).toBe('INIT_FAILED')
 })
 
-test('delete frees legacy and custom domains: the legacy hostname can be added to a new project', async () => {
+test('delete frees legacy and custom domains: the legacy hostname can be added to a new project of the org', async () => {
   const was = config.legacyHostnames
   config.legacyHostnames = ['legacy.example.test']
+  config.legacyOrgs = { 'legacy.example.test': orgSlug }
   try {
     const { project: p, jobId } = await create()
     workers()
@@ -306,8 +311,15 @@ test('delete frees legacy and custom domains: the legacy hostname can be added t
     const next = await create('next')
     await addDomain(pool, next.project.id, 'legacy.example.test', 'legacy')
     await addDomain(pool, next.project.id, 'api.example.com', 'custom')
+    // another org's project: the legacy name is not its, the custom name is held for 30 days
+    const otherOrg = (await pool.query(`insert into control.organizations (slug, name) values ($1, 'o') returning id`, [`o-${newRef()}`])).rows[0].id
+    const theirs = await createProject(pool, { orgId: otherOrg, name: 'theirs', size: 'micro', pool: 'project', createdBy: null })
+    await pool.query(`delete from control.project_domains where hostname in ('legacy.example.test', 'api.example.com')`)
+    await expect(addDomain(pool, theirs.project.id, 'legacy.example.test', 'legacy')).rejects.toMatchObject({ code: 'legacy_not_allowed' })
+    await expect(addDomain(pool, theirs.project.id, 'api.example.com', 'custom')).rejects.toMatchObject({ code: 'hostname_taken' })
   } finally {
     config.legacyHostnames = was
+    config.legacyOrgs = {}
   }
 })
 

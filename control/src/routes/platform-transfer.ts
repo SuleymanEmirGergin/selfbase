@@ -6,8 +6,9 @@ import { join } from 'node:path'
 import { Hono } from 'hono'
 import { config } from '../config.ts'
 import { pool } from '../db.ts'
-import { configSections, EnvFileError, parseV1Env } from '../envfile.ts'
+import { configSections, EnvFileError, parseV1Env, stripImported } from '../envfile.ts'
 import { ApiError } from '../errors.ts'
+import { checkBackupSpace, checkProjectBackup } from '../disk.ts'
 import { createProject } from '../jobs/index.ts'
 import { backupDirOf } from '../jobs/transfer.ts'
 import { ManifestError, MIN_PASSPHRASE, openManifest, sealManifest } from '../manifest.ts'
@@ -20,8 +21,20 @@ export const platformTransfer = new Hono<Env>()
 const ENV_FILE_MAX = 64 * 1024
 // what an export carries and an import takes over; POSTGRES_PASSWORD and the rest are generated for the new project
 const CARRIED = ['JWT_SECRET', 'ANON_KEY', 'SERVICE_ROLE_KEY', 'SMTP_PASS', 'GOOGLE_CLIENT_SECRET', 'AUTH_SMS_HOOK_SECRET']
+const ROTATED = ['JWT_SECRET', 'ANON_KEY', 'SERVICE_ROLE_KEY']
 const SECTIONS = ['auth', 'postgrest', 'storage', 'realtime', 'database', 'pooler', 'functions']
 const CAN_BACKUP = (s: string) => s === 'ACTIVE_HEALTHY' || s === 'ACTIVE_UNHEALTHY'
+
+// Manual backups and exports of one project: 3 an hour, each a full dump on the backup volume (runtime I2). One at a
+// time is already lifecycle's rule (409 project_busy); scheduled backups (created_by null) do not count.
+const MANUAL_PER_HOUR = 3
+async function checkBackupRate(projectId: string): Promise<void> {
+  const { n } = (await pool.query(`select count(*)::int as n from control.jobs where project_id = $1
+    and type in ('project.backup', 'project.export') and created_by is not null and created_at > now() - interval '1 hour'`, [projectId])).rows[0]
+  if (n >= MANUAL_PER_HOUR) {
+    throw new ApiError(429, 'too_many_backups', `This project had ${MANUAL_PER_HOUR} manual backups or exports in the last hour. Try again later.`)
+  }
+}
 
 const manifestError = (e: unknown) => {
   if (e instanceof ManifestError) return new ApiError(400, e.code, e.message)
@@ -37,6 +50,8 @@ platformTransfer.get('/projects/:ref/backups', async (c) => {
 
 platformTransfer.post('/projects/:ref/backups', async (c) => {
   const p = await projectFor(c, 'project.manage')
+  await checkBackupRate(p.id)
+  await checkProjectBackup(p)
   return c.json({ job_id: await lifecycle(c, p, 'project.backup', CAN_BACKUP) }, 202)
 })
 
@@ -52,6 +67,8 @@ platformTransfer.post('/projects/:ref/export', async (c) => {
   if (typeof passphrase !== 'string' || passphrase.length < MIN_PASSPHRASE) {
     throw new ApiError(400, 'weak_passphrase', `the passphrase must be at least ${MIN_PASSPHRASE} characters`)
   }
+  await checkBackupRate(p.id)
+  await checkProjectBackup(p)
   const secrets = await getSecrets(pool, p)
   const rows = (await pool.query('select section, data from control.project_config where project_id = $1 order by section', [p.id])).rows
   const sealed = await sealManifest({ config: Object.fromEntries(rows.map((r) => [r.section, r.data])),
@@ -80,6 +97,8 @@ platformTransfer.post('/projects/import', async (c) => {
   const envFile = form.get('env_file')
   const passphrase = field('passphrase')
   if ((envFile !== null) === (passphrase !== undefined)) throw bad('give exactly one of env_file and passphrase')
+  const rotate = field('rotate_keys') ?? 'false'
+  if (rotate !== 'true' && rotate !== 'false') throw bad('rotate_keys must be true or false')
 
   let secrets: Record<string, string>
   let sections: Record<string, Record<string, unknown>>
@@ -106,11 +125,15 @@ platformTransfer.post('/projects/import', async (c) => {
     }
     const m = await openManifest(text, passphrase!).catch((e) => { throw manifestError(e) })
     secrets = Object.fromEntries(CARRIED.filter((k) => typeof m.secrets[k] === 'string').map((k) => [k, m.secrets[k]]))
-    sections = Object.fromEntries(Object.entries(m.config).filter(([s, d]) => SECTIONS.includes(s)
-      && d && typeof d === 'object')) as Record<string, Record<string, unknown>>
+    ;({ sections, ignored } = stripImported(Object.fromEntries(Object.entries(m.config).filter(([s, d]) => SECTIONS.includes(s)
+      && d && typeof d === 'object')) as Record<string, Record<string, unknown>>))
   }
+  // rotate_keys: the job generates a new JWT secret and keys, and deletes the sessions the backup brought
+  if (rotate === 'true') for (const k of ROTATED) delete secrets[k]
+  await checkBackupSpace()
   const { project, jobId } = await createProject(pool, { orgId: org.id, name, size, pool: 'project', createdBy: c.get('user').id,
-    reuseSecrets: secrets, config: sections, job: { type: 'project.import', status: 'RESTORING', payload: { backup_dir: dir } } })
+    reuseSecrets: secrets, config: sections,
+    job: { type: 'project.import', status: 'RESTORING', payload: { backup_dir: dir, ...(rotate === 'true' ? { rotate_keys: true } : {}) } } })
   c.set('audit', { ...c.get('audit'), projectId: project.id, target: project.ref })
   return c.json({ project: platformProject({ ...project, org_slug: org.slug, certificate: 'pending' } as ProjectRow), job_id: jobId,
     ignored, unknown }, 202)

@@ -1,9 +1,10 @@
-import { beforeAll, beforeEach, describe, expect, test } from 'vitest'
+import { beforeAll, beforeEach, describe, expect, test, vi } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { app } from '../src/app.ts'
 import { pool } from '../src/db.ts'
-import { resetRateLimits } from '../src/core.ts'
+import { coreAuth, resetRateLimits } from '../src/core.ts'
+import { config, loadConfig } from '../src/config.ts'
 import { hashToken } from '../src/ids.ts'
 import { cookieNames } from '../src/session.ts'
 import { ORIGIN, as, cookiesOf, login, resetDashboard, withToken } from './helpers.ts'
@@ -228,6 +229,81 @@ describe('sessions and tokens', () => {
     expect(second).toEqual(first)
     await pool.query(`update control.access_tokens set expires_at = now() - interval '1 second' where id = $1`, [id])
     expect((await withToken(token, 'GET', '/v1/organizations')).status).toBe(401)
+  })
+})
+
+describe('S4: logout and session lifetime', () => {
+  const part = (cookie: string, name: string) => cookie.split('; ').find((c) => c.startsWith(`${name}=`))!
+  const refreshWith = (cookie: string) => app.request('/platform/refresh', { method: 'POST', headers: { cookie, origin: ORIGIN } })
+  const sessionOf = async (cookie: string) => (await pool.query('select session_id from auth.refresh_tokens where token = $1',
+    [decodeURIComponent(part(cookie, '__Host-sb_studio_refresh').split('=')[1])])).rows[0].session_id as string
+  const age = (sessionId: string, sql: string) => pool.query(`update auth.refresh_tokens set created_at = ${sql} where session_id = $1`, [sessionId])
+
+  test('logout with the refresh cookie only (access cookie expired) ends the session', async () => {
+    const cookie = await login(OWNER, PASSWORD)
+    const out = await app.request('/platform/logout', { method: 'POST', headers: { cookie: part(cookie, '__Host-sb_studio_refresh'), origin: ORIGIN } })
+    expect(out.status).toBe(200)
+    expect(out.headers.getSetCookie().join()).toMatch(/__Host-sb_studio_refresh=;/)
+    expect((await refreshWith(part(cookie, '__Host-sb_studio_refresh'))).status).toBe(401)
+    // the access cookie of that session is dead as well
+    expect((await as(cookie, 'GET', '/platform/me')).status).toBe(401)
+  })
+
+  test("logout answers 502 and keeps the cookies when core's revoke fails", async () => {
+    const cookie = await login(OWNER, PASSWORD)
+    const spy = vi.spyOn(coreAuth, 'fetch').mockResolvedValue(new Response('{"msg":"boom"}', { status: 500 }))
+    try {
+      const out = await as(cookie, 'POST', '/platform/logout')
+      expect(out.status).toBe(502)
+      expect(await out.json()).toMatchObject({ error: 'logout_failed' })
+      expect(out.headers.getSetCookie()).toEqual([])
+    } finally {
+      spy.mockRestore()
+    }
+    expect((await as(cookie, 'GET', '/platform/me')).status).toBe(200)
+  })
+
+  test('the refresh cookie lives as long as the absolute lifetime', async () => {
+    const res = await app.request('/platform/login', json({ email: OWNER, password: PASSWORD }))
+    expect(res.headers.getSetCookie().find((c) => c.startsWith('__Host-sb_studio_refresh='))).toMatch(/Max-Age=604800/)
+  })
+
+  test('a session older than 7 days is refused at refresh and by its access cookie, and revoked', async () => {
+    const cookie = await login(OWNER, PASSWORD)
+    const sid = await sessionOf(cookie)
+    // refreshed an hour ago (not idle), started 8 days ago
+    const r = await refreshWith(part(cookie, '__Host-sb_studio_refresh'))
+    expect(r.status).toBe(200)
+    const fresh = cookiesOf(r)
+    await pool.query(`update auth.refresh_tokens set created_at = now() - interval '8 days' where session_id = $1 and revoked`, [sid])
+    await pool.query(`update auth.refresh_tokens set created_at = now() - interval '1 hour' where session_id = $1 and not revoked`, [sid])
+    expect((await as(fresh, 'GET', '/platform/me')).status).toBe(401)
+    expect((await refreshWith(part(fresh, '__Host-sb_studio_refresh'))).status).toBe(401)
+    expect((await pool.query('select count(*)::int as n from auth.refresh_tokens where session_id = $1 and not revoked', [sid])).rows[0].n).toBe(0)
+  })
+
+  test('a session not refreshed for 24 hours is refused; one refreshed in time lives on', async () => {
+    const idle = await login(OWNER, PASSWORD)
+    await age(await sessionOf(idle), `now() - interval '25 hours'`)
+    expect((await refreshWith(part(idle, '__Host-sb_studio_refresh'))).status).toBe(401)
+    const active = await login(OWNER, PASSWORD)
+    await age(await sessionOf(active), `now() - interval '23 hours'`)
+    expect((await refreshWith(part(active, '__Host-sb_studio_refresh'))).status).toBe(200)
+  })
+
+  test('both lifetimes are settings', async () => {
+    const env = { ...process.env }
+    expect(loadConfig(env)).toMatchObject({ sessionMaxAgeDays: 7, sessionIdleHours: 24 })
+    expect(loadConfig({ ...env, STUDIO_SESSION_MAX_AGE_DAYS: '1', STUDIO_SESSION_IDLE_HOURS: '2' })).toMatchObject({ sessionMaxAgeDays: 1, sessionIdleHours: 2 })
+    const before = config.sessionIdleHours
+    config.sessionIdleHours = 1
+    try {
+      const cookie = await login(OWNER, PASSWORD)
+      await age(await sessionOf(cookie), `now() - interval '2 hours'`)
+      expect((await refreshWith(part(cookie, '__Host-sb_studio_refresh'))).status).toBe(401)
+    } finally {
+      config.sessionIdleHours = before
+    }
   })
 })
 

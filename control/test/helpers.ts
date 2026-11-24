@@ -89,7 +89,10 @@ export const V1_KEYS = ['POSTGRES_PASSWORD', 'JWT_SECRET', 'ANON_KEY', 'SERVICE_
   'SMTP_PASS', 'SMTP_FROM', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_AUTH_URL', 'GOOGLE_TOKEN_URL', 'GOOGLE_USERINFO_URL',
   'PANEL_ADMIN_EMAIL', 'PANEL_ADMIN_PASSWORD_HASH', 'CORE_BIND', 'CORE_PORT', 'STORAGE_MAX_UPLOAD_BYTES', 'SUPABASE_DIR', 'PGRST_URL',
   'FN_URL', 'FN_IMPORT_TIMEOUT_MS', 'DOCKER_NETWORK', 'TARGET_DB_URL', 'TARGET_DB_URL_HOST', 'BACKUP_DIR', 'BACKUP_RETENTION_DAYS']
+let v1EnvN = 0
+// each call has its own JWT_SECRET: an import refuses a secret a live project already holds
 export const v1Env = (over: Record<string, string> = {}) => {
   const vals = Object.fromEntries(V1_KEYS.map((k) => [k, `v1-value-of-${k.toLowerCase()}`]))
+  vals.JWT_SECRET += `-${process.pid}-${v1EnvN++}`
   return { text: ['# v1 .env', '', ...Object.entries({ ...vals, ...over }).map(([k, v]) => `${k}=${v}`), ''].join('\n'), vals: { ...vals, ...over } }
 }

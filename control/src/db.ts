@@ -37,6 +37,8 @@ export async function migrate(): Promise<void> {
     on conflict (key) do update set value = excluded.value`, [config.templateVersion])
   // the control host's router (with the resolver) appears with the first start: its certificate counts in the weekly cap
   await pool.query(`insert into control.settings (key, value) values ('control_host_first_issued_at', now()::text) on conflict (key) do nothing`)
+  // after 0004: SQL cannot decrypt, so the rows written before it get their fingerprints here
+  await (await import('./secrets.ts')).backfillFingerprints(pool)
 }
 
 /** Closes the pool (tests, shutdown). Safe to call twice. */
