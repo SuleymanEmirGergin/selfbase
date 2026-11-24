@@ -75,6 +75,10 @@ async function waitFor(ctx: JobCtx, ref: string, type: 'backup' | 'restore'): Pr
     if (type === 'restore' && s.exitCode === 3) {
       throw new Error('the database was restored but the storage files were not (or only partly): delete this project, then import again')
     }
+    if (type === 'restore' && s.exitCode === 7) {
+      throw new Error('the import is partial: the database was restored but the storage files were not replaced (the restore was stopped): '
+        + 'delete this project, then run the import again')
+    }
     throw new Error(`the ${type} job failed (${s.exitCode === null ? 'it never started' : `exit ${s.exitCode}`})`)
   }
 }

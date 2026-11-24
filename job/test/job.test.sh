@@ -513,6 +513,21 @@ standin brim '/usr/bin/tar "$@" || exit; a=$(df -Pk /data/storage | awk "NR == 2
   head -c $(( (a - 1024) * 1024 )) /dev/zero > "${@: -1}/brim"; sleep 3; exit 0'
 rc=0; out=$(cramped "$small" 1 '' 'export PATH=/backups/standin/brim:$PATH') || rc=$?
 check '7: a restore that leaves exactly the floor free finishes' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
+# 1: a signal once pg_restore has committed is no rollback. Here it comes in the v1 ledger step (db-empty has no
+# ledger, so its dumps are v1 dumps): the restore ends with exit 7 (database restored, storage not replaced), leaves
+# cron.job as restored and never says nothing changed
+ejob() { sql db-empty "select active from cron.job where jobname = 'e_job'"; }
+sql db-empty "select cron.schedule('e_job', '0 0 1 1 *', 'select 1'); update cron.job set active = false where jobname = 'e_job'" > /dev/null
+JOB_ENV=(-e BACKUP_SUBDIR=ecron)
+ecron=$(job db-empty "$P-empty-storage" bash /scripts/backup.sh | tail -n1); ecron=${ecron#backup: wrote }
+sql db-empty "update cron.job set active = true where jobname = 'e_job'" > /dev/null
+rc=0; out=$(cramped "$ecron" 1 '' 'psql() { case "$*" in *"selfbase_restore_hold cascade"*) kill -TERM $$ ;; esac; command psql "$@"; }
+  export -f psql') || rc=$?
+check '1: a signal after pg_restore committed exits 7' [ "$rc" = 7 ]; [ "$rc" = 7 ] || echo "$out" >&2
+check '1: cron.job stays as restored (its job is not set active again)' [ "$(ejob)" = f ]
+check '1: it says the database was restored and the storage not, never that nothing changed' \
+  bash -c 'grep -q "DATABASE WAS RESTORED .* storage files were NOT replaced" <<< "$1" && ! grep -q unchanged <<< "$1"' _ "$out"
+check '1: and its temp dir is gone' grep -qx entries=0 <<< "$out"
 # E: the watchdog. What the server writes counts too: a materialized view the dump refreshes is one short line in the
 # estimate, over a row count kept in a table (1 when it was refreshed, 2 million in the dump). The database and the
 # storage volume share one 512 MiB tmpfs, as Docker volumes share a disk; 100 MiB of room above the floor

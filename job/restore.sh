@@ -44,6 +44,9 @@
 #      after step 3 commits, while core, rest, fn and pooler are still stopped, so no session the backup carried ever
 #      meets a core signing with the new keys. pg_restore owns step 3's transaction, so this is the next one; when it
 #      fails the job fails (exit 5) and control does not start the project
+#   the commit: once pg_restore exits 0 the database is restored, and nothing after undoes the cron or ledger steps
+#      or says it is unchanged; a failure or signal from there until the storage swap starts ends with exit 7 (the
+#      database restored, the storage not replaced: the import is partial)
 #   5. the storage volume: the files extracted in 1c are given to the volume's owner and swapped in (a failure here,
 #      after the database was restored: exit 3)
 # What it does NOT do: objects created after the backup are not removed; roles are not restored (globals.sql is for
@@ -146,19 +149,25 @@ echo "restore: about $(( (storage_k + db_k) / 1024 )) MiB to write, $((room / 10
 export PGOPTIONS='-c event_triggers=off'
 q() { PGOPTIONS="$PGOPTIONS -c search_path=pg_catalog" psql -XAtq -v ON_ERROR_STOP=1 "$@"; }
 # the cleanup's state (no function declares a local of these names: the trap runs in the scope of the function a
-# signal stopped)
-jobs='' db_done=0 t='' held=0 w='' wstop='' wrc=0
+# signal stopped). db_done: pg_restore committed; swapped: the storage swap began
+jobs='' db_done=0 swapped=0 t='' held=0 w='' wstop='' wrc=0
 HOLD=selfbase_restore_hold
+# committed: pg_restore exited 0, the database is the backup's; the cron and ledger steps are never undone over it
+committed() { db_done=1 held=0 jobs=''; }
 cleanup() {
   local rc=$? was=$wstop
   # a signal ended the script while a writer ran: it is stopped and reaped before its temp dir goes, so nothing writes
   # there after; a pg_restore that still exited 0 had committed
-  if [ -n "$w" ]; then reap; [ "$was" != stop_restore ] || [ "$wrc" != 0 ] || { db_done=1 held=0 jobs=''; }; fi
+  if [ -n "$w" ]; then reap; [ "$was" != stop_restore ] || [ "$wrc" != 0 ] || committed; fi
   [ -z "$t" ] || rm -rf "$t"
   [ "$rc" != 0 ] || return 0
-  if [ "$db_done" = 1 ]; then
+  if [ "$db_done" = 1 ] && [ "$swapped" = 1 ]; then
     echo "restore: FAILED in the storage step: the DATABASE WAS RESTORED from $rel, storage may be partly replaced; delete this project, then import again" >&2
     exit 3
+  fi
+  if [ "$db_done" = 1 ]; then
+    echo "restore: FAILED after the DATABASE WAS RESTORED from $rel (exit $rc): the storage files were NOT replaced; the import is partial: delete this project, then import again" >&2
+    exit 7
   fi
   if [ "$held" = 1 ]; then
     if q -c "alter table $HOLD.platform_migrations set schema selfbase; drop schema $HOLD"; then echo "restore: the platform ledger is back in place" >&2
@@ -252,9 +261,10 @@ if [ "$v1" = 1 ] && [ "$(q -c "select pg_catalog.to_regclass('selfbase.platform_
 fi
 watched stop_restore pg_restore --clean --if-exists --single-transaction --exit-on-error \
   -d "${PGDATABASE:-postgres}" "$dir/db.dump" || exit 10
+# from here a failure or a signal is exit 7 (3 once the swap began), never an undo
+committed
 if [ "$v1" = 1 ]; then
-  # the v1 restore is committed: from here the old ledger must never go back over it
-  held=0
+  # the v1 restore is committed (held is 0 since): the old ledger never goes back over it
   if q -c "drop schema if exists $HOLD cascade"; then
     echo "restore: a v1 database: the platform ledger is dropped, core adopts it at its next start"
   else
@@ -262,7 +272,7 @@ if [ "$v1" = 1 ]; then
   fi
 fi
 if [ "$rotate" = 1 ]; then
-  # step 3 is committed: the cleanup trap must neither undo the cron or ledger steps nor call this a storage failure
+  # step 3 is committed: a failure here is exit 5, not one of the storage step (the trap is off)
   # every credential row (sessions, pending links and codes); users, identities and MFA factors are the data moved
   # then counted in a second statement, after the delete committed: a trigger returning NULL, a DO INSTEAD rule or a
   # deferred constraint trigger re-inserting at COMMIT (all of which the dump can carry) would undo it unseen
@@ -285,10 +295,10 @@ if [ "$rotate" = 1 ]; then
     exit 5; }
   echo "restore: the restored sessions are deleted (ROTATE_KEYS)"
 fi
-db_done=1
 echo "restore: database restored (cron jobs as in the backup)"
 # 5. core (not root) owns its storage: everything restored belongs to the volume's owner, as core wrote it
 chown -R "$(stat -c %u:%g "$storage")" "$t"
+swapped=1
 find "$storage" -mindepth 1 -maxdepth 1 ! -name ".restoring-$$" -exec rm -rf {} +
 find "$t" -mindepth 1 -maxdepth 1 -exec mv -t "$storage" {} +
 echo "restore: storage restored"

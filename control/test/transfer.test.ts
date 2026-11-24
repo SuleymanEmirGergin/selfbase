@@ -197,6 +197,13 @@ describe('import', () => {
     expect((await finished(out.job_id)).error).toMatch(/delete this project, then import again/)
   })
 
+  test('a restore that exits 7 (database restored, storage not replaced) says the import is partial and to run it again', async () => {
+    fake.jobResult = () => ({ status: 'failed', exitCode: 7, tail: 'restore: STOPPED after the DATABASE WAS RESTORED' })
+    const out = await (await postForm(owner.token, form({ ...importFields({ name: 'partial' }), env_file: envBlob(v1Env().text) }))).json()
+    workers()
+    expect((await finished(out.job_id)).error).toMatch(/^the import is partial: .*storage files were not replaced.*run the import again/)
+  })
+
   test('a certificate later than the wait leaves the import COMING_UP; a later reconcile pass activates it', async () => {
     cert = 'pending'
     const out = await (await postForm(owner.token, form({ ...importFields({ name: 'slow-cert' }), env_file: envBlob(v1Env().text) }))).json()
