@@ -957,6 +957,14 @@ control env dosyasını ya da şifreyi saklamaz. Sırları şifreleyip kaydeder,
 saydığını ve hangilerini tanımadığını adlarıyla gösterir. Proje yeni bir adres ister: sertifika
 gerekir ve haftalık hakka sayılır (bölüm 7).
 
+**İçe aktarma geri yükleme adımında başarısız olursa** proje `INIT_FAILED` kalır ve control veritabanı dahil
+beş servisini de durdurur. Reconcile da onları durdurulmuş tutar. Hatanın nedeni ne olursa olsun veritabanının
+hangi durumda kaldığı bilinmeyebilir: yedeğin bir kısmı yüklenmiş olabilir, hiç yüklenmemiş de olabilir. Böyle
+bir projeyi sil, sonra içe aktarmayı baştan çalıştır. **Pause**, sonra **Resume** ile projeyi yine de
+başlatabilirsin, engellenmez, çünkü veri senin (tek istisna: `rotate_keys` ile yapılmış ve geri yüklenen
+oturumların silindiği doğrulanmamış bir içe aktarma, o hiç başlamaz). Ama başlatırsan proje, veritabanı o an
+hangi durumdaysa onunla çalışır.
+
 ### Başka sunucuya taşıma (dışa aktarmayla)
 
 Başka bir sunucunun (ya da bu sunucunun eski bir kurulumunun) dışa aktarması bu sunucunun control-db'sinde

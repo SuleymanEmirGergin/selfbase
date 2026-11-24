@@ -149,6 +149,17 @@ export async function sessionsUnconfirmed(db: pg.Pool, projectId: string, except
         where e.job_id = j.id and e.status = 'succeeded' and e.step = 'restored'))`, [projectId, exceptJobId ?? null])).rowCount
 }
 
+/**
+ * An import that failed once its restore job started ('restore' or 'restored' has an event) and never confirmed it
+ * ('restored' not succeeded): its database may be in any state (job/restore.sh's exits 6 to 10, a lost result).
+ */
+export async function restoreUnresolved(db: pg.Pool, projectId: string): Promise<boolean> {
+  return !!(await db.query(`select 1 from control.jobs j where j.project_id = $1 and j.type = 'project.import' and j.status = 'failed'
+      and exists (select 1 from control.job_events e where e.job_id = j.id and e.step in ('restore', 'restored'))
+      and not exists (select 1 from control.job_events e where e.job_id = j.id and e.step = 'restored' and e.status = 'succeeded')`,
+    [projectId])).rowCount
+}
+
 export async function ensure(ctx: JobCtx, recreate: string[] = []) {
   const p = need(ctx)
   if (await sessionsUnconfirmed(ctx.db, p.id, ctx.job.id)) {

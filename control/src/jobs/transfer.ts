@@ -12,6 +12,8 @@ import { activate, certificate, createSteps, failTo, healthy, healthySteps, need
 
 // what an import stops for the restore; db keeps running (the restore job connects to it)
 export const RESTORE_STOPS = ['core', 'rest', 'fn', 'pooler']
+// the import's steps from the restore job's start to its confirmed end (restoreUnresolved reads their events)
+export const RESTORE_STEPS = ['restore', 'restored']
 // shortcut: a fixed budget for one backup or restore; make it a setting when a project's dump takes hours
 const JOB_MS = 6 * 3600_000
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -80,11 +82,9 @@ async function waitFor(ctx: JobCtx, ref: string, type: 'backup' | 'restore'): Pr
         + 'delete this project, then run the import again')
     }
     if (type === 'restore' && s.exitCode === 8) {
-      // the restore could not prove its database sessions ended: one may still commit, so nothing of the project runs
-      const stopped = await ctx.provisioner.stop(ref, [...RESTORE_STOPS, 'db']).then(() => true, () => false)
-      throw new Error('the restore was stopped and it is unknown whether its database sessions ended, so the database may be '
-        + (stopped ? 'either state: its database is stopped as well' : 'either state, and its database could NOT be stopped: stop it by hand')
-        + '; delete this project, then import again')
+      // the import's onFail stops the database with the four (as for every failure past the restore's start)
+      throw new Error('the restore could not be shown to have rolled back (its sessions may not have ended, or its transaction may have '
+        + 'committed), so the database may be in either state: its database is stopped as well; delete this project, then import again')
     }
     throw new Error(`the ${type} job failed (${s.exitCode === null ? 'it never started' : `exit ${s.exitCode}`})`)
   }
@@ -223,7 +223,18 @@ defineJob('project.import', 'heavy', [
 // version 2: the sessions moved into the restore job; an import an earlier control left past its restore fails (I1)
 ], { version: 2, onFail: async (ctx) => {
   await importFailed.onFail(ctx)
+  if (!ctx.project) return
+  // failed in the restore or its wait, whatever the outcome (exit 6, 7, 8, 10, a killed job, a lost result): the
+  // database may hold anything, so nothing of the project runs, the database neither; reconcile keeps it so
+  if (RESTORE_STEPS.includes(ctx.step)) await ctx.provisioner.stop(ctx.project.ref, [...RESTORE_STOPS, 'db'])
   // not past a confirmed 'restored' (an earlier control's job may have started core on its throwaway secret): the four
   // stop, and ensure refuses to start them again
-  if (ctx.project && rotating(ctx) && await sessionsUnconfirmed(ctx.db, ctx.project.id)) await ctx.provisioner.stop(ctx.project.ref, RESTORE_STOPS)
+  else if (rotating(ctx) && await sessionsUnconfirmed(ctx.db, ctx.project.id)) await ctx.provisioner.stop(ctx.project.ref, RESTORE_STOPS)
 } })
+
+// reconcile's stop of an INIT_FAILED import that failed in its restore (restoreUnresolved) while a service of it still
+// runs (the onFail's stop failed, or someone started it): a job, so a failed stop backs off as reconcile's applies do
+defineJob('project.contain', 'light', [step('stop', async (ctx) => {
+  if (ctx.project?.status !== 'INIT_FAILED') return ctx.log('skipped', { status: ctx.project?.status ?? null })
+  await ctx.provisioner.stop(ctx.project.ref, [...RESTORE_STOPS, 'db'])
+})])

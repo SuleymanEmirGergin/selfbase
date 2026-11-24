@@ -209,10 +209,62 @@ describe('import', () => {
     const out = await (await postForm(owner.token, form({ ...importFields({ name: 'unknown' }), env_file: envBlob(v1Env().text) }))).json()
     workers()
     const error = (await finished(out.job_id)).error
-    expect(error).toMatch(/unknown whether .* sessions ended/)
+    expect(error).toMatch(/could not be shown to have rolled back/)
     expect(error).toMatch(/its database is stopped as well/)
-    expect(error).not.toMatch(/rolled back|not changed/)
+    expect(error).not.toMatch(/the database was not changed/)
     expect(fake.callsOf('stop').map((c) => c.args)).toContainEqual([out.project.ref, [...FOUR, 'db']])
+  })
+
+  // round 4, 3: control fails closed. Past the restore's start and short of a confirmed 'restored', whatever the
+  // outcome, the database may hold anything: it stops with the four
+  let lost = 0
+  test.each([
+    ['a lost job result (job_not_found)', () => { throw new ProvisionerError('job_not_found', 'no such job', 404) }],
+    ['an exit 137 (the job container killed)', () => ({ status: 'failed' as const, exitCode: 137, tail: '' })],
+    ['an exit 10 (rolled back)', () => ({ status: 'failed' as const, exitCode: 10, tail: '' })],
+  ])('%s after the restore began stops the database as well', async (_, result) => {
+    fake.jobResult = result
+    const out = await (await postForm(owner.token, form({ ...importFields({ name: `lost-${++lost}` }), env_file: envBlob(v1Env().text) }))).json()
+    workers()
+    expect((await finished(out.job_id)).status).toBe('failed')
+    expect(fake.callsOf('stop').map((c) => c.args)).toContainEqual([out.project.ref, [...FOUR, 'db']])
+    expect(fake.state(out.project.ref).services.filter((s) => s.state === 'running')).toEqual([])
+  })
+
+  test('a failure before the restore step leaves the database running', async () => {
+    fake.fail('stop', 3)
+    const out = await (await postForm(owner.token, form({ ...importFields({ name: 'early' }), env_file: envBlob(v1Env().text) }))).json()
+    workers()
+    expect((await finished(out.job_id)).status).toBe('failed')
+    expect(fake.callsOf('stop').map((c) => c.args).filter((a) => a[1]?.includes('db'))).toEqual([])
+  })
+
+  test('reconcile keeps a failed import stopped: a db still running is stopped, a failed stop retried after the backoff', async () => {
+    // the restore's result, then the onFail's stop fails (the provisioner was down then)
+    fake.jobResult = () => { fake.fail('stop', 1); return { status: 'failed', exitCode: 7, tail: '' } }
+    const out = await (await postForm(owner.token, form({ ...importFields({ name: 'contain' }), env_file: envBlob(v1Env().text) }))).json()
+    workers()
+    expect((await finished(out.job_id)).status).toBe('failed')
+    const ref = out.project.ref
+    const id = (await pool.query('select id from control.projects where ref = $1', [ref])).rows[0].id
+    expect(fake.state(ref).services.find((s) => s.service === 'db')!.state).toBe('running')
+    const pass = () => reconcileOnce({ db: pool, provisioner: fake, probe: async () => cert })
+    const contains = async () => (await pool.query(`select status from control.jobs where project_id = $1 and type = 'project.contain'
+      order by created_at`, [id])).rows.map((r) => r.status)
+    // a pass enqueues the stop (the workers run it); every try of it fails as well
+    fake.fail('stop', 3)
+    expect((await pass()).actions).toContainEqual({ ref, action: 'contain' })
+    await until(async () => ((await contains()).join() === 'failed' ? true : undefined))
+    // the next pass backs off (1 minute after a failure), then retries
+    expect((await pass()).actions).toContainEqual({ ref, action: 'backoff' })
+    expect(await contains()).toEqual(['failed'])
+    await pool.query(`update control.jobs set updated_at = now() - interval '2 minutes' where project_id = $1 and type = 'project.contain'`, [id])
+    expect((await pass()).actions).toContainEqual({ ref, action: 'contain' })
+    await until(async () => ((await contains()).join() === 'failed,succeeded' ? true : undefined))
+    expect(fake.state(ref).services.filter((s) => s.state === 'running')).toEqual([])
+    // once all five are stopped a pass is quiet; the project stays INIT_FAILED
+    expect((await pass()).actions.filter((a) => a.ref === ref)).toEqual([])
+    expect((await row(id)).status).toBe('INIT_FAILED')
   })
 
   test('a certificate later than the wait leaves the import COMING_UP; a later reconcile pass activates it', async () => {
