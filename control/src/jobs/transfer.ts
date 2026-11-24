@@ -86,9 +86,11 @@ async function waitFor(ctx: JobCtx, ref: string, type: 'backup' | 'restore'): Pr
     }
     if (type === 'restore' && s.exitCode === 8) {
       // the import's onFail stops the database with the four (as for every failure past the restore's start); that stop
-      // can fail too (reconcile then retries it), so the message says it is attempted, not done
-      throw new Error('the restore was stopped after pg_restore started and before it finished, so the database may hold the whole backup '
-        + 'or none of it, and the storage files were not replaced: control tries to stop its database as well; delete this project, then import again')
+      // can fail too (reconcile then retries it), so the message says it is attempted, not done. Phase-neutral: a cleanup
+      // that ran out of time before pg_restore started is exit 8 as well
+      throw new Error('the restore or its cleanup could not finish safely, so the state of the database is unknown and needs inspection: it may '
+        + 'hold the whole backup, part of it, or none of it, and the storage files were not replaced; control tries to stop its database as well; '
+        + 'delete this project, then import again')
     }
     throw new Error(`the ${type} job failed (${s.exitCode === null ? 'it never started' : `exit ${s.exitCode}`})`)
   }

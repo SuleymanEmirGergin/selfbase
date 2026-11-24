@@ -209,10 +209,12 @@ describe('import', () => {
     const out = await (await postForm(owner.token, form({ ...importFields({ name: 'unknown' }), env_file: envBlob(v1Env().text) }))).json()
     workers()
     const error = (await finished(out.job_id)).error
-    expect(error).toMatch(/may hold the whole backup or none of it/)
+    // exit 8 comes from a cleanup that ran out of time before pg_restore started as well: no phase is claimed
+    expect(error).toMatch(/could not finish safely/)
+    expect(error).toMatch(/the whole backup, part of it, or none of it/)
     // the stop is attempted (the onFail's stop can fail): the message never says it happened
     expect(error).toMatch(/control tries to stop its database as well/)
-    expect(error).not.toMatch(/is stopped as well|rolled back|was not changed/)
+    expect(error).not.toMatch(/pg_restore started|is stopped as well|rolled back|was not changed/)
     expect(fake.callsOf('stop').map((c) => c.args)).toContainEqual([out.project.ref, [...FOUR, 'db']])
   })
 

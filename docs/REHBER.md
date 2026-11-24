@@ -959,10 +959,10 @@ gerekir ve haftalık hakka sayılır (bölüm 7).
 
 **İçe aktarma geri yükleme adımında başarısız olursa** proje `INIT_FAILED` kalır ve control veritabanı dahil
 beş servisini de durdurmaya çalışır. Durduramazsa reconcile aralıklarla yeniden dener, sonra da onları
-durdurulmuş tutar. Geri yükleme başladıktan sonra hata ne olursa olsun veritabanının hangi durumda kaldığı
-bilinmez. Veritabanı tek transaction'da yüklenir: içinde yedeğin tamamı da olabilir, hiçbiri de. Depolama
-dosyaları ise hiç değişmemiş de olabilir, yarısı değişmiş de. Böyle bir projeyi sil, sonra içe aktarmayı
-baştan çalıştır. **Pause**, sonra **Resume** ile projeyi yine de
+durdurulmuş tutar. Veritabanı yüklenmeye başladıktan sonra hata ne olursa olsun veritabanının hangi durumda
+kaldığı bilinmez. Yükleme tek transaction'dır ama dökümün kendi SQL'i ondan önce commit edebilir: veritabanında
+yedeğin tamamı, bir kısmı ya da hiçbiri olabilir. Depolama dosyaları ise hiç değişmemiş de olabilir, bir kısmı
+değişmiş de. Böyle bir projeyi sil, sonra içe aktarmayı baştan çalıştır. **Pause**, sonra **Resume** ile projeyi yine de
 başlatabilirsin, engellenmez, çünkü veri senin (tek istisna: `rotate_keys` ile yapılmış ve geri yüklenen
 oturumların silindiği doğrulanmamış bir içe aktarma, o hiç başlamaz). Ama başlatırsan proje, veritabanı o an
 hangi durumdaysa onunla çalışır.
