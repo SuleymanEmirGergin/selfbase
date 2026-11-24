@@ -5,13 +5,13 @@ import { admit, AdmissionError, type Size } from '../admission.ts'
 import { config } from '../config.ts'
 import { forgetCoreIp } from '../core-addr.ts'
 import { ApiError } from '../errors.ts'
-import { allocateHost, assertRoutable, hostsOf, precheckHost, releaseDomains, releaseHost } from '../hosts.ts'
+import { allocateHost, assertRoutable, hostsOf, legacyOrgOf, precheckHost, releaseDomains, releaseHost } from '../hosts.ts'
 import { newRef } from '../ids.ts'
 import { loadProjectEnv } from '../project-env.ts'
 import { generateProjectSecrets } from '../project-secrets.ts'
 import { getSecrets, jwtSecretInUse, putSecret } from '../secrets.ts'
 import { allocateSubnet } from '../subnets.ts'
-import { defineJob, enqueue, DESIRED_RUNNING, type JobCtx, type Project } from './engine.ts'
+import { defineJob, enqueue, enqueueCoalesced, DESIRED_RUNNING, type JobCtx, type Project } from './engine.ts'
 
 // admit reserves nothing: every admission and the status change that makes the project count run under this lock
 const ADMISSION_LOCK = 7213018
@@ -99,6 +99,30 @@ export async function createProject(pool: pg.Pool, input: CreateInput): Promise<
 export const need = (ctx: JobCtx): Project => ctx.project ?? (() => { throw new Error('the job has no project') })()
 export const setStatus = (ctx: JobCtx, status: string) => ctx.db.query('update control.projects set status = $2 where id = $1', [need(ctx).id, status])
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * Run at control start: a name that no longer routes for its project by assertRoutable's rule (a LEGACY_HOSTNAMES
+ * name now bound to another org, or no longer listed, and never counted for this one) is removed and logged, and the
+ * project gets a project.apply, so the router stops serving it and the rightful org can add it. Returns the job ids.
+ */
+export async function evictStaleLegacyNames(db: pg.Pool): Promise<string[]> {
+  const rows = (await db.query(
+    `select d.project_id, d.hostname, p.ref, o.slug from control.project_domains d
+       join control.projects p on p.id = d.project_id join control.organizations o on o.id = p.org_id
+      where d.kind <> 'default'
+        and not exists (select 1 from control.host_slots s where s.hostname = d.hostname and s.project_id = d.project_id)
+        and not exists (select 1 from control.issued_hosts i where i.hostname = d.hostname and i.org_id = p.org_id)`)).rows
+  const jobs: string[] = []
+  for (const r of rows) {
+    if (config.legacyHostnames.includes(r.hostname) && legacyOrgOf(r.hostname) === r.slug) continue
+    // uncounted, so no issued_hosts hold to start: the row alone goes
+    await db.query(`delete from control.project_domains where project_id = $1 and hostname = $2 and kind <> 'default'`,
+      [r.project_id, r.hostname])
+    console.log(`hosts: removed ${r.hostname} from project ${r.ref}: LEGACY_HOSTNAMES no longer gives it to organization ${r.slug}`)
+    jobs.push(await enqueueCoalesced(db, { type: 'project.apply', projectId: r.project_id, payload: { recreate: ['core'] }, createdBy: null }))
+  }
+  return jobs
+}
 
 /**
  * A rotating import (rotate_keys) that neither succeeded nor passed its 'restored' step under the current steps may

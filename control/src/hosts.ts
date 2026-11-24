@@ -4,7 +4,6 @@ import pg from 'pg'
 import { config, HOSTNAME_RE } from './config.ts'
 import type { Db } from './db.ts'
 import { ApiError } from './errors.ts'
-import { enqueueCoalesced } from './jobs/engine.ts'
 
 type HostCode = 'new_host_cap' | 'test_host_busy' | 'custom_under_base' | 'legacy_not_allowed' | 'hostname_taken' | 'invalid_hostname'
   | 'wildcard_dns_refused'
@@ -33,7 +32,7 @@ const DOMAIN_HOLD = '30 days'
 const orgOf = async (db: Db, projectId: string): Promise<{ id: string; slug: string }> =>
   (await db.query('select o.id, o.slug from control.projects p join control.organizations o on o.id = p.org_id where p.id = $1',
     [projectId])).rows[0] ?? (() => { throw new Error(`project ${projectId} not found`) })()
-const legacyOrgOf = (h: string) => config.legacyOrgs[h] ?? 'default'
+export const legacyOrgOf = (h: string) => config.legacyOrgs[h] ?? 'default'
 
 // shortcut: a passed client must not already be in a transaction (begin/commit here would end the caller's)
 async function tx<T>(db: Db, fn: (c: pg.PoolClient) => Promise<T>): Promise<T> {
@@ -211,30 +210,6 @@ export async function assertRoutable(db: Db, projectId: string, hosts: string[])
     }
     if (legacyOrgOf(h) !== org.slug) throw new Error(`${h} is a legacy hostname of another organization`)
   }
-}
-
-/**
- * Run at control start: a name that no longer routes for its project by assertRoutable's rule (a LEGACY_HOSTNAMES
- * name now bound to another org, or no longer listed, and never counted for this one) is removed and logged, and the
- * project gets a project.apply, so the router stops serving it and the rightful org can add it. Returns the job ids.
- */
-export async function evictStaleLegacyNames(db: pg.Pool): Promise<string[]> {
-  const rows = (await db.query(
-    `select d.project_id, d.hostname, p.ref, o.slug from control.project_domains d
-       join control.projects p on p.id = d.project_id join control.organizations o on o.id = p.org_id
-      where d.kind <> 'default'
-        and not exists (select 1 from control.host_slots s where s.hostname = d.hostname and s.project_id = d.project_id)
-        and not exists (select 1 from control.issued_hosts i where i.hostname = d.hostname and i.org_id = p.org_id)`)).rows
-  const jobs: string[] = []
-  for (const r of rows) {
-    if (config.legacyHostnames.includes(r.hostname) && legacyOrgOf(r.hostname) === r.slug) continue
-    // uncounted, so no issued_hosts hold to start: the row alone goes
-    await db.query(`delete from control.project_domains where project_id = $1 and hostname = $2 and kind <> 'default'`,
-      [r.project_id, r.hostname])
-    console.log(`hosts: removed ${r.hostname} from project ${r.ref}: LEGACY_HOSTNAMES no longer gives it to organization ${r.slug}`)
-    jobs.push(await enqueueCoalesced(db, { type: 'project.apply', projectId: r.project_id, payload: { recreate: ['core'] }, createdBy: null }))
-  }
-  return jobs
 }
 
 /** Removes a legacy or custom hostname; the default host goes only with releaseHost. True when a row went. */
