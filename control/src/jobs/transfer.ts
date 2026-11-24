@@ -8,7 +8,7 @@ import { ApiError } from '../errors.ts'
 import { ProvisionerError } from '../provisioner.ts'
 import { getSecrets } from '../secrets.ts'
 import { defineJob, type JobCtx } from './engine.ts'
-import { activate, certificate, createSteps, failTo, healthy, healthySteps, need, sessionsUnconfirmed, setStatus, step } from './project.ts'
+import { activate, certificate, createSteps, failTo, healthy, healthySteps, need, restoreUnresolved, sessionsUnconfirmed, setStatus, step } from './project.ts'
 
 // what an import stops for the restore; db keeps running (the restore job connects to it)
 export const RESTORE_STOPS = ['core', 'rest', 'fn', 'pooler']
@@ -236,9 +236,13 @@ defineJob('project.import', 'heavy', [
   else if (rotating(ctx) && await sessionsUnconfirmed(ctx.db, ctx.project.id)) await ctx.provisioner.stop(ctx.project.ref, RESTORE_STOPS)
 } })
 
-// reconcile's stop of an INIT_FAILED import that failed in its restore (restoreUnresolved) while a service of it still
-// runs (the onFail's stop failed, or someone started it): a job, so a failed stop backs off as reconcile's applies do
+// reconcile's stop of a failed import's services that still run (the onFail's stop failed, or someone started them):
+// all five of an INIT_FAILED import that failed in its restore (restoreUnresolved), else the four of a rotating import
+// whose sessions were never confirmed deleted (sessionsUnconfirmed). A job, so a failed stop backs off as reconcile's
+// applies do; each case is read again here, as the project may have changed since the pass
 defineJob('project.contain', 'light', [step('stop', async (ctx) => {
-  if (ctx.project?.status !== 'INIT_FAILED') return ctx.log('skipped', { status: ctx.project?.status ?? null })
-  await ctx.provisioner.stop(ctx.project.ref, [...RESTORE_STOPS, 'db'])
+  const p = ctx.project
+  if (p?.status === 'INIT_FAILED' && await restoreUnresolved(ctx.db, p.id)) return ctx.provisioner.stop(p.ref, [...RESTORE_STOPS, 'db'])
+  if (p && await sessionsUnconfirmed(ctx.db, p.id)) return ctx.provisioner.stop(p.ref, RESTORE_STOPS)
+  await ctx.log('skipped', { status: p?.status ?? null })
 })])

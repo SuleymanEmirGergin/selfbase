@@ -66,24 +66,16 @@ export async function reconcileOnce(deps: ReconcileDeps): Promise<ReconcileRepor
     try {
       const s: ProjectState = await deps.provisioner.inspect(p.ref)
       report.checked.push(p.ref)
-      // an import that failed in its restore (any outcome): its database may hold anything, so all five stay stopped
-      // until the owner deletes the project (or pauses and resumes it, which runs whatever the database holds). Its
-      // onFail stopped them unless the provisioner was down then; the stop runs as a job, so a failed one backs off
-      if (p.status === 'INIT_FAILED' && s.services.some((x) => x.state === 'running') && await restoreUnresolved(deps.db, p.id)) {
-        if (!await backoff('project.contain')) {
-          if (await still(['INIT_FAILED'])
-            && await enqueueIfIdle(deps.db, { type: 'project.contain', projectId: p.id, payload: {}, createdBy: null })) act('contain')
-          continue
-        }
-        // backing off: the four still stop below when a rotating import gates them
-        act('backoff')
-      }
-      // a rotating import that failed before its sessions were confirmed deleted (I1): its onFail stopped these four
-      // unless the provisioner was down then; a pass heals that, and says nothing once they are stopped
-      if (s.services.some((x) => RESTORE_STOPS.includes(x.service) && x.state === 'running')
-        && await sessionsUnconfirmed(deps.db, p.id) && await still([p.status])) {
-        await deps.provisioner.stop(p.ref, RESTORE_STOPS)
-        act('stop sessions_not_deleted')
+      // what a failed import's onFail stopped, unless the provisioner was down then (or someone started it since): an
+      // import that failed in its restore (any outcome) keeps all five stopped, as its database may hold anything,
+      // until the owner deletes the project (or pauses and resumes it, which runs whatever the database holds); a
+      // rotating import that failed before its sessions were confirmed deleted (I1) keeps the four stopped. Both stop
+      // through one project.contain job, so a failed stop backs off; a pass says nothing once they are stopped
+      if ((p.status === 'INIT_FAILED' && s.services.some((x) => x.state === 'running') && await restoreUnresolved(deps.db, p.id))
+        || (s.services.some((x) => RESTORE_STOPS.includes(x.service) && x.state === 'running') && await sessionsUnconfirmed(deps.db, p.id))) {
+        if (await backoff('project.contain')) { act('backoff'); continue }
+        if (await still([p.status])
+          && await enqueueIfIdle(deps.db, { type: 'project.contain', projectId: p.id, payload: {}, createdBy: null })) act('contain')
         continue
       }
       if (p.status === 'INACTIVE') {
