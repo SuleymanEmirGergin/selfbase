@@ -31,6 +31,8 @@ let cert: 'ok' | 'pending' = 'ok'
 const running: { stop(): Promise<void> }[] = []
 // core's API and admin listeners in one: records what the admin listener was sent
 const adminSeen: { url: string; body: string }[] = []
+// what the stub answers to the size query
+let sizeAnswer = '1000'
 // a hung core: the size query gets no answer until the test ends it
 const hung: { on: boolean; held: import('node:http').ServerResponse[] } = { on: false, held: [] }
 const stub = createServer(async (req, res) => {
@@ -39,7 +41,7 @@ const stub = createServer(async (req, res) => {
   if (req.url?.startsWith('/admin/')) adminSeen.push({ url: req.url, body })
   const sized = req.url === '/admin/sql' && body.includes('pg_database_size')
   if (sized && hung.on) return void hung.held.push(res)
-  res.writeHead(200, { 'content-type': 'application/json' }).end(sized ? '{"columns":["bytes"],"rows":[["1000"]]}' : '{}')
+  res.writeHead(200, { 'content-type': 'application/json' }).end(sized ? JSON.stringify({ columns: ['bytes'], rows: [[sizeAnswer]] }) : '{}')
 })
 const workers = (waits: Record<string, number> = {}) => {
   const port = (stub.address() as AddressInfo).port
@@ -946,6 +948,41 @@ describe('I2: backups are sized in the job, from what the dump reads', () => {
     } finally {
       await c.query('rollback')
       c.release()
+    }
+  })
+
+  test('D: the size query pins search_path to pg_catalog: a shadowed pg_database_size cannot zero it', async () => {
+    const p = await project(acme.id, { name: 'd-shadow' })
+    adminSeen.length = 0
+    await disk.projectBytes(p)
+    const q = JSON.parse(adminSeen.at(-1)!.body).query as string
+    const c = await pool.connect()
+    try {
+      await c.query('begin')
+      await c.query(`create function public.pg_database_size(name) returns bigint language sql as 'select 0::bigint'`)
+      // as a role or database setting would: public first, pg_catalog named after it
+      await c.query(`set local search_path = public, pg_catalog`)
+      const res = await c.query(q)
+      const last = Array.isArray(res) ? res.at(-1)! : res
+      const real = Number((await c.query('select pg_catalog.pg_database_size(pg_catalog.current_database()) as n')).rows[0].n)
+      expect(Number(Object.values(last.rows[0])[0])).toBeGreaterThanOrEqual(real)
+    } finally {
+      await c.query('rollback')
+      c.release()
+    }
+  })
+
+  test('D: a size answer that is not 1 to 18 digits is an error, never a size', async () => {
+    const p = await project(acme.id, { name: 'd-digits' })
+    try {
+      for (const bad of ['1' + '0'.repeat(24), '-5000000000', '1e3', '']) {
+        sizeAnswer = bad
+        await expect(disk.projectBytes(p)).rejects.toThrow(/size could not be read/)
+      }
+      sizeAnswer = '999999999999999999'
+      expect(await disk.projectBytes(p)).toBe(999999999999999999)
+    } finally {
+      sizeAnswer = '1000'
     }
   })
 

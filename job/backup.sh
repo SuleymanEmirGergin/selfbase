@@ -10,7 +10,11 @@
 #   no database, storage or network needed; the last line is then `backup: pruned <subdir>`)
 # The provisioner mounts only /backups/$BACKUP_SUBDIR (R5). The run is refused (exit 4, nothing written) when the
 # backup volume would keep less than 10% or 5 GiB free, whichever is larger, after this backup (sized at its start
-# from the database and the storage files): one project must never fill the shared disk.
+# from the database and the storage files): one project must never fill the shared disk. That size comes from SQL the
+# project's superuser can change, so it is only an estimate: every writer (pg_dump, pg_dumpall, tar) also runs under
+# ulimit -f, set to the room left above the floor when it starts, and one that reaches it (SIGXFSZ, or EFBIG where the
+# signal is ignored) exits 4 too. That also bounds globals.sql, which no database size counts, and a database that
+# grows after the estimate.
 # BACKUP_MIN_FREE_MIB (the provisioner's node setting, never a request's) replaces that floor, e.g. on a small test disk.
 # Writes /backups/$BACKUP_SUBDIR/<YYYYMMDD-HHMMSS UTC>/{db.dump (pg_dump -Fc), globals.sql (roles, without
 # passwords; for a disaster restore onto a fresh cluster only), storage.tar.gz, project.json (exports only),
@@ -83,8 +87,11 @@ if [ -n "$min_free" ]; then need=$((min_free * 1024)) rule=BACKUP_MIN_FREE_MIB
 else need=$(( total / 10 > 5242880 ? total / 10 : 5242880 )) rule='10% or 5 GiB, whichever is larger'; fi
 # what this backup will write, at most: the database as postgres stores it (the dump is smaller) and the storage
 # files as they are on disk, measured here and now (control's check before queueing is an early refusal only)
-db_bytes=$(psql -XAtq -v ON_ERROR_STOP=1 -c 'select pg_database_size(current_database())')
-[[ $db_bytes =~ ^[0-9]+$ ]] || { echo "backup: the database size could not be read" >&2; exit 1; }
+# psql resolves names in pg_catalog only, whatever search_path the role or database sets (a tenant's
+# public.pg_database_size would answer first): the client's startup options win over those settings
+db_bytes=$(PGOPTIONS='-c search_path=pg_catalog' psql -XAtq -v ON_ERROR_STOP=1 -c 'select pg_catalog.pg_database_size(pg_catalog.current_database())')
+# at most 18 digits: a longer answer would overflow the arithmetic below and pass the check
+[[ $db_bytes =~ ^[0-9]{1,18}$ ]] || { echo "backup: the database size could not be read" >&2; exit 1; }
 est=$((db_bytes / 1024))
 if [ "$sub" != control ]; then
   # GNU du exits 1 when a file vanishes mid-walk (core deleting objects): the total it printed still counts
@@ -96,15 +103,30 @@ fi
 [ ! -e "$backups/$ts" ] || { echo "backup: $sub/$ts already exists" >&2; exit 1; }
 # leftovers of killed runs (a running backup's temp dir is never a day old)
 find "$backups" -mindepth 1 -maxdepth 1 -name '.tmp-*' -mmin +1440 -exec rm -rf {} +
+# capped <file> <writer...>: runs the writer of <file> with files capped at the room above the floor now (KiB, as
+# ulimit -f counts in bash; what this backup wrote so far is already off the free space). A writer that reaches the
+# cap was stopped by it: the volume would have crossed the floor, exit 4 (the trap removes the temp dir).
+capped() {
+  local file=$1 room rc=0; shift
+  room=$(( $(df -Pk "$backups" | awk 'NR == 2 { print $4 }') - need ))
+  [ "$room" -gt 0 ] || outgrown
+  ( ulimit -f "$room" && exec "$@" ) || rc=$?
+  if [ "$rc" != 0 ] && { [ "$rc" = 153 ] || [ "$(stat -c %s "$file" 2> /dev/null || echo 0)" -ge $((room * 1024)) ]; }; then outgrown; fi
+  return "$rc"
+}
+outgrown() {
+  echo "backup: REFUSED: the backup outgrew the room above the floor, at least $((need / 1024)) MiB ($rule) must stay free on the backup volume; free space first" >&2
+  exit 4
+}
 mkdir "$tmp"
 # mail_log holds sign-in and recovery links in clear when SMTP is off: its rows never enter a backup
-pg_dump -Fc --exclude-table-data=selfbase.mail_log -f "$tmp/db.dump"
-pg_dumpall --globals-only --no-role-passwords -f "$tmp/globals.sql"
+capped "$tmp/db.dump" pg_dump -Fc --exclude-table-data=selfbase.mail_log -f "$tmp/db.dump"
+capped "$tmp/globals.sql" pg_dumpall --globals-only --no-role-passwords -f "$tmp/globals.sql"
 if [ "$sub" != control ]; then
   # GNU tar exits 1 when a file changed while it was read (core kept writing); the archive is still
   # usable, so only exit 2 and above fail the backup.
   rc=0
-  tar -czf "$tmp/storage.tar.gz" -C "$storage" . || rc=$?
+  capped "$tmp/storage.tar.gz" tar -czf "$tmp/storage.tar.gz" -C "$storage" . || rc=$?
   [ "$rc" -le 1 ] || exit "$rc"
   [ "$rc" = 0 ] || echo "backup: WARNING: storage files changed while archiving; they are as tar read them" >&2
 fi

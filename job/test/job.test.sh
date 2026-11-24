@@ -2,13 +2,14 @@
 # Backup and restore in real containers: template/compose.test.yml's db and db-v1 plus the job image, run the way
 # the provisioner runs a job (backups at /backups, the project's storage volume at /data/storage, PG* env).
 #   bash job/test/job.test.sh
-# Uses compose project sb-job-test (override with JOB_TEST_PROJECT) and removes everything it created at the end.
+# Uses compose project sb-job-test (override with JOB_TEST_PROJECT) and image selfbase-job:test (JOB_TEST_IMAGE), and
+# removes everything it created at the end.
 # "core starts" is core's own applyMigrations (core/src/platform/migrate.ts, as core/src/server.ts calls it).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 export MSYS_NO_PATHCONV=1 # keeps Git Bash on Windows from rewriting the container paths
 P=${JOB_TEST_PROJECT:-sb-job-test}
-IMAGE=selfbase-job:test
+IMAGE=${JOB_TEST_IMAGE:-selfbase-job:test} # parallel checkouts: a tag of their own
 PW=test-postgres-password
 export TEST_DB_PORT=${JOB_TEST_DB_PORT:-54381} TEST_DB_V1_PORT=${JOB_TEST_DB_V1_PORT:-54382}
 export TEST_DB_EMPTY_PORT=${JOB_TEST_DB_EMPTY_PORT:-54383} TEST_REST_PORT=${JOB_TEST_REST_PORT:-54384}
@@ -120,9 +121,10 @@ check 'R3: a BACKUP_MIN_FREE_MIB that is not a number is refused (exit 2)' [ "$r
 # a 256 MiB volume whose floor leaves 64 MiB of headroom for this database (and the small storage)
 dbm=$(( $(sql db "select pg_database_size(current_database())") / 1048576 ))
 floor=$((256 - dbm - 64))
-sized() { docker run --rm --network "$NET" -e PGHOST=db -e PGPASSWORD="$PW" -e BACKUP_SUBDIR=t -e "BACKUP_MIN_FREE_MIB=$floor" \
+# sized <storage volume> [floor MiB] [shell prefix, e.g. a function standing in for psql]
+sized() { docker run --rm --network "$NET" -e PGHOST=db -e PGPASSWORD="$PW" -e BACKUP_SUBDIR=t -e "BACKUP_MIN_FREE_MIB=${2:-$floor}" \
   --mount type=tmpfs,destination=/backups,tmpfs-size=256m -v "$1:/data/storage:ro" "$IMAGE" \
-  bash -c 'bash /scripts/backup.sh; rc=$?; echo "entries=$(ls -A /backups/t 2>/dev/null | wc -l)"; exit $rc' 2>&1; }
+  bash -c "${3:-}"' bash /scripts/backup.sh; rc=$?; echo "entries=$(ls -A /backups/t 2>/dev/null | wc -l)"; exit $rc' 2>&1; }
 rc=0; out=$(sized "$P-storage") || rc=$?
 check 'I2: with 64 MiB of headroom above the floor the backup runs' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
 # 100 MiB of storage files whose rows say nothing, or a negative size: the job counts the files
@@ -135,12 +137,44 @@ check 'I2: storage files beyond the headroom are refused (exit 4) whatever the s
 check 'I2: the refusal names the size it measured' grep -qE 'needed after this backup of up to 1[0-9]{2} MiB; free space first' <<< "$out"
 check 'I2: nothing is written on that refused run' grep -qx 'entries=0' <<< "$out"
 sql db "delete from storage.objects where bucket_id = 'i2'; delete from storage.buckets where id = 'i2'" > /dev/null
+# D: the writers run under ulimit -f, set to the room above the floor: a size the job was told wrong (a superuser can
+# replace any SQL it asks) still cannot push the volume through the floor. The room is the database's size plus
+# 16 MiB: the dump fits, the 100 MiB of storage files do not; a stand-in du reports them as nothing
+rc=0; out=$(sized "$P-big-storage" $((256 - dbm - 16)) 'du() { echo 0; }; export -f du;') || rc=$?
+check 'D: a storage archive that outgrows the room above the floor stops at it (exit 4)' [ "$rc" = 4 ]
+check 'D: and leaves neither a backup nor a temp directory' grep -qx 'entries=0' <<< "$out"
+# globals.sql: roles and their settings live in shared catalogs no database size counts; the cap bounds them
+# (64 MiB of role setting, more than that room)
+sql db "create role d_big; do \$\$ begin execute format('alter role d_big set d.big = %L', repeat('x', 64 * 1048576)); end \$\$" > /dev/null
+rc=0; out=$(sized "$P-storage" $((256 - dbm - 16))) || rc=$?
+check 'D: a globals.sql that outgrows the room above the floor stops at it (exit 4)' [ "$rc" = 4 ]
+check 'D: and leaves neither a backup nor a temp directory either' grep -qx 'entries=0' <<< "$out"
+sql db "drop role d_big" > /dev/null
 # a database that grew after control admitted the backup: refused when the job starts
 sql db "create table public.grow (b text);
   insert into public.grow select string_agg(md5(random()::text), '') from generate_series(1, 98304) g, generate_series(1, 32) h group by g" > /dev/null
 rc=0; out=$(sized "$P-storage") || rc=$?
 check 'I2: a database grown beyond the headroom is refused (exit 4) at the job start' [ "$rc" = 4 ]
 check 'I2: nothing is written on that refused run either' grep -qx 'entries=0' <<< "$out"
+# D: a superuser's public.pg_database_size (0) found first through a search_path set on the role and on the database
+sql db "create function public.pg_database_size(name) returns bigint language sql as 'select 0::bigint';
+  alter role postgres set search_path = public, pg_catalog; alter database postgres set search_path = public, pg_catalog" > /dev/null
+rc=0; out=$(sized "$P-storage") || rc=$?
+check 'D: a shadowed pg_database_size does not hide the grown database (exit 4)' [ "$rc" = 4 ]
+check 'D: nothing is written on the shadowed run' grep -qx 'entries=0' <<< "$out"
+sql db "alter role postgres reset search_path; alter database postgres reset search_path; drop function public.pg_database_size(name)" > /dev/null
+# a size the job is told wrong (here a stand-in psql): the dump stops at the room above the floor, by signal or EFBIG
+for how in SIGXFSZ EFBIG; do
+  [ "$how" = SIGXFSZ ] && pre='' || pre="trap '' XFSZ;"
+  rc=0; out=$(sized "$P-storage" $((256 - 16)) "$pre psql() { echo 0; }; export -f psql;") || rc=$?
+  check "D: a dump that outgrows the room above the floor stops at it ($how, exit 4)" [ "$rc" = 4 ]
+  check "D: and leaves neither a backup nor a temp directory ($how)" grep -qx 'entries=0' <<< "$out"
+done
+# an answer of more than 18 digits would overflow the shell's arithmetic: a failure, never a pass
+JOB_ENV=(-e BACKUP_SUBDIR=d25)
+rc=0; out=$(job db "$P-storage" bash -c 'psql() { echo 1234567890123456789012345; }; export -f psql; bash /scripts/backup.sh' 2>&1) || rc=$?
+check 'D: a 25-digit size answer fails the backup (exit 1)' [ "$rc" = 1 ]
+check 'D: and says the database size could not be read' grep -q 'backup: the database size could not be read' <<< "$out"
 sql db "drop table public.grow" > /dev/null
 
 # ---- with MANIFEST_B64: project.json is written and listed ----
@@ -286,6 +320,18 @@ silent deferred "create function public.put_back() returns trigger language plpg
 check 'FR2: a deferred constraint trigger that puts the rows back at commit fails the restore with exit 5' [ "$rc" = 5 ]
 check 'FR2: and does not say the sessions are deleted' bash -c '! grep -q "sessions are deleted" <<< "$1"' _ "$out"
 check 'FR2: the count after the commit caught it (names auth.refresh_tokens)' grep -q 'auth.refresh_tokens still has rows after the delete' <<< "$out"
+# D: a public.to_regclass that hides every table (found first through the role's search_path) cannot turn the
+# ROTATE_KEYS delete and its count into no-ops: restore.sh pins search_path to pg_catalog and qualifies its calls
+sql db "insert into auth.refresh_tokens (token, session_id) values ('shadow-token', gen_random_uuid())" > /dev/null
+JOB_ENV=(-e BACKUP_SUBDIR=shadow)
+b=$(job db "$P-storage" bash /scripts/backup.sh | tail -n1)
+sql db "create function public.to_regclass(text) returns regclass language sql as 'select null::regclass';
+  alter role postgres set search_path = public, pg_catalog" > /dev/null
+JOB_ENV=(-e "RESTORE_DIR=${b#backup: wrote }" -e ROTATE_KEYS=1)
+rc=0; out=$(job db "$P-storage" bash /scripts/restore.sh 2>&1) || rc=$?
+sql db "alter role postgres reset search_path; drop function if exists public.to_regclass(text)" > /dev/null
+check 'D: a rotating restore under a shadowed to_regclass succeeds' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
+check 'D: and really deletes the restored sessions' [ "$(sql db 'select count(*) from auth.refresh_tokens')" = 0 ]
 # a foreign dump with neither table: nothing to delete, no error (into a database with pg_cron, as every project's is)
 sql db-empty "create extension if not exists pg_cron" > /dev/null
 JOB_ENV=(-e BACKUP_SUBDIR=empty)

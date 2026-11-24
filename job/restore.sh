@@ -67,7 +67,10 @@ names=$(tar -tzf "$dir/storage.tar.gz")
   { echo "restore: $rel/storage.tar.gz holds an absolute or .. path; refusing" >&2; exit 1; }
 echo "restore: $rel verified"
 
-q() { psql -XAtq -v ON_ERROR_STOP=1 "$@"; }
+# psql resolves names in pg_catalog only, whatever search_path the role or database sets (a shadowing
+# public.to_regclass would hide the tables the ROTATE_KEYS step deletes), and its calls are qualified as well.
+# pg_restore keeps the default: extension scripts it runs (postgis_tiger_geocoder) need it.
+q() { PGOPTIONS='-c search_path=pg_catalog' psql -XAtq -v ON_ERROR_STOP=1 "$@"; }
 jobs='' db_done=0 t='' held=0
 HOLD=selfbase_restore_hold
 cleanup() {
@@ -90,19 +93,19 @@ cleanup() {
   exit "$rc"
 }
 trap cleanup EXIT
-jobs=$(q -c "select case when to_regclass('cron.job') is null then '' else (select coalesce(string_agg(jobid::text, ','), '')
+jobs=$(q -c "select case when pg_catalog.to_regclass('cron.job') is null then '' else (select coalesce(pg_catalog.string_agg(jobid::text, ','), '')
   from (select jobid from cron.job where active) j) end")
 if [ -n "$jobs" ]; then
   q -c "update cron.job set active = false where jobid in ($jobs)"
   echo "restore: cron jobs $jobs set inactive for the restore"
 fi
-q -c "select pg_terminate_backend(pid) from pg_stat_activity
-      where (application_name = 'pg_cron' or backend_type = 'pg_cron') and pid <> pg_backend_pid()" > /dev/null
+q -c "select pg_catalog.pg_terminate_backend(pid) from pg_catalog.pg_stat_activity
+      where (application_name = 'pg_cron' or backend_type = 'pg_cron') and pid <> pg_catalog.pg_backend_pid()" > /dev/null
 # read before the restore: a TOC that cannot be listed is a dump that cannot be restored either
 toc=$(pg_restore -l "$dir/db.dump") || exit 10
 v1=0
 grep -qE ' TABLE selfbase platform_migrations ' <<< "$toc" || v1=1
-if [ "$v1" = 1 ] && [ "$(q -c "select to_regclass('selfbase.platform_migrations') is not null")" = t ]; then
+if [ "$v1" = 1 ] && [ "$(q -c "select pg_catalog.to_regclass('selfbase.platform_migrations') is not null")" = t ]; then
   q -c "create schema if not exists $HOLD; alter table selfbase.platform_migrations set schema $HOLD"
   held=1
 fi
@@ -125,13 +128,13 @@ if [ "$rotate" = 1 ]; then
     'saml_relay_states', 'oauth_authorizations']"
   { q -c "do \$\$ declare t text; begin
       foreach t in array $creds loop
-        if to_regclass('auth.' || t) is not null then execute format('delete from auth.%I', t); end if;
+        if pg_catalog.to_regclass('auth.' || t) is not null then execute pg_catalog.format('delete from auth.%I', t); end if;
       end loop;
     end \$\$" &&
     q -c "do \$\$ declare t text; remains boolean; begin
       foreach t in array $creds loop
-        if to_regclass('auth.' || t) is not null then
-          execute format('select exists (select 1 from auth.%I)', t) into remains;
+        if pg_catalog.to_regclass('auth.' || t) is not null then
+          execute pg_catalog.format('select exists (select 1 from auth.%I)', t) into remains;
           if remains then raise exception 'auth.% still has rows after the delete', t; end if;
         end if;
       end loop;
