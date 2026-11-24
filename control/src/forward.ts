@@ -63,12 +63,16 @@ export async function adminRequest(p: Omit<Target, 'status'>, actor: string, pat
 // (public plus the project's PGRST_DB_SCHEMAS), minus these even when listed. /admin/users (no secrets) stays a read.
 const SYSTEM_SCHEMAS = new Set(['information_schema', 'auth', 'storage', 'realtime', 'vault', 'cron', 'net', 'pgmq', 'graphql',
   'extensions', 'supabase_migrations', 'supabase_functions', 'selfbase', 'pgsodium', 'pgbouncer'])
-const isSystem = (schema: string) => schema.startsWith('pg_') || SYSTEM_SCHEMAS.has(schema)
+// case folded: refusing a user schema named like a system one (Pg_x, AUTH) only over-blocks
+const isSystem = (schema: string) => {
+  const s = schema.toLowerCase()
+  return s.startsWith('pg_') || SYSTEM_SCHEMAS.has(s)
+}
 
-/** The schemas read_only may browse, lowercased. */
+/** The schemas read_only may browse, as written: Postgres and PostgREST names are case-sensitive ("Public" is not public). */
 async function userSchemas(projectId: string): Promise<Set<string>> {
   const exposed = String((await projectConfig(pool, projectId)).PGRST_DB_SCHEMAS ?? CONFIG_DEFAULTS.PGRST_DB_SCHEMAS)
-  return new Set(['public', ...exposed.split(',').map((s) => s.trim().toLowerCase())].filter((s) => s && !isSystem(s)))
+  return new Set(['public', ...exposed.split(',').map((s) => s.trim())].filter((s) => s && !isSystem(s)))
 }
 
 /** The admin path the way core will route it (decoded, slashes collapsed, case folded): for the permission check only. */
@@ -80,7 +84,8 @@ async function actionFor(method: string, url: URL, projectId: string): Promise<A
     throw new ApiError(400, 'invalid_path', 'the path is not valid')
   }
   const canon = path.toLowerCase().replace(/\/{2,}/g, '/').replace(/\/+$/, '')
-  const rowSchema = /^\/admin\/rows\/([^/]+)\//.exec(canon)?.[1]
+  // the schema as core will look it up: exactly as written
+  const rowSchema = /^\/admin\/rows\/([^/]+)\//i.exec(path.replace(/\/{2,}/g, '/'))?.[1]
   if (canon === '/admin/sql' || (rowSchema !== undefined && isSystem(rowSchema))) return 'project.sql'
   // writes need developer, which has project.sql as well: only reads have a schema line to draw
   if (method !== 'GET' && method !== 'HEAD') return 'project.write'
@@ -94,7 +99,7 @@ async function actionFor(method: string, url: URL, projectId: string): Promise<A
   else if (canon === '/admin/policies') schemas = query.length ? query : ['']
   if (schemas.length) {
     const allowed = await userSchemas(projectId)
-    if (!schemas.every((s) => allowed.has(s.toLowerCase()))) return 'project.sql'
+    if (!schemas.every((s) => allowed.has(s))) return 'project.sql'
   }
   return 'project.read'
 }

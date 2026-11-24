@@ -94,7 +94,7 @@ describe('admin forwarding', () => {
     // a developer has project.sql: the same paths are forwarded
     for (const path of refused) expect((await withToken(dev.token, 'GET', `${A()}${path}`)).status, path).toBe(200)
     // read_only still browses its own tables
-    for (const path of ['/rows/public/notes', '/rows/PUBLIC/notes', '/tables?schema=public', '/tables', '/tables?schema=', '/policies?schema=public',
+    for (const path of ['/rows/public/notes', '/tables?schema=public', '/tables', '/tables?schema=', '/policies?schema=public',
       '/policies?schema=public&table=notes', '/schemas', '/users'])
       expect((await withToken(reader.token, 'GET', `${A()}${path}`)).status, path).toBe(200)
   })
@@ -107,6 +107,23 @@ describe('admin forwarding', () => {
       expect((await withToken(reader.token, 'GET', `${A()}/tables?schema=api`)).status).toBe(200)
       for (const path of ['/rows/storage/objects', '/rows/pg_catalog/pg_authid', '/tables?schema=storage'])
         expect((await withToken(reader.token, 'GET', `${A()}${path}`)).status, path).toBe(403)
+    } finally {
+      await pool.query(`delete from control.project_config where project_id = $1 and section = 'postgrest'`, [p.id])
+    }
+  })
+
+  test('G: the allowlist compares schema names as written: "Public" is another schema than public', async () => {
+    const n = core.seen.length
+    for (const path of ['/rows/Public/t', '/rows/PUBLIC/notes', '/tables?schema=PUBLIC', '/tables?schema=Public', '/policies?schema=Public'])
+      expect((await withToken(reader.token, 'GET', `${A()}${path}`)).status, path).toBe(403)
+    expect(core.seen.length).toBe(n)
+    expect((await withToken(reader.token, 'GET', `${A()}/rows/public/t`)).status).toBe(200)
+    // an exposed schema is matched exactly too
+    await pool.query(`insert into control.project_config (project_id, section, data) values ($1, 'postgrest', $2)
+      on conflict (project_id, section) do update set data = excluded.data`, [p.id, { PGRST_DB_SCHEMAS: 'public,Api' }])
+    try {
+      expect((await withToken(reader.token, 'GET', `${A()}/rows/Api/orders`)).status).toBe(200)
+      expect((await withToken(reader.token, 'GET', `${A()}/rows/api/orders`)).status).toBe(403)
     } finally {
       await pool.query(`delete from control.project_config where project_id = $1 and section = 'postgrest'`, [p.id])
     }
