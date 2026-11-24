@@ -21,11 +21,14 @@ const backoffMs = (n: number) => Math.min(60_000 * 2 ** (n - 1), 3_600_000)
 // finished applies reconcile made are history nobody reads after a week: the job table stays bounded
 const PRUNE = `delete from control.jobs where type = 'project.apply' and created_by is null and status in ('succeeded', 'failed')
   and created_at < now() - interval '7 days'`
+// audit retention: 90 days
+const PRUNE_AUDIT = `delete from control.audit_log where at < now() - interval '90 days'`
 
 export async function reconcileOnce(deps: ReconcileDeps): Promise<ReconcileReport> {
   const probe = deps.probe ?? probeCertificate
   const report: ReconcileReport = { checked: [], skipped: [], actions: [], orphans: [], errors: [] }
   await deps.db.query(PRUNE)
+  await deps.db.query(PRUNE_AUDIT)
   const projects = (await deps.db.query(
     `select p.*, ${BUSY} as busy from control.projects p`,
   )).rows as (Project & { busy: boolean })[]

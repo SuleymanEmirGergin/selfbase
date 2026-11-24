@@ -4,7 +4,8 @@ import type { Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { createMiddleware } from 'hono/factory'
 import { pool } from './db.ts'
-import { clientIp } from './core.ts'
+import { clientIp, take } from './core.ts'
+import { ApiError } from './errors.ts'
 import { apiRoute, PUBLIC } from './session.ts'
 import type { Env } from './session.ts'
 
@@ -27,17 +28,37 @@ export const bodyCap = createMiddleware((c, next) => {
   return route && largeBodyRoutes.has(route) && (!isJson(c) || isUpload(c)) ? next() : limit(c, next)
 })
 
+const MAX_KEYS = 32
+const MAX_KEY_LENGTH = 64
+// core limits these per IP itself (signIn and refresh buckets)
+const CORE_LIMITED = /^\/platform\/(login|refresh)$/
+/**
+ * Per-IP limit on the other public writes (invitations/accept, logout, auth/v1/*), before audit: a refused request
+ * writes no row. Reuses core's limiter with the signIn budget, in its own key space.
+ */
+export const publicLimit = createMiddleware(async (c, next) => {
+  const write = c.req.method !== 'GET' && c.req.method !== 'HEAD' && c.req.method !== 'OPTIONS'
+  if (write && PUBLIC.test(c.req.path) && !CORE_LIMITED.test(c.req.path) && !take('signIn', `public:${clientIp(c)}`))
+    throw new ApiError(429, 'over_request_rate_limit', 'Too many requests from this address. Try again in a few minutes.')
+  return next()
+})
+
 export const audit = createMiddleware<Env>(async (c, next) => {
   if (c.req.method === 'GET' || c.req.method === 'HEAD' || c.req.method === 'OPTIONS') return next()
   let bodyKeys: string[] = []
   if (isJson(c) && !isUpload(c)) {
     // parsed once here; Hono caches the body, so the handler can still read it
     const body = await c.req.json().catch(() => null)
-    if (body && typeof body === 'object' && !Array.isArray(body)) bodyKeys = Object.keys(body)
+    if (body && typeof body === 'object' && !Array.isArray(body))
+      bodyKeys = Object.keys(body).slice(0, MAX_KEYS).map((k) => k.slice(0, MAX_KEY_LENGTH))
   }
   await next()
-  // a caller refused by authenticate (no session, no token) did nothing: no row, so the internet cannot fill the table
-  if (!c.get('user') && c.res.status === 401 && !PUBLIC.test(c.req.path)) return
+  // Rows the internet could otherwise write at will: an anonymous caller gets none when authenticate refused it
+  // (no session, no token), when no route answers the path, or when a rate limit refused it.
+  if (!c.get('user')) {
+    if (c.res.status === 401 && !PUBLIC.test(c.req.path)) return
+    if (!apiRoute(c) || c.res.status === 429) return
+  }
   const path = c.get('audit')?.path
   await writeAudit(c, { status: c.res.status, body_keys: bodyKeys, ...(path ? { path } : {}) })
 })
