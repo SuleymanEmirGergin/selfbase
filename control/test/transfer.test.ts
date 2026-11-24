@@ -223,6 +223,19 @@ describe('import', () => {
     expect(fake.callsOf('start')).toEqual([])
   })
 
+  test('E: a restore refused for space (exit 6) fails as restore_volume_full with the numbers; nothing was changed', async () => {
+    fake.jobResult = () => ({ status: 'failed', exitCode: 6, tail: "restore: REFUSED: 900 MiB free on the volume of the project's data, "
+      + 'at least 100 MiB (BACKUP_MIN_FREE_MIB) needed after this restore of more than 850 MiB; free space first\n' })
+    const res = await postForm(owner.token, form({ ...importFields({ name: 'too-big' }), env_file: envBlob(v1Env().text) }))
+    const out = await res.json()
+    workers()
+    const job = await finished(out.job_id)
+    expect(job.status).toBe('failed')
+    expect(job.error).toBe("restore_volume_full: the volume of the project's data has 900 MiB free; this import needs more than 850 MiB "
+      + 'and 100 MiB (BACKUP_MIN_FREE_MIB) must stay free. Nothing was changed: free space or grow the volume, then import again.')
+    expect(fake.callsOf('start')).toEqual([])
+  })
+
   test('a project.json sealed by an export: the passphrase opens it', async () => {
     const secrets = { JWT_SECRET: 'exported-jwt-secret-value-0123456789', ANON_KEY: 'exported-anon', SERVICE_ROLE_KEY: 'exported-service' }
     const own = await project(acme.id, { name: 'exported' })

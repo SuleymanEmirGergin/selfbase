@@ -294,8 +294,9 @@ export function buildJob(input: JobInput, node: NodeSettings): ContainerSpec {
   // the other job's directory key would only confuse the script
   if (Object.hasOwn(env, type === 'backup' ? 'RESTORE_DIR' : 'BACKUP_SUBDIR')) refuse(400, 'invalid_dir', `a ${type} job takes no ${type === 'backup' ? 'RESTORE_DIR' : 'BACKUP_SUBDIR'}`)
   const dir = checkDir(ref, env[key], type === 'restore')
-  // the node's floor, never a request's (JOB_ENV has no such key)
-  if (type === 'backup' && node.backupMinFreeMib) env.BACKUP_MIN_FREE_MIB = node.backupMinFreeMib
+  // the node's floor, never a request's (JOB_ENV has no such key): a backup keeps it free on the backup volume, a
+  // restore on the volume of the project's data
+  if (node.backupMinFreeMib) env.BACKUP_MIN_FREE_MIB = node.backupMinFreeMib
   // retention alone over expired exports (backup.sh): of a deleted project too, so no network, storage or new directory
   const prune = isPruneOnly({ type, env })
   if (Object.hasOwn(env, 'BACKUP_PRUNE_ONLY') && (type !== 'backup' || env.BACKUP_PRUNE_ONLY !== '1')) {

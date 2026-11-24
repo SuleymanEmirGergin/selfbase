@@ -11,6 +11,10 @@
 #   1. verifies the backup's MANIFEST (sizes and sha256); a missing or unlisted file or any mismatch is refused
 #      before anything changes (exit 1); so is a storage archive holding anything but plain files and directories
 #      (a link, device or fifo) or a name that is absolute or has a .. part: an imported archive is foreign data
+#   1b. adds up what the restore will write (the archive's files, an estimate of the dump once restored) and refuses
+#      before anything changes (exit 6) when that would leave less than the floor free on the volume of the
+#      project's data (BACKUP_MIN_FREE_MIB, the provisioner's node setting, else 10% or 5 GiB, whichever is larger):
+#      a dump that expands without bound must not fill the disk other projects share
 #   2. cron: every active job is set inactive (committed) and running job sessions are terminated, so no job runs
 #      during the restore; the restore brings back the backup's job states (on failure the jobs set inactive here
 #      are set active again)
@@ -60,12 +64,42 @@ while read -r f size sum; do
 done < "$dir/MANIFEST"
 [ -d "$storage" ] || { echo "restore: storage directory $storage not mounted" >&2; exit 1; }
 # the MANIFEST only proves the archive is the one listed, not that it is safe to extract as root (R4)
-types=$(tar -tvzf "$dir/storage.tar.gz" | cut -c1 | sort -u | tr -d '\n') || { echo "restore: $rel/storage.tar.gz cannot be read; refusing" >&2; exit 1; }
+# numeric owners: a name with a space in it cannot shift the size column read in step 1b
+listing=$(tar --numeric-owner -tvzf "$dir/storage.tar.gz") || { echo "restore: $rel/storage.tar.gz cannot be read; refusing" >&2; exit 1; }
+types=$(cut -c1 <<< "$listing" | sort -u | tr -d '\n')
 [[ $types =~ ^[-d]*$ ]] || { echo "restore: $rel/storage.tar.gz holds a link, device or fifo; refusing" >&2; exit 1; }
 names=$(tar -tzf "$dir/storage.tar.gz")
 ! grep -qE '^/|(^|/)\.\.(/|$)' <<< "$names" ||
   { echo "restore: $rel/storage.tar.gz holds an absolute or .. path; refusing" >&2; exit 1; }
 echo "restore: $rel verified"
+
+# 1b. The room on the volume of the project's data, in KiB. The job sees only the storage volume; the database's
+# volume is taken to be on the same filesystem (Docker volumes on one disk), so both are counted against it.
+min_free=${BACKUP_MIN_FREE_MIB:-}
+[[ -z $min_free || $min_free =~ ^[1-9][0-9]{0,7}$ ]] || { echo "restore: BACKUP_MIN_FREE_MIB must be a whole number of MiB from 1" >&2; exit 2; }
+read -r total avail < <(df -Pk "$storage" | awk 'NR == 2 { print $2, $4 }')
+if [ -n "$min_free" ]; then need=$((min_free * 1024)) rule=BACKUP_MIN_FREE_MIB
+else need=$(( total / 10 > 5242880 ? total / 10 : 5242880 )) rule='10% or 5 GiB, whichever is larger'; fi
+room=$((avail - need))
+refused() { # <about|more than> <KiB>
+  echo "restore: REFUSED: $((avail / 1024)) MiB free on the volume of the project's data, at least $((need / 1024)) MiB ($rule) needed after this restore of $1 $(($2 / 1024)) MiB; free space first" >&2
+  exit 6
+}
+# the storage files: the listing's sizes are what tar writes (only plain files and directories pass above), each
+# rounded up to 4 KiB blocks, so a million empty files count too
+storage_k=$(LC_ALL=C awk 'NF == 0 { next } $3 !~ /^[0-9]+$/ { bad = 1 } { k += int(($3 + 4095) / 4096) * 4 } END { if (bad) print "bad"; else printf "%.0f\n", k }' <<< "$listing")
+[[ $storage_k =~ ^[0-9]{1,18}$ ]] || { echo "restore: the sizes in $rel/storage.tar.gz cannot be read; refusing" >&2; exit 1; }
+[ "$storage_k" -le "$room" ] || refused about "$storage_k"
+# the database: the dump's SQL as pg_restore would send it, decompressed and counted here, never written. On disk a
+# row takes its text plus about 24 bytes of tuple header, and its index entries take as much again for the indexed
+# columns: (bytes + 32 per line) x 2. An estimate, not a bound: a table with many indexes, or rows of a few bytes, can
+# take more. Counting stops once the estimate passes the room, so a decompression bomb costs no more than the room.
+# A dump pg_restore cannot read counts as far as it got: the restore itself then fails and rolls back (exit 10).
+db_k=$(pg_restore -f - "$dir/db.dump" 2> /dev/null | LC_ALL=C awk -v lim=$(( (room - storage_k) * 1024 )) '
+  { b += length($0) + 33 } b * 2 > lim { over = 1; exit } END { if (over) print "over"; else printf "%.0f\n", b * 2 / 1024 }') || true
+[ "$db_k" != over ] || refused 'more than' "$room"
+[[ $db_k =~ ^[0-9]{1,18}$ ]] || { echo "restore: the size of $rel/db.dump cannot be estimated; refusing" >&2; exit 1; }
+echo "restore: about $(( (storage_k + db_k) / 1024 )) MiB to write, $((room / 1024)) MiB free above the floor"
 
 # psql resolves names in pg_catalog only, whatever search_path the role or database sets (a shadowing
 # public.to_regclass would hide the tables the ROTATE_KEYS step deletes), and its calls are qualified as well.

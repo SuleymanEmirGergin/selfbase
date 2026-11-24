@@ -26,6 +26,16 @@ function volumeFull(tail: string): string {
   return `backup_volume_full: ${numbers}. Remove old backups or exports, or grow the volume, then try again.`
 }
 
+// restore.sh's exit 6: before anything changed, it found that the archive's files and the dump's estimated size would
+// leave less than the floor free on the volume of the project's data. Again only the numbers and the rule are taken
+const RESTORE_REFUSED = /^restore: REFUSED: (\d+) MiB free on the volume of the project's data, at least (\d+) MiB \((BACKUP_MIN_FREE_MIB|10% or 5 GiB, whichever is larger)\) needed after this restore of (about|more than) (\d+) MiB; free space first$/m
+function restoreVolumeFull(tail: string): string {
+  const m = RESTORE_REFUSED.exec(tail)
+  const numbers = m ? `the volume of the project's data has ${m[1]} MiB free; this import needs ${m[4]} ${m[5]} MiB and ${m[2]} MiB (${m[3]}) must stay free`
+    : "the volume of the project's data would keep less than its floor free after this import"
+  return `restore_volume_full: ${numbers}. Nothing was changed: free space or grow the volume, then import again.`
+}
+
 /** Waits for the provisioner job of `type` to end; its output tail when it succeeded, else an error saying what changed. */
 async function waitFor(ctx: JobCtx, ref: string, type: 'backup' | 'restore'): Promise<string> {
   const until = Date.now() + JOB_MS
@@ -57,6 +67,7 @@ async function waitFor(ctx: JobCtx, ref: string, type: 'backup' | 'restore'): Pr
     if (s.status === 'succeeded') return s.tail
     if (type === 'backup' && s.exitCode === 4) throw new Error(volumeFull(s.tail))
     if (type === 'restore' && s.exitCode === 10) throw new Error('the restore failed and rolled back: the database was not changed')
+    if (type === 'restore' && s.exitCode === 6) throw new Error(restoreVolumeFull(s.tail))
     if (type === 'restore' && s.exitCode === 5) {
       throw new Error('the database was restored but its sessions could not be deleted (rotate_keys): delete this project, then import again')
     }

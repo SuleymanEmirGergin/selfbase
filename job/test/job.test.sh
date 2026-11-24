@@ -339,6 +339,41 @@ last=$(job db-empty "$P-empty-storage" bash /scripts/backup.sh | tail -n1)
 JOB_ENV=(-e "RESTORE_DIR=${last#backup: wrote }" -e ROTATE_KEYS=1)
 rc=0; out=$(job db-empty "$P-empty-storage" bash /scripts/restore.sh 2>&1) || rc=$?
 check 'I1: a rotating restore of a dump without auth tables succeeds' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
+
+# ---- E: a restore is sized before anything changes: the volume of the project's data keeps its floor ----
+# cramped <RESTORE_DIR> [floor MiB]: a restore into db-empty with a 64 MiB storage volume; prints entries=<n> left on it
+cramped() { docker run --rm --network "$NET" -e PGHOST=db-empty -e PGPASSWORD="$PW" -e "RESTORE_DIR=$1" -e "BACKUP_MIN_FREE_MIB=${2:-1}" \
+  -v "$P-backups:/backups:ro" --mount type=tmpfs,destination=/data/storage,tmpfs-size=64m "$IMAGE" \
+  bash -c 'rc=0; bash /scripts/restore.sh || rc=$?; echo "entries=$(ls -A /data/storage | wc -l)"; exit $rc' 2>&1; }
+emarker() { sql db-empty 'select v from public.e_marker'; }
+sql db-empty "create table public.e_marker (v text); insert into public.e_marker values ('in-backup')" > /dev/null
+JOB_ENV=(-e BACKUP_SUBDIR=esmall)
+small=$(job db-empty "$P-empty-storage" bash /scripts/backup.sh | tail -n1); small=${small#backup: wrote }
+rc=0; out=$(cramped "$small") || rc=$?
+check 'E: a small restore runs on a 64 MiB volume with BACKUP_MIN_FREE_MIB=1' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
+check 'E: and says what it will write and the room above the floor' grep -qE '^restore: about [0-9]+ MiB to write, [0-9]+ MiB free above the floor$' <<< "$out"
+rc=0; out=$(cramped "$small" x) || rc=$?
+check 'E: a BACKUP_MIN_FREE_MIB that is not a number is refused (exit 2)' [ "$rc" = 2 ]
+# a dump whose rows restore to 200 MiB: 2000 rows of 100 kB, compressed in the database (TOAST) and in the dump
+sql db-empty "create table public.e_bomb (v text); insert into public.e_bomb select repeat('x', 100000) from generate_series(1, 2000)" > /dev/null
+JOB_ENV=(-e BACKUP_SUBDIR=ebomb)
+bomb=$(job db-empty "$P-empty-storage" bash /scripts/backup.sh | tail -n1); bomb=${bomb#backup: wrote }
+sql db-empty 'drop table public.e_bomb' > /dev/null
+# a storage archive of a few hundred kB that extracts to 100 MiB, with a matching MANIFEST
+in_backups "set -e; cp -a /backups/$small /backups/esmall/storage-bomb; w=\$(mktemp -d); head -c 100M /dev/zero > \$w/zeros
+  tar -czf /backups/esmall/storage-bomb/storage.tar.gz -C \$w zeros; rm -rf \$w; cd /backups/esmall/storage-bomb
+  sed -i \"s|^storage.tar.gz .*|storage.tar.gz \$(stat -c %s storage.tar.gz) \$(sha256sum < storage.tar.gz | cut -d' ' -f1)|\" MANIFEST"
+sql db-empty "update public.e_marker set v = 'after-backup'" > /dev/null
+rc=0; out=$(cramped esmall/storage-bomb) || rc=$?
+check 'E: a storage archive that extracts past the room above the floor is refused (exit 6)' [ "$rc" = 6 ]; [ "$rc" = 6 ] || echo "$out" >&2
+check 'E: the refusal names the free space, the floor and the size' grep -qE "^restore: REFUSED: [0-9]+ MiB free on the volume of the project's data, at least 1 MiB \(BACKUP_MIN_FREE_MIB\) needed after this restore of about 10[0-9] MiB; free space first$" <<< "$out"
+check 'E: nothing is extracted' grep -qx 'entries=0' <<< "$out"
+check 'E: the database is unchanged' [ "$(emarker)" = after-backup ]
+rc=0; out=$(cramped "$bomb") || rc=$?
+check 'E: a dump that restores past the room above the floor is refused (exit 6)' [ "$rc" = 6 ]; [ "$rc" = 6 ] || echo "$out" >&2
+check 'E: that refusal says more than the room' grep -qE "needed after this restore of more than [0-9]+ MiB; free space first$" <<< "$out"
+check 'E: the database is unchanged by the refused dump' [ "$(emarker)" = after-backup ]
+check 'E: and the dump was not restored' [ "$(sql db-empty "select to_regclass('public.e_bomb') is null")" = t ]
 # the v1 dump below drops schema auth: a table it does not hold would block that
 sql db "drop table auth.sessions, auth.mfa_factors, $(sed 's/\([a-z_]*\)/auth.\1/g; s/ /, /g' <<< "$FOREIGN_CREDS")" > /dev/null
 
