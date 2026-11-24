@@ -578,6 +578,17 @@ check '2: it says the state is unknown and claims no rollback' \
   bash -c 'grep -q "STATE UNKNOWN" <<< "$1" && ! grep -qE "rolled back|unchanged|set active again" <<< "$1"' _ "$out"
 sql db-empty "select pg_terminate_backend(pid) from pg_stat_activity where backend_type = 'client backend' and pid <> pg_backend_pid()" > /dev/null
 sql db-empty "update cron.job set active = true where jobname = 'e_job'" > /dev/null
+# 6: a stop that failed is not run again: a writer that, stopped at the floor after the failed stop, signals the
+# restore before it exits. Every termination fails (as above); one 30 s stop, not two
+pgrstandin fill 'trap "kill -TERM $PPID; sleep 3; exit 1" TERM; head -c 100M /dev/zero > /data/storage/.fill 2> /dev/null
+  sleep 120 & wait; exit 1'
+start=$SECONDS
+rc=0; out=$(cramped "$small" 1 '' 'export PATH=/backups/standin/fill:$PATH
+  psql() { case "$*" in *"pg_terminate_backend(pid, 1000)"*) return 2 ;; esac; command psql "$@"; }; export -f psql') || rc=$?
+took=$((SECONDS - start))
+check '6: a signal after a failed stop exits 8' [ "$rc" = 8 ]; [ "$rc" = 8 ] || echo "$out" >&2
+check '6: within one stop (under 45 s)' [ "$took" -lt 45 ]; [ "$took" -lt 45 ] || echo "took ${took}s" >&2
+sql db-empty "update cron.job set active = true where jobname = 'e_job'" > /dev/null
 # 1: a pg_restore that committed and exits 0 as the floor stop reaches it, signalling the restore as it goes: the
 # commit is kept (exit 7: database restored, storage not replaced), never reported as nothing changed
 pgrstandin zero 'real "$@" || exit; trap "kill -TERM $PPID; exit 0" TERM; head -c 100M /dev/zero > /data/storage/.fill 2> /dev/null

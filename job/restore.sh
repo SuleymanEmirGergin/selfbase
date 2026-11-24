@@ -154,8 +154,8 @@ export PGOPTIONS='-c event_triggers=off'
 q() { PGOPTIONS="$PGOPTIONS -c search_path=pg_catalog" psql -XAtq -v ON_ERROR_STOP=1 "$@"; }
 # the cleanup's state (no function declares a local of these names: the trap runs in the scope of the function a
 # signal stopped). db_done: pg_restore committed; swapped: the storage swap began; contained: no stop failed to show
-# that the restore's sessions ended
-jobs='' db_done=0 swapped=0 t='' held=0 w='' wstop='' wrc=0 contained=1
+# that the restore's sessions ended; stop_by: the deadline of the stop under way
+jobs='' db_done=0 swapped=0 t='' held=0 w='' wstop='' wrc=0 contained=1 stop_by=''
 HOLD=selfbase_restore_hold
 # committed: pg_restore exited 0, the database is the backup's; the cron and ledger steps are never undone over it
 committed() { db_done=1 held=0 jobs='' contained=1; }
@@ -204,10 +204,11 @@ at_floor() {
 # watched <stop> <writer...>: runs the writer in a process group of its own (setsid) and reads the free space and
 # inodes every second; at the floor <stop> runs (empty: none), the writer's group is killed and the restore ends with
 # exit 6. The cleanup trap then removes the temp dir and undoes the cron and ledger steps.
-# reap: stops the running writer (its <stop> first: one that fails leaves the state unknown), kills its process group
-# and waits for it; wrc: its exit status. A pg_restore that exited 0 had committed
+# reap: stops the running writer (its <stop> first, unless one already failed: that one left the state unknown and
+# a second would only outlast the container's stop timeout), kills its process group and waits for it; wrc: its exit
+# status. A pg_restore that exited 0 had committed
 reap() {
-  [ -z "$wstop" ] || "$wstop" || contained=0
+  [ -z "$wstop" ] || [ "$contained" = 0 ] || "$wstop" || contained=0
   kill -TERM -- "-$w" 2> /dev/null || kill -TERM "$w" 2> /dev/null || true
   wrc=0; wait "$w" 2> /dev/null || wrc=$?
   # 127: watched's own wait had already reaped it when the signal came, and its status is lost with it: a pg_restore
@@ -242,15 +243,17 @@ watched() {
 # the cluster goes (client backends and background workers, in every database: the cluster is the project's alone),
 # not one picked by name: the dump's own SQL can rename its session (application_name) or open another (dblink), and
 # core, rest, fn and pooler are stopped. Done once a pass finds none; a pass that cannot run (no login), a
-# termination that fails or a session still there after 30 s in all returns 1: the state is unknown
+# termination that fails or a session still there after 30 s in all returns 1: the state is unknown. The 30 s are
+# one budget (stop_by) for a stop a signal interrupted and the cleanup's stop after it
 stop_restore() {
-  local deadline=$((SECONDS + 30)) found
-  while [ "$SECONDS" -lt "$deadline" ]; do
+  local found
+  [ -n "$stop_by" ] || stop_by=$((SECONDS + 30))
+  while [ "$SECONDS" -lt "$stop_by" ]; do
     # <sessions found>,<terminations that failed or did not end their session within 1 s>
     found=$(PGCONNECT_TIMEOUT=5 PGOPTIONS="$PGOPTIONS -c statement_timeout=10s" q -c "select pg_catalog.count(*) || ',' ||
         pg_catalog.count(*) filter (where not pg_catalog.pg_terminate_backend(pid, 1000)) from pg_catalog.pg_stat_activity
         where backend_type in ('client backend', 'background worker') and pid <> pg_catalog.pg_backend_pid()") || found=''
-    [ "$found" != 0,0 ] || return 0
+    [ "$found" != 0,0 ] || { stop_by=''; return 0; }
     sleep 1
   done
   echo "restore: WARNING: the sessions of the restore could not be shown to have ended within 30 s" >&2
