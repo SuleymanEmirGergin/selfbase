@@ -40,6 +40,7 @@ Komutların başında hangi kabukta çalıştığı yazıyor:
 > 6. **Kendi sunucuna geçişte dört adım hiç denenmedi** (bölüm 4'teki kutu).
 > 7. **Paylaşımlı sunucu kuralı:** başka takımların container'larına, `coolify-proxy`'ye, `coolify` ağına
 >    ve Docker'ın ayar dosyasına dokunma. selfbase sadece `selfbase-*` ve `sb-*` adlı nesnelerini yönetir.
+> 8. **Çalışan bir kurulumda `BASE_DOMAIN`'i değiştirme.** Desteklenmiyor ve bütün projeleri bozar (bölüm 7).
 
 ## İçindekiler
 
@@ -251,8 +252,9 @@ install -d -m 0700 /opt/selfbase /opt/selfbase/secrets /opt/selfbase/control /op
 install -d -m 0711 /opt/selfbase/backups
 ```
 
-Neden `backups` 0711: control, dışa aktarılmış bir yedeğin `project.json`'unu okuyabilmeli. Klasörün
-içindeki her yedek yine 0700/0600, yani 0711 sadece "içeri girilebilir" demek, listeleme değil.
+Neden `backups` 0711: control (container'da `node` kullanıcısı, grubu 1000) bir dışa aktarmanın
+`project.json`'unu okuyabilmeli. 0711 "içeri girilebilir" demek, "listelenebilir" demek değil. Planlı yedekler
+0700/0600 kalır. Dışa aktarmalarda klasörler 0750 ve `project.json` 0640, grupları 1000 (bölüm 9).
 
 **3. Sürüm etiketini al.** Repo herkese açık, giriş gerekmez:
 
@@ -374,7 +376,7 @@ Satır satır (boş bırakılan isteğe bağlı satır sağdaki varsayılanı al
 |---|---|---|
 | `SECRETS_DIR` | Sır dosyalarının klasörü. `/opt/selfbase/` altında olmalı. | `/opt/selfbase/secrets` |
 | `SECRETS_GID` | Sır dosyalarının grubu | `10001` |
-| `BASE_DOMAIN` | **Zorunlu.** Projeler `<ref>.<BASE_DOMAIN>`, Studio `selfbase.<BASE_DOMAIN>` olur. | `<ip>.sslip.io` |
+| `BASE_DOMAIN` | **Zorunlu.** Projeler `<ref>.<BASE_DOMAIN>`, Studio `selfbase.<BASE_DOMAIN>` olur. Projeler kurulduktan sonra değiştirilemez (bölüm 7). | `<ip>.sslip.io` |
 | `PUBLIC_URL` | Studio'nun adresi. Host'u `selfbase.<BASE_DOMAIN>` olmalı. | `https://selfbase.<BASE>` |
 | `REGISTRY` | **Zorunlu.** İmaj adlarının ön eki: `<REGISTRY>/selfbase-<ad>:<TEMPLATE_VERSION>` | adım 4'teki `R` |
 | `TEMPLATE_VERSION` | **Zorunlu.** Bütün imajların sürümü. Yeni projeler bu sürümle kurulur. | `<sürüm>` |
@@ -559,9 +561,11 @@ deneyebilirsin. Bu rehberin 4, 5 ve 6. bölümleri böyle doğrulandı:
   control kapanmadan önce silinen container'ları yeniden kurabilir: dalga 1'in provasında bu oldu.
 
 **Bütün platformu yeni sunucuya taşımak.** Sıra: yeni sunucuya bu bölümle kontrol yığınını kur → eski
-sunucuda her projeyi dışa aktar → dışa aktarma klasörlerini yeni sunucunun `backups/` klasörüne kopyala →
-yeni sunucuda içe aktar → uygulamaları yeni adrese çevir → eski sunucudaki projeleri sil. Ayrıntısı bölüm
-9'da. Bu yol iki sunucu arasında henüz denenmedi.
+sunucuda her projeyi dışa aktar → her dışa aktarmayı yeni sunucunun içe aktarma alanına
+(`backups/import/<org slug>/<ad>/`) kopyala ve control'ün okuyabileceği izinleri ver → yeni sunucuda şifresiyle
+içe aktar → uygulamaları yeni adrese çevir → eski sunucudaki projeleri sil. Komutlar bölüm 9'da, "Başka
+sunucuya taşıma". Kopyayı yeni sunucuda `backups/export-<ref>/` altına koyma: o ref yeni sunucunun
+control-db'sinde yok, içe aktarma `404 backup not found` döner. Bu yol iki sunucu arasında henüz denenmedi.
 
 ---
 
@@ -816,6 +820,8 @@ Bu yüzden selfbase adresleri kıt kaynak gibi kullanır:
    > its hostname.
 3. **Sertifikası gelmemiş proje sağlıklı sayılmaz.** control projenin kendi https adresini dener
    (`CERT_PROBE=on`). Cevap 60 saniye önbellekte tutulur. Sertifika gelene kadar proje `COMING_UP` kalır.
+   Studio bunu proje listesinde **certificate pending** (Türkçe **sertifika bekleniyor**) rozetiyle, işin
+   adımlarında **Waiting for the certificate** (Türkçe **Sertifika bekleniyor**) satırıyla gösterir.
 
 **Dalga 1'in durumu:** üç hakkın üçü de kullanıldı: `selfbase.<BASE>` (Studio), `sb-test.<BASE>` (test
 adresi) ve CorteQS'in proje adresi. İlk hak **2026-11-30 22:51 UTC**'de açılıyor, sonrakiler ilk
@@ -846,19 +852,23 @@ ad özel olarak eklenemez. `*.sslip.io`, `*.nip.io` gibi joker IP adları da red
 
 Bir alan adını kaldırmak: aynı listede **Remove**. Proje artık o adrese cevap vermez.
 
-### Gerçek alan adına geçiş
+### Gerçek alan adına geçiş (henüz yok)
 
-Bir gün `<BASE>` gerçek bir alan adı olunca:
+> **Çalışan bir kurulumda `BASE_DOMAIN`'i değiştirme.** Bu desteklenmiyor ve bütün projeleri bozar. Projelerin
+> varsayılan adresleri (`<ref>.<ip>.sslip.io`) control-db'de eski adla kalır. Yeni `BASE_DOMAIN` ile control bu
+> adların hepsini "`BASE_DOMAIN` dışında joker IP adı" sayar ve her projenin kurulum adımında (`ensure`) durur:
+> devam ettirme, güncelleme ve alan adı ekleme bütün projelerde başarısız olur (`control/src/hosts.ts`,
+> `assertRoutable`). Ayar bütün sunucuya ait, bir projede deneyemezsin.
 
-1. DNS: `selfbase.<yeni>` ve `*.<yeni>` → sunucu IP'si.
-2. `.env`: `BASE_DOMAIN=<yeni>`, `MAX_NEW_HOSTS_PER_WEEK` ve `BRANCH_HOST_SLOTS`'u yükselt,
-   `TEST_HOST`'u boşalt ya da yeni ada çevir. `up -d`.
-3. Tasarım: her proje yeni varsayılan adresini alır ve eski sslip.io adresi aynı router'da **legacy**
-   olarak kalır. Böylece eski uygulama derlemeleri, kayıtlı dosya adresleri ve e-postalardaki bağlantılar
-   çalışmaya devam eder. Bu otomatik yeniden adlandırma dalga 1'de denenmedi. Geçişi yaparken bir projede
-   önce dene.
+Alan adı değişikliği planlı bir iş ama henüz yapılmadı: her projeye yeni varsayılan adresini vermek ve eski
+sslip.io adresini legacy olarak korumak. Bu iş alan adı satın alınmadan önce yapılmalı.
 
-Elle yapılacaklar (otomatik değil): Google gibi OAuth sağlayıcılarının konsolunda geri dönüş adresi
+O zamana kadar gerçek bir alan adına geçmenin tek yolu yeni bir kurulum: gerçek alan adıyla yeni bir kontrol
+yığını kur (bölüm 3 ya da 4), sonra her projeyi dışa aktarıp yeni kuruluma içe aktar (bölüm 9, "Başka
+sunucuya taşıma"). Kontrol yığınının container adları sabit, aynı Docker'da ikincisi çalışmaz. Bu yüzden yeni
+kurulum pratikte yeni bir sunucu demek. İçe aktarılan proje yeni bir ref ve adres alır, anahtarları korunur.
+
+Taşımadan sonra elle yapılacaklar (otomatik değil): Google gibi OAuth sağlayıcılarının konsolunda geri dönüş adresi
 (`https://<ref>.<yeni>/auth/v1/callback`), Stripe gibi webhook gönderenlerde adres, uygulamaların
 `VITE_SUPABASE_URL`'si ve CSP'si (bölüm 18). Uygulamaları uygun bir zamanda yeni adresle yeniden derle.
 
@@ -906,7 +916,8 @@ bütçesini aşmazlar. `BACKUP_RETENTION_DAYS` günden (varsayılan 7) eski plan
 
 - `db.dump`: bütün veritabanı (`pg_dump -Fc`). `globals.sql`: roller, şifresiz. `storage.tar.gz`: yüklenen
   dosyalar. `MANIFEST`: her dosyanın boyutu ve sha256'sı.
-- Dosyalar 0600, klasörler 0700, sahibi root. `db.dump` bütün veriyi ve kullanıcıların şifre hash'lerini
+- Dosyalar 0600, klasörler 0700, sahibi root. Dışa aktarmada tek fark: klasörler 0750 ve `project.json` 0640,
+  grupları 1000 (control okuyabilsin diye, `job/backup.sh`). `db.dump` bütün veriyi ve kullanıcıların şifre hash'lerini
   içerir. Yedek klasörünü `.env` kadar koru.
 - Kontrol yığınının yedeğinin Studio'da satırı yok (Studio sadece proje yedeklerini listeler). Kaydı iş
   satırıdır. Dalga 1'in ilk planlı kontrol yedeği 2026-11-24 03:15'te 3 saniyede alındı.
@@ -939,20 +950,72 @@ kurar: yeni ref, yeni adres. Studio → **Projects** → **Import a project**:
 | Alan | Ne |
 |---|---|
 | Ad, boyut | Yeni projenin |
-| Yedek dizini (`backup_dir`) | Bu organizasyonun bir yedeği (`<ref>/<ts>` ya da `export-<ref>/<ts>`) ya da içe aktarma alanından `import/<org>/<ad>` |
+| Yedek dizini (`backup_dir`) | Bu sunucudaki bir projenin yedeği (`<ref>/<ts>` ya da `export-<ref>/<ts>`, ref bu organizasyonda ve bu sunucunun control-db'sinde olmalı) ya da içe aktarma alanından `import/<org slug>/<ad>` (başka sunucudan ya da v1'den gelenler) |
 | Anahtarlar: şifre **ya da** env dosyası, ikisinden sadece biri | Dışa aktarma için şifresi. v1 yedeği için v1 kurulumunun env dosyası (en fazla 64 KiB). Planlı yedek için de bir env dosyası: içinde verdiğin anahtarlar (`JWT_SECRET`, `ANON_KEY`, `SERVICE_ROLE_KEY`) kullanılır, vermediklerin yeni üretilir. |
 
 control env dosyasını ya da şifreyi saklamaz. Sırları şifreleyip kaydeder, sonra hangi anahtarları yok
 saydığını ve hangilerini tanımadığını adlarıyla gösterir. Proje yeni bir adres ister: sertifika
 gerekir ve haftalık hakka sayılır (bölüm 7).
 
+### Başka sunucuya taşıma (dışa aktarmayla)
+
+Başka bir sunucunun (ya da bu sunucunun eski bir kurulumunun) dışa aktarması bu sunucunun control-db'sinde
+kayıtlı değil. Bu yüzden `export-<ref>/<ts>` olarak kabul edilmez (`404 backup not found`), sadece içe aktarma
+alanından, `import/<org slug>/<ad>` olarak alınır. Şifreyle içe aktarmada `project.json`'u control kendisi okur.
+control container'da `node` kullanıcısı olarak, grup 1000 ile çalışır (`control/Dockerfile`). Klasörler ve
+`project.json` bu gruba açık olmalı, dışa aktarmanın kendi izinleri de aynısı (`job/backup.sh`).
+
+**1. Eski sunucuda paketle.** (root)
+
+```bash
+ls /opt/selfbase/backups/export-<ref>/                                  # <ts>: en yeni dışa aktarma
+tar -C /opt/selfbase/backups/export-<ref> -czf /root/<ad>.tgz <ts>
+```
+
+**2. Dosyayı yeni sunucunun `/root/` klasörüne kopyala** (ör. kendi bilgisayarından `scp` ile iki adımda).
+İçinde bütün veritabanı ve şifre hash'leri var. Yolda başka bir yerde bırakma, işin bitince kendi
+bilgisayarındaki kopyayı da sil.
+
+**3. Yeni sunucuda içe aktarma alanına aç ve izinleri ver.** (root, organizasyon `default`)
+
+```bash
+D=/opt/selfbase/backups/import/default
+mkdir -p "$D/<ad>"
+tar -xzf /root/<ad>.tgz -C "$D/<ad>" --strip-components=1
+chgrp 1000 /opt/selfbase/backups/import "$D" "$D/<ad>" "$D/<ad>/project.json"
+chmod 0750 /opt/selfbase/backups/import "$D" "$D/<ad>"
+chmod 0640 "$D/<ad>/project.json"
+ls -ln "$D/<ad>" && shred -u /root/<ad>.tgz
+```
+
+Beklenen: `project.json` `-rw-r----- 1 0 1000`, öteki dört dosya `-rw------- 1 0 0`. Dump ve dosyalar sadece
+root'a açık kalır. Onları control değil, root olarak çalışan geri yükleme işi okur.
+
+**4. İçe aktar.** Studio → **Projects** → **Import a project** → ad, boyut, yedek dizini `import/default/<ad>`,
+dışa aktarmanın şifresi. Ya da sunucuda script'le (token hazır olmalı, bölüm 5):
+
+```bash
+read -rs P; echo                                                        # dışa aktarmanın şifresi
+printf '%s' "$P" | docker run --rm -i -e SELFBASE_ACCESS_TOKEN <REGISTRY>/selfbase-control:<sürüm> \
+  node /app/scripts/import-project.mjs --url https://selfbase.<BASE> --org default --name <ad> --size small \
+  --backup-dir import/default/<ad> --passphrase -
+unset P
+```
+
+`there is no project.json in ...` hatası: dosya yok ya da control okuyamıyor, 3. adımdaki `chgrp`/`chmod`'a dön.
+`backup not found`: yedek dizini `import/<org slug>/<ad>` biçiminde değil ya da slug başka bir organizasyonun.
+
+Proje yeni bir ref ve yeni bir adres alır (haftalık hakka sayılır, bölüm 7). JWT secret, `anon` ve
+`service_role` anahtarları korunur, uygulamada sadece adres değişir. İçe aktarma doğrulandıktan sonra
+`$D/<ad>` klasörünü silebilirsin.
+
 ### v1 kurulumunu içe alma (`import-project.mjs`)
 
 Dalga 1'de CorteQS'in v1 kurulumu bu yolla proje #1 oldu (`docs/proofs/wave1-cutover.md`). Sıra:
 
 1. **v1'in yedeğini içe aktarma alanına koy.** v1'in kendi `backup.sh`'ının yazdığı bir klasör (`db.dump`,
-   `globals.sql`, `storage.tar.gz`, `MANIFEST`) olduğu gibi `/opt/selfbase/backups/import/<org slug>/<ad>`
-   altına gider. Sahibi root, 0700/0600.
+   `globals.sql`, `storage.tar.gz`, `MANIFEST`) olduğu gibi `/opt/selfbase/backups/import/<org slug>/<ad>`   altına gider. Sahibi root, 0700/0600. env dosyasıyla içe aktarmada control klasörü okumaz, bu yüzden
+   root'a kapalı kalabilir (şifreyle içe aktarma farklı, yukarıda).
 2. **v1'in env dosyasını al.** Sadece root okusun:
    ```bash
    (umask 077; docker inspect <v1 core container> --format '{{range .Config.Env}}{{println .}}{{end}}' > /opt/selfbase/v1.env)
@@ -1178,16 +1241,17 @@ yeni bir projeye `--from-empty` ile bir migration uygulandı, tablo oluştu, Pos
 ```bash
 docker compose -p selfbase -f /opt/selfbase/control/compose.yml --env-file /opt/selfbase/.env ps
 docker ps --filter name=sb-<ref> --format '{{.Names}} {{.Status}}'
-docker exec selfbase-control-db psql -U postgres -c "select type, status, step, error, updated_at from control.jobs order by created_at desc limit 5"
+docker exec selfbase-control-db psql -U postgres -c "select id, type, status, step, error, updated_at from control.jobs order by created_at desc limit 5"
 ```
 
 Son satır son beş işi gösterir: hangi adımda kaldı, hata ne. Bir işin bütün olayları:
-`... -c "select created_at, status, step, message from control.job_events where job_id = '<id>' order by id"`.
+`... -c "select at, status, step, message from control.job_events where job_id = '<id>' order by id"`
+(`<id>` ilk sorgunun `id` sütunundan).
 Bu sorgular sadece okur. control-db'ye elle yazma, durumu control yönetir.
 
 | Belirti | Sebep | Ne yap |
 |---|---|---|
-| Proje `COMING_UP`'ta kaldı | Sertifika gelmedi. `certificate` adımı 2 dakika bekler, sonra iş başarısız görünür ama proje `COMING_UP` kalır. Reconcile sertifika gelince kendisi `ACTIVE_HEALTHY` yapar. | `curl -sv https://<ref>.<BASE>/health`. Sertifika hatası varsa aşağıdaki "sertifika gelmedi" satırı. Cevap 200 ise bir dakika bekle (denetim 60 saniye önbellekte). |
+| Proje `COMING_UP`'ta kaldı (Studio: **sertifika bekleniyor**) | Sertifika gelmedi. `certificate` adımı 2 dakika bekler, sonra iş başarısız görünür ama proje `COMING_UP` kalır. Reconcile sertifika gelince kendisi `ACTIVE_HEALTHY` yapar. | `curl -sv https://<ref>.<BASE>/health`. Sertifika hatası varsa aşağıdaki "sertifika gelmedi" satırı. Cevap 200 ise bir dakika bekle (denetim 60 saniye önbellekte). |
 | Adres `540` dönüyor | Proje duraklatılmış | Studio → **Settings** → **Resume**. Bellek yoksa önce başka bir projeyi duraklat. |
 | Adres `502` | Traefik core'a ulaşamıyor: core sağlıksız, yeniden başlıyor ya da proxy ağından düşmüş | `docker ps --filter name=sb-<ref>-core`, `docker logs --tail 50 sb-<ref>-core`. Proxy ağından düştüyse reconcile 30 saniyede bağlar. Bağlamazsa `docker logs --tail 50 selfbase-control`. |
 | Adres `503` ya da `404` (Traefik'in boş sayfası) | O adres için router yok: proje silinmiş, adres yanlış yazılmış ya da container hiç kurulmamış | Studio'da projenin adres listesine bak. |
