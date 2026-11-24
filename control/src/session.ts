@@ -7,7 +7,7 @@ import { config } from './config.ts'
 import { pool } from './db.ts'
 import { ApiError } from './errors.ts'
 import { hashToken } from './ids.ts'
-import { sessionActive, verify } from './core.ts'
+import { revokeSession, verify } from './core.ts'
 
 export type User = { id: string; email: string; via: 'cookie' | 'token' }
 /** What authorize() learned, for the audit row. */
@@ -42,8 +42,42 @@ export function checkOrigin(c: Context): void {
 export function setSessionCookies(c: Context, s: { access_token: string; refresh_token: string }): void {
   const base = { httpOnly: true, sameSite: 'Strict', secure } as const
   setCookie(c, ACCESS_COOKIE, s.access_token, { ...base, path: '/', maxAge: 3600 })
-  // shortcut: 30 days, core's refresh tokens have no lifetime of their own; revisit with session timeboxes (8.2)
-  setCookie(c, REFRESH_COOKIE, s.refresh_token, { ...base, path: '/', maxAge: 30 * 86400 })
+  // the server ends the session at the same age (sessionState); the cookie is only the browser's copy of that limit
+  setCookie(c, REFRESH_COOKIE, s.refresh_token, { ...base, path: '/', maxAge: Math.round(config.sessionMaxAgeDays * 86400) })
+}
+
+/**
+ * A Studio session (core's refresh tokens of one session_id, in control-db) and whether it is over: older than
+ * STUDIO_SESSION_MAX_AGE_DAYS since sign-in, or STUDIO_SESSION_IDLE_HOURS since its last refresh (each refresh adds
+ * a token). Core gives its refresh tokens no lifetime, so control enforces both, at refresh and on every cookie request.
+ */
+async function sessionState(sessionId: string): Promise<{ open: boolean; expired: boolean }> {
+  const r = (await pool.query(
+    `select coalesce(bool_or(not revoked), false) as open,
+            coalesce(min(created_at) < now() - $2::float8 * interval '1 day' or max(created_at) < now() - $3::float8 * interval '1 hour', false) as expired
+       from auth.refresh_tokens where session_id = $1`,
+    [sessionId, config.sessionMaxAgeDays, config.sessionIdleHours],
+  )).rows[0]
+  return { open: r.open, expired: r.expired }
+}
+
+/** Live: not revoked (logout, a password reset) and not past either lifetime. */
+async function sessionLive(sessionId: string | undefined): Promise<boolean> {
+  if (!sessionId) return false
+  const s = await sessionState(sessionId)
+  return s.open && !s.expired
+}
+
+/** The session a refresh token belongs to, if any. */
+export const sessionOfRefresh = async (token: string): Promise<string | null> =>
+  (await pool.query('select session_id from auth.refresh_tokens where token = $1', [token])).rows[0]?.session_id ?? null
+
+/** Ends the session behind a refresh token when it is past a lifetime; true when it did. */
+export async function endIfExpired(token: string): Promise<boolean> {
+  const sid = await sessionOfRefresh(token)
+  if (!sid || !(await sessionState(sid)).expired) return false
+  await revokeSession(sid)
+  return true
 }
 
 export function clearSessionCookies(c: Context): void {
@@ -68,7 +102,7 @@ async function tokenUser(token: string): Promise<User | null> {
 /** The user behind the access cookie: a valid core JWT whose session is still live (logout ends it at once). */
 async function cookieUser(jwt: string): Promise<User | null> {
   const claims = await verify(jwt).catch(() => null)
-  if (!claims?.sub || claims.role !== 'authenticated' || !(await sessionActive(claims.session_id))) return null
+  if (!claims?.sub || claims.role !== 'authenticated' || !(await sessionLive(claims.session_id))) return null
   const { rows } = await pool.query(`select id, email from auth.users where id = $1 and (banned_until is null or banned_until <= now())`, [claims.sub])
   return rows[0] ? { id: rows[0].id, email: rows[0].email, via: 'cookie' } : null
 }

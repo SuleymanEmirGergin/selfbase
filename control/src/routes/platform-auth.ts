@@ -10,10 +10,10 @@ import { randomUUID } from 'node:crypto'
 import { pool } from '../db.ts'
 import type { Db } from '../db.ts'
 import { resetPasswordUrl } from '../core-env.ts'
-import { coreAuth, hashPassword, verify } from '../core.ts'
+import { coreAuth, hashPassword, revokeSession, verify } from '../core.ts'
 import { ApiError } from '../errors.ts'
 import { newAccessToken } from '../ids.ts'
-import { ACCESS_COOKIE, REFRESH_COOKIE, checkOrigin, clearSessionCookies, setSessionCookies } from '../session.ts'
+import { ACCESS_COOKIE, REFRESH_COOKIE, checkOrigin, clearSessionCookies, endIfExpired, sessionOfRefresh, setSessionCookies } from '../session.ts'
 import type { Env } from '../session.ts'
 
 export const platformAuth = new Hono<Env>()
@@ -89,6 +89,11 @@ platformAuth.post('/refresh', async (c) => {
   checkOrigin(c)
   const token = getCookie(c, REFRESH_COOKIE)
   if (!token) throw new ApiError(401, 'unauthorized', 'Unauthorized')
+  // past the absolute or idle lifetime: the session ends here, core never rotates it
+  if (await endIfExpired(token)) {
+    clearSessionCookies(c)
+    throw new ApiError(401, 'unauthorized', 'Unauthorized')
+  }
   const res = await callCore(c, 'POST', '/token?grant_type=refresh_token', { body: JSON.stringify({ refresh_token: token }) })
   if (res.status === 429) throw await coreError(res)
   if (!res.ok) {
@@ -98,11 +103,20 @@ platformAuth.post('/refresh', async (c) => {
   return signedIn(c, await res.json())
 })
 
+// Ends the session through the access cookie and through the refresh cookie: once the access cookie has expired (1 h)
+// only the refresh token names the session. A failed revoke is an error, and the cookies stay: the user must not
+// believe they are signed out while the refresh token still works.
 platformAuth.post('/logout', async (c) => {
   checkOrigin(c)
   const jwt = getCookie(c, ACCESS_COOKIE)
-  // ends the session behind the cookie; an expired or forged cookie has nothing to end
-  if (jwt) await callCore(c, 'POST', '/logout?scope=local', { bearer: `Bearer ${jwt}` })
+  if (jwt) {
+    const res = await callCore(c, 'POST', '/logout?scope=local', { bearer: `Bearer ${jwt}` })
+    // a 4xx is an expired or forged access cookie, which ends nothing by itself; the refresh cookie below still does
+    if (res.status >= 500) throw new ApiError(502, 'logout_failed', 'The session could not be ended. Try again.')
+  }
+  const refresh = getCookie(c, REFRESH_COOKIE)
+  const sid = refresh ? await sessionOfRefresh(refresh) : null
+  if (sid) await revokeSession(sid)
   clearSessionCookies(c)
   return c.json({})
 })

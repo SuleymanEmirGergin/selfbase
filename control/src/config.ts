@@ -92,6 +92,9 @@ export function loadConfig(input: Record<string, string | undefined> = process.e
     certProbe: oneOf('CERT_PROBE', 'on', ['on', 'off']),
     logsUrl: env.LOGS_URL || 'http://selfbase-logs:9428',
     backupRetentionDays: num('BACKUP_RETENTION_DAYS', 7),
+    // a Studio session ends this long after sign-in, or after this long without a refresh (session.ts)
+    sessionMaxAgeDays: num('STUDIO_SESSION_MAX_AGE_DAYS', 7),
+    sessionIdleHours: num('STUDIO_SESSION_IDLE_HOURS', 24),
     // the host backup directory as control sees it (mounted read-only): an import reads project.json there
     backupDir: env.BACKUP_DIR || '/backups',
     smtp: {
