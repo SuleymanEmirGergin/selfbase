@@ -125,8 +125,10 @@ export async function rotate(refreshToken: string): Promise<SessionJson> {
 // not committed it: the UPDATE's snapshot misses the token, which then outlives the logout. Under the lock the
 // revocation's UPDATE starts after the insert committed, so it sees (and revokes) it; and a sign-in re-checks the
 // password hash and the ban under it (issueSession), so it cannot pass a check a reset or ban already undid.
-// Lock order: this lock first, then any auth.users row lock (a token insert's FOR KEY SHARE, the admin PATCH's FOR
-// UPDATE, PUT /user's update), so the two never wait on each other in a cycle.
+// Lock order: a token insert's foreign key takes FOR KEY SHARE on the auth.users row under this lock, so every path
+// whose row lock conflicts with that (the admin PATCH's FOR UPDATE, both user deletes) takes this lock first, and the
+// two never wait on each other in a cycle. Plain updates of other columns (PUT /user, a link's apply, sign-up) take a
+// lock KEY SHARE does not wait on; the ones that end or check sessions take this lock first as well.
 const LOCK_NS = 0x5e55 // the two-key advisory lock space of refresh tokens
 export const lockUser = (c: PoolClient, userId: string) => c.query('select pg_advisory_xact_lock($1, hashtext($2::text))', [LOCK_NS, userId])
 

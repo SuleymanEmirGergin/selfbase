@@ -6,7 +6,7 @@ import { pool } from '../db.ts'
 import { config } from '../config.ts'
 import type { AppEnv } from '../jwt.ts'
 import { authError, checkPassword, createUser, findByEmail, findById, hashPassword, listUsers, toUserJson, withTx } from './users.ts'
-import { endSessionsForNewPassword, issueSession, isBanned, lockLiveSession, revokeSession, revokeUserSessions, rotate, sessionActive } from './sessions.ts'
+import { endSessionsForNewPassword, issueSession, isBanned, lockLiveSession, lockUser, revokeSession, revokeUserSessions, rotate, sessionActive } from './sessions.ts'
 import { background, sendConfirmation, sendEmailChange } from './mail.ts'
 import { phoneDisabled, sendPhoneOtp } from './routes-phone.ts'
 
@@ -197,8 +197,12 @@ router.get('/admin/users', async (c) => {
 router.delete('/admin/users/:id', async (c) => {
   requireAdmin(c)
   const id = c.req.param('id')
-  if (!UUID_RE.test(id) || !(await pool.query(`delete from auth.users where id = $1`, [id])).rowCount)
-    throw authError(404, 'user_not_found', 'User not found')
+  if (!UUID_RE.test(id)) throw authError(404, 'user_not_found', 'User not found')
+  await withTx(async (tx) => {
+    // S4 order: the per-user lock before the row (the cascade waits on a rotating token otherwise)
+    await lockUser(tx, id)
+    if (!(await tx.query(`delete from auth.users where id = $1`, [id])).rowCount) throw authError(404, 'user_not_found', 'User not found')
+  })
   return c.json({})
 })
 

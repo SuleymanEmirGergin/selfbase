@@ -67,7 +67,8 @@ router.patch('/users/:id', async (c) => {
 router.delete('/users/:id', async (c) => {
   const id = userId(c.req.param('id'))
   await withTx(async (db) => {
-    // refresh tokens (sessions) and identities go with the user: on delete cascade
+    // refresh tokens (sessions) and identities go with the user: on delete cascade; the S4 lock first, as everywhere
+    await lockUser(db, id)
     if (!(await db.query('delete from auth.users where id = $1', [id])).rowCount) throw adminError(404, 'user not found')
     await audit(db, 'users.delete', id, {})
   })

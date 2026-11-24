@@ -516,6 +516,40 @@ describe('users', () => {
     }
   })
 
+  // B, round 2: a delete takes the S4 lock first too (its cascade waits on the rotating token, the rotation's child
+  // insert on the deleted row: a deadlock without it)
+  for (const [route, del] of [
+    ['the admin panel', (id: string) => call('DELETE', `/users/${id}`)],
+    ['GoTrue admin', (id: string) => app.request(`/auth/v1/admin/users/${id}`, { method: 'DELETE',
+      headers: { authorization: `Bearer ${serviceKey}`, apikey: serviceKey } })],
+  ] as const) {
+    it(`B: a delete through ${route} during a refresh waits for it instead of deadlocking`, async () => {
+      const u = await newUser()
+      const session = (await pool.query('select session_id from auth.refresh_tokens where token = $1', [u.refresh])).rows[0].session_id
+      await pool.query(`create table if not exists public.b_hold (session_id uuid primary key)`)
+      await pool.query(`create or replace function public.b_rot() returns trigger language plpgsql as $$
+        begin if new.revoked and not old.revoked and exists (select 1 from public.b_hold where session_id = new.session_id)
+          then perform pg_sleep(1.5); end if; return new; end $$`)
+      await pool.query(`create or replace trigger b_rot before update on auth.refresh_tokens for each row execute function public.b_rot()`)
+      try {
+        await pool.query('insert into public.b_hold values ($1)', [session])
+        const rotating = refreshOf(u.refresh)
+        for (let i = 0; !(await pool.query(`select 1 from pg_stat_activity where wait_event = 'PgSleep'
+          and query like '%update auth.refresh_tokens%'`)).rowCount; i++) {
+          if (i > 100) throw new Error('the rotation never reached the trigger')
+          await new Promise((r) => setTimeout(r, 20))
+        }
+        const [r, d] = await Promise.all([rotating, del(u.id)])
+        expect([r.status, d.status]).toEqual([200, 200])
+        expect((await pool.query('select 1 from auth.users where id = $1', [u.id])).rowCount).toBe(0)
+      } finally {
+        await pool.query('drop trigger if exists b_rot on auth.refresh_tokens')
+        await pool.query('drop function if exists public.b_rot()')
+        await pool.query('drop table if exists public.b_hold')
+      }
+    })
+  }
+
   it('deletes a user and their sessions', async () => {
     const u = await newUser()
     expect((await call('DELETE', `/users/${u.id}`)).status).toBe(200)
