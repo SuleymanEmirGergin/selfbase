@@ -6,7 +6,7 @@ import { ApiError } from './errors.ts'
 
 export type ServiceState = { service: string; exists: boolean; state: string | null; health: string | null
   specHash: string | null; templateVersion: string | null; memLimitMb: number | null; proxyAttached: boolean
-  /** the container's address on sb-<ref> (core-addr.ts) */
+  /** the address control reaches it at: sb-<ref>-ctl for core, else sb-<ref> (core-addr.ts) */
   projectIp: string | null
   /** core: it trusts an old proxy address (the proxy restarted); an apply recreates it with the current one */
   proxyStale?: boolean }

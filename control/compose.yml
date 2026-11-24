@@ -11,8 +11,9 @@
 #   selfbase-docker  internal: provisioner and socket-proxy only. control is NOT on it, so a compromised control can
 #                    reach the Docker API only through the provisioner's typed operations (AC-11)
 #   proxy            ${PROXY_NETWORK}, external: Traefik reaches control (and each project's core) here
-# control reaches a project's core only at its address on sb-<ref> as the provisioner reads it (never a DNS name),
-# over that project's own network: core is on the proxy network too, and its admin port refuses peers from there.
+# control reaches a project's core only at its address on sb-<ref>-ctl as the provisioner reads it (never a DNS name),
+# a network that holds core and control alone: core is on the proxy network and sb-<ref> too, and its admin port
+# refuses peers from both.
 # PROXY_NETWORK, PROXY_CONTAINER, REGISTRY and BACKUP_HOST_DIR feed the provisioner and the socket-proxy allow-list
 # (../provisioner/socket-proxy.env, interpolated from the same env file), so the two always agree.
 # Coolify's nightly cleanup deletes unused images; the provisioner re-pulls before every create. Never add a

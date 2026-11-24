@@ -27,7 +27,7 @@ export type Project = { id: string; ref: string; org_id: string; name: string; s
 export type Waits = { pollMs: number; healthyMs: number; certificateMs: number; warmMs: number }
 export type JobCtx = { db: pg.Pool; provisioner: Provisioner; job: Job; project: Project | null; step: string
   probe: (hostname: string) => Promise<'ok' | 'pending'>; waits: Waits
-  /** core's URL on the project network (control is attached to sb-<ref>) */
+  /** core's admin URL on sb-<ref>-ctl, the network control shares with core alone */
   coreUrl(ref: string): string | Promise<string>
   log(event: string, fields?: Record<string, unknown>): Promise<void> }
 /** retry: false for a step that polls on its own budget; its first failure fails the job */

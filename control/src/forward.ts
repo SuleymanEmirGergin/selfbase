@@ -13,7 +13,7 @@ import { CONFIG_DEFAULTS, projectConfig } from './project-env.ts'
 import { getSecrets } from './secrets.ts'
 import type { Env } from './session.ts'
 
-/** core's admin listener, by its address on sb-<ref> (core-addr.ts). Mutable so tests can point it at a stub. */
+/** core's admin listener, by its address on sb-<ref>-ctl (core-addr.ts). Mutable so tests can point it at a stub. */
 export const forwardTarget: { url: (ref: string) => string | Promise<string> } = {
   url: async (ref) => `http://${await coreIp(provisioner(), ref)}:8081`,
 }
