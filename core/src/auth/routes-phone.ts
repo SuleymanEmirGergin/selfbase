@@ -93,7 +93,8 @@ router.post('/verify', async (c) => {
     throw err
   })
   if (!applied.rowCount) throw invalid()
-  return c.json(await issueSession((await findById(user.id))!))
+  // the hash read before the code was spent: a reset since then refuses the session
+  return c.json(await issueSession((await findById(user.id))!, undefined, user.encrypted_password ?? null))
 })
 
 export default router

@@ -6,7 +6,7 @@ import { pool } from '../db.ts'
 import { config } from '../config.ts'
 import type { AppEnv } from '../jwt.ts'
 import { authError, checkPassword, createUser, findByEmail, findById, hashPassword, listUsers, toUserJson, withTx } from './users.ts'
-import { endSessionsForNewPassword, issueSession, isBanned, revokeSession, revokeUserSessions, rotate, sessionActive } from './sessions.ts'
+import { endSessionsForNewPassword, issueSession, isBanned, lockLiveSession, revokeSession, revokeUserSessions, rotate, sessionActive } from './sessions.ts'
 import { background, sendConfirmation, sendEmailChange } from './mail.ts'
 import { phoneDisabled, sendPhoneOtp } from './routes-phone.ts'
 
@@ -138,7 +138,10 @@ router.put('/user', async (c) => {
   const hash = password === undefined ? null : await hashPassword(password)
 
   await withTx(async (tx) => {
-    // first, so the S4 lock comes before the row writes (a rotation's order); the caller's session stays
+    // first, so the S4 lock comes before the row writes (its order); under it the caller's session must still be
+    // live, or a reset that revoked it during the hash above would lose to this write
+    await lockLiveSession(tx, user.id, claims.session_id)
+    // the caller's session stays
     if (hash) await endSessionsForNewPassword(tx, user.id, claims.session_id ?? null)
     if (data !== undefined)
       // GoTrue merges top-level keys; a null value removes the key

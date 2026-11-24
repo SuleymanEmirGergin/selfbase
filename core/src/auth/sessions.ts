@@ -47,13 +47,23 @@ export const isBanned = (user: UserRow) => user.banned_until && new Date(user.ba
 
 /**
  * Starts a new session for a signed-in user: first refresh token, last_sign_in_at bumped. `amr`: the method of an
- * email-link session (GoTrue's names, `recovery` for a password reset link), put in its access token.
+ * email-link session (GoTrue's names, `recovery` for a password reset link), put in its access token. `seen`: the
+ * password hash the caller checked the user against (the password, or a one-time token read before a reset could
+ * change it). Under the S4 lock it must still be the user's hash and the user not banned, so a reset or a ban that
+ * ran since then (and ended every session) also refuses this one.
  */
-export async function issueSession(user: UserRow, amr?: string): Promise<SessionJson> {
+export async function issueSession(user: UserRow, amr?: string, seen: string | null = user.encrypted_password ?? null): Promise<SessionJson> {
   const sessionId = randomUUID()
   const token = newToken()
-  await pool.query(`insert into auth.refresh_tokens (token, user_id, session_id) values ($1, $2, $3)`, [token, user.id, sessionId])
-  await pool.query(`update auth.users set last_sign_in_at = now() where id = $1`, [user.id])
+  await withTx(async (c) => {
+    await lockUser(c, user.id)
+    const now = (await c.query(`select encrypted_password is not distinct from $2 as same, banned_until > now() as banned
+      from auth.users where id = $1`, [user.id, seen])).rows[0]
+    if (!now?.same) throw authError(400, 'invalid_credentials', 'Invalid login credentials')
+    if (now.banned) throw authError(400, 'user_banned', 'User is banned')
+    await c.query(`insert into auth.refresh_tokens (token, user_id, session_id) values ($1, $2, $3)`, [token, user.id, sessionId])
+    await c.query(`update auth.users set last_sign_in_at = now() where id = $1`, [user.id])
+  })
   return sessionJson((await findById(user.id))!, sessionId, token, amr)
 }
 
@@ -110,15 +120,25 @@ export async function rotate(refreshToken: string): Promise<SessionJson> {
   return sessionJson(user, result.session_id, result.token)
 }
 
-// S4: rotation and every revocation of a user's tokens hold this per-user transaction lock. Without it a revocation's
-// UPDATE could run while a rotation had inserted its child token but not committed it: the UPDATE's snapshot misses
-// the child, which then outlives the logout. Under the lock the revocation's UPDATE starts after the rotation
-// committed, so it sees (and revokes) the child. Lock order is not uniform: the admin ban and password reset hold the
-// auth.users row (FOR UPDATE) and then ask for this lock, while a rotation (and PUT /user's password change, which
-// takes it first) holds this lock and then its child insert takes FOR KEY SHARE on that row. Postgres detects that cycle and aborts one side with a 500; either side rolls back whole, so no
-// revocation is lost and no ban reports success with a live token.
+// S4: every insert of a refresh token (sign-in, rotation) and every revocation of a user's tokens hold this per-user
+// transaction lock. Without it a revocation's UPDATE could run while a rotation or sign-in had inserted a token but
+// not committed it: the UPDATE's snapshot misses the token, which then outlives the logout. Under the lock the
+// revocation's UPDATE starts after the insert committed, so it sees (and revokes) it; and a sign-in re-checks the
+// password hash and the ban under it (issueSession), so it cannot pass a check a reset or ban already undid.
+// Lock order: this lock first, then any auth.users row lock (a token insert's FOR KEY SHARE, the admin PATCH's FOR
+// UPDATE, PUT /user's update), so the two never wait on each other in a cycle.
 const LOCK_NS = 0x5e55 // the two-key advisory lock space of refresh tokens
-const lockUser = (c: PoolClient, userId: string) => c.query('select pg_advisory_xact_lock($1, hashtext($2::text))', [LOCK_NS, userId])
+export const lockUser = (c: PoolClient, userId: string) => c.query('select pg_advisory_xact_lock($1, hashtext($2::text))', [LOCK_NS, userId])
+
+/**
+ * Takes the S4 lock and checks, under it, that session `sessionId` is still live: a write made with a session's
+ * access token (PUT /user) must not land after a reset or logout revoked that session.
+ */
+export async function lockLiveSession(c: PoolClient, userId: string, sessionId: string | undefined): Promise<void> {
+  await lockUser(c, userId)
+  if (!sessionId || !(await c.query(`select 1 from auth.refresh_tokens where session_id = $1 and not revoked limit 1`, [sessionId])).rowCount)
+    throw authError(403, 'session_not_found', 'Session from session_id claim in JWT does not exist')
+}
 
 const revokeIn = (c: PoolClient, sessionId: string) =>
   c.query(`update auth.refresh_tokens set revoked = true, updated_at = now() where session_id = $1 and not revoked`, [sessionId])
