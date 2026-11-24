@@ -618,6 +618,39 @@ describe('carries', () => {
     expect(job.attempts).toBe(1)
     expect(job.error).toMatch(/env could not be rendered/)
   })
+
+  // the provisioner refuses to rebuild an old network while a job container is still on it (R1/R6): that passes
+  const busy = () => new ProvisionerError('network_busy', 'sb-x-job is on sb-x; retry when it is gone', 409)
+  const retries = async (id: string) => (await pool.query(`select count(*)::int as n from control.job_events where job_id = $1
+    and status = 'retry'`, [id])).rows[0].n
+
+  test('I3: 409 network_busy from ensure is retried, and the job goes on once the network is free', async () => {
+    const p = await slotted({ name: 'busy-once', status: 'INACTIVE' })
+    let left = 2
+    const real = fake.ensure.bind(fake)
+    fake.ensure = async (input) => { if (left-- > 0) throw busy(); return real(input) }
+    const id = await enqueue(pool, { type: 'project.restore', projectId: p.id, payload: {}, createdBy: null })
+    workers()
+    expect((await finished(id)).status).toBe('succeeded')
+    expect(await retries(id)).toBe(2)
+    expect(fake.callsOf('ensure')).toHaveLength(1)
+  })
+
+  test('I3: network_busy on every try fails the job after the bounded retries, saying why; never a success', async () => {
+    const restore = await slotted({ name: 'busy-restore', status: 'INACTIVE' })
+    const applied = await slotted({ name: 'busy-apply' })
+    fake.ensure = async () => { throw busy() }
+    const ids = [await enqueue(pool, { type: 'project.restore', projectId: restore.id, payload: {}, createdBy: null }),
+      await enqueue(pool, { type: 'project.apply', projectId: applied.id, payload: {}, createdBy: null })]
+    workers()
+    for (const id of ids) {
+      const job = await finished(id)
+      expect(job).toMatchObject({ status: 'failed', attempts: 3 })
+      expect(job.error).toMatch(/sb-x-job is on sb-x; retry when it is gone/)
+    }
+    expect((await row(restore.id)).status).toBe('RESTORE_FAILED')
+    expect((await row(applied.id)).status).toBe('ACTIVE_UNHEALTHY')
+  })
 })
 
 describe('S8: backups cannot fill the backup volume', () => {

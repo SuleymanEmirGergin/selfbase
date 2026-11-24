@@ -41,6 +41,8 @@ export const provisioner = (): Provisioner => {
 }
 
 /** Always 502 to control's callers: the provisioner's own status (409 job_running, 404, ...) is in `upstream`. */
+const PASSING = new Set(['job_running', 'network_busy'])
+
 export class ProvisionerError extends ApiError {
   upstream: number
   constructor(code: string, message: string, upstream = 0) {
@@ -50,10 +52,12 @@ export class ProvisionerError extends ApiError {
   /**
    * A refusal that the same request gets again (400 invalid_env from a render failure, invalid_service, invalid_dir,
    * 404 project_not_found or job_not_found, 409 subnet_conflict or backup_dir_unset, 501): a job step does not retry
-   * it. 409 job_running (another job is still running) and transport failures (upstream 0) may pass.
+   * it. 409 job_running (another job is still running), 409 network_busy (a job container still holds the network an
+   * ensure rebuilds; the step fails with that message once its tries are spent) and transport failures (upstream 0)
+   * may pass.
    */
   get permanent(): boolean {
-    return (this.upstream >= 400 && this.upstream < 500 && this.code !== 'job_running') || this.upstream === 501
+    return (this.upstream >= 400 && this.upstream < 500 && !PASSING.has(this.code)) || this.upstream === 501
   }
 }
 
