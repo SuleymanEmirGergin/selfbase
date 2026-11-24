@@ -75,6 +75,43 @@ describe('admin forwarding', () => {
     expect((await withToken(reader.token, 'GET', `${A()}/rows/public/authors`)).status).toBe(200)
   })
 
+  test('S3: read_only browses user schemas only; catalogs, extension and platform schemas need developer', async () => {
+    const refused = ['/rows/pg_catalog/pg_authid', '/rows/%70g_catalog/pg_authid', '/rows/PG_CATALOG/pg_authid', '/rows/Pg_Catalog/pg_stat_activity',
+      '/rows/pg_toast/pg_toast_1', '/rows/pg_temp_3/t', '/rows/cron/job', '/rows/cron/job_run_details', '/rows/information_schema/tables',
+      '/rows/INFORMATION_SCHEMA/tables', '/rows/supabase_migrations/schema_migrations', '/rows/net/http_request_queue', '/rows/pgmq/q_jobs',
+      '/rows/graphql/x', '/rows/extensions/x', '/rows/vault/secrets', '/rows/realtime/messages', '/rows/pgbouncer/x',
+      // not exposed by the project (PGRST_DB_SCHEMAS): an allowlist, not a denylist
+      '/rows/private_app/secrets',
+      '/tables?schema=pg_catalog', '/tables?schema=%70g_catalog', '/tables?schema=cron', '/tables?schema=information_schema',
+      '/tables?schema=public&schema=pg_catalog', '/tables?schema=private_app',
+      '/policies?schema=auth', '/policies?schema=storage', '/policies', '/policies?table=users', '/policies?schema=']
+    const n = core.seen.length
+    for (const path of refused) {
+      expect((await withToken(reader.token, 'GET', `${A()}${path}`)).status, path).toBe(403)
+      expect((await withToken(reader.token, 'HEAD', `${A()}${path}`)).status, `HEAD ${path}`).toBe(403)
+    }
+    expect(core.seen.length).toBe(n)
+    // a developer has project.sql: the same paths are forwarded
+    for (const path of refused) expect((await withToken(dev.token, 'GET', `${A()}${path}`)).status, path).toBe(200)
+    // read_only still browses its own tables
+    for (const path of ['/rows/public/notes', '/rows/PUBLIC/notes', '/tables?schema=public', '/tables', '/tables?schema=', '/policies?schema=public',
+      '/policies?schema=public&table=notes', '/schemas', '/users'])
+      expect((await withToken(reader.token, 'GET', `${A()}${path}`)).status, path).toBe(200)
+  })
+
+  test('S3: a schema the project exposes through PostgREST is a user schema; a system one listed there is not', async () => {
+    await pool.query(`insert into control.project_config (project_id, section, data) values ($1, 'postgrest', $2)
+      on conflict (project_id, section) do update set data = excluded.data`, [p.id, { PGRST_DB_SCHEMAS: 'public, api,storage,pg_catalog' }])
+    try {
+      expect((await withToken(reader.token, 'GET', `${A()}/rows/api/orders`)).status).toBe(200)
+      expect((await withToken(reader.token, 'GET', `${A()}/tables?schema=api`)).status).toBe(200)
+      for (const path of ['/rows/storage/objects', '/rows/pg_catalog/pg_authid', '/tables?schema=storage'])
+        expect((await withToken(reader.token, 'GET', `${A()}${path}`)).status, path).toBe(403)
+    } finally {
+      await pool.query(`delete from control.project_config where project_id = $1 and section = 'postgrest'`, [p.id])
+    }
+  })
+
   test('a member of another organization gets 404 on the admin API', async () => {
     const other = await org('other-org')
     const stranger = await user('stranger@example.test')
