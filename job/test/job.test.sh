@@ -55,7 +55,7 @@ shadows() {
     sort -u | tr '\n' ' '
 }
 s=$(shadows restore.sh t w wstop wrc jobs db_done held swapped contained rel HOLD storage need rule PGOPTIONS \
-  xids blind rs wnat plog stop_by)
+  started deadline spent)
 check 'M2: no function of restore.sh shadows a global its cleanup reads' [ -z "$s" ]; [ -z "$s" ] || echo "shadowed: $s" >&2
 # 1: a writer reaped with status 0 had committed: reap records that before it clears w, or a signal between the two
 # finds neither (the window is a few builtins wide, too narrow to hit from a test: the order is checked here)
@@ -553,8 +553,8 @@ check '1: it says the database was restored and the storage not, never that noth
   bash -c 'grep -q "DATABASE WAS RESTORED .* storage files were NOT replaced" <<< "$1" && ! grep -q unchanged <<< "$1"' _ "$out"
 check '1: and its temp dir is gone' grep -qx entries=0 <<< "$out"
 # 2: a signal while pg_restore runs (a refresh that sleeps 60 s keeps it running): every session of the cluster but
-# the restore's own is terminated, one in a second database too, so the one transaction rolls back; the cron step
-# is undone
+# the restore's own is terminated, one in a second database too (contained). Once pg_restore started nothing but its
+# recorded success is known: exit 8, and nothing is undone (the cron step stays)
 sql db-empty "update cron.job set active = true where jobname = 'e_job';
   create table public.knob3 (s float8); insert into public.knob3 values (0);
   create function public.e_nap() returns int language plpgsql as \$\$ begin perform pg_catalog.pg_sleep((select s from public.knob3)); return 1; end \$\$;
@@ -581,14 +581,16 @@ wait "$other" || true; wait "$wal" || true
 check '5: a walsender writing in a second database was terminated too' [ "$nw" = 0 ]; [ "$nw" = 0 ] || echo "walsenders: $nw" >&2
 check '5: and its write rolled back' \
   [ "$(compose exec -T db-empty psql -XAtq -U postgres -d e_other -c 'select count(*) from public.w')" = 0 ]
-check '2: a restore stopped by SIGTERM while pg_restore runs exits 143' [ "$rc" = 143 ]; [ "$rc" = 143 ] || echo "$out" >&2
-check '2: it says it was stopped, nothing changed' grep -q '^restore: STOPPED by a signal' <<< "$out"
-check '2: the dump was not restored (it rolled back)' [ "$(sql db-empty "select to_regclass('public.e_slow') is null")" = t ]
-check '2: the database is unchanged' [ "$(emarker)" = after-backup ]
-check '2: the cron step is undone' [ "$(ejob)" = t ]
+check '2: a restore stopped by SIGTERM while pg_restore runs exits 8' [ "$rc" = 8 ]; [ "$rc" = 8 ] || echo "$out" >&2
+check '2: it says the state is unknown, never that nothing changed' \
+  bash -c 'grep -q "STATE UNKNOWN" <<< "$1" && ! grep -qE "rolled back|unchanged|set active again" <<< "$1"' _ "$out"
+check '2: (the terminated transaction did roll back: the dump is not there)' [ "$(sql db-empty "select to_regclass('public.e_slow') is null")" = t ]
+check '2: (and the database is as it was)' [ "$(emarker)" = after-backup ]
+check '2: the cron step is not undone' [ "$(ejob)" = f ]
+sql db-empty "update cron.job set active = true where jobname = 'e_job'" > /dev/null
 check '2: a session in a second database of the cluster was terminated too' [ "$n" = 0 ]; [ "$n" = 0 ] || echo "e_other sessions: $n" >&2
-# 2: a stop that cannot prove the sessions ended (here every termination query fails) claims no rollback: exit 8,
-# state unknown, and nothing is undone
+# 2: a stop that cannot show the sessions ended (here every termination query fails): exit 8, state unknown, and
+# nothing is undone
 rc=0; out=$(cramped "$eslow" 1 '' 'psql() { case "$*" in *"pg_terminate_backend(pid, 1000)"*) return 2 ;; esac; command psql "$@"; }
   export -f psql; (sleep 6; pkill -TERM -f "^bash /scripts/restore.sh") &') || rc=$?
 check '2: a stop that does not converge exits 8' [ "$rc" = 8 ]; [ "$rc" = 8 ] || echo "$out" >&2
@@ -596,19 +598,20 @@ check '2: it says the state is unknown and claims no rollback' \
   bash -c 'grep -q "STATE UNKNOWN" <<< "$1" && ! grep -qE "rolled back|unchanged|set active again" <<< "$1"' _ "$out"
 sql db-empty "select pg_terminate_backend(pid) from pg_stat_activity where backend_type = 'client backend' and pid <> pg_backend_pid()" > /dev/null
 sql db-empty "update cron.job set active = true where jobname = 'e_job'" > /dev/null
-# 2: "unchanged" needs proof. A stand-in pg_restore commits a transaction the watchdog's poll sees (it holds its xid
-# 2 s), then exits nonzero: exit 8, no rollback claimed
+# 2: a pg_restore that started and did not succeed proves nothing about the database. A stand-in commits a
+# transaction (2 s long), then exits nonzero: exit 8, no rollback claimed
 pgrstandin sneak 'psql -XAtq -c "begin; create table public.e_sneak (v int); select pg_sleep(2); commit" > /dev/null; exit 1'
 rc=0; out=$(cramped "$small" 1 '' 'export PATH=/backups/standin/sneak:$PATH') || rc=$?
 check '2: a pg_restore that committed, then exited nonzero, exits 8' [ "$rc" = 8 ]; [ "$rc" = 8 ] || echo "$out" >&2
 check '2: and claims no rollback' bash -c 'grep -q "STATE UNKNOWN" <<< "$1" && ! grep -qE "rolled back|unchanged" <<< "$1"' _ "$out"
 check '2: (it did commit)' [ "$(sql db-empty "select to_regclass('public.e_sneak') is not null")" = t ]
-# one that commits faster than a poll and exits nonzero without an SQL error: no proof either way, exit 8
+# one that commits at once and exits nonzero without an SQL error: exit 8 as well
 pgrstandin quick 'psql -XAtq -c "create table public.e_quick (v int)" > /dev/null; exit 1'
 rc=0; out=$(cramped "$small" 1 '' 'export PATH=/backups/standin/quick:$PATH') || rc=$?
 check '2: a quick commit, then a nonzero exit without an SQL error, exits 8' [ "$rc" = 8 ]; [ "$rc" = 8 ] || echo "$out" >&2
 sql db-empty "drop table if exists public.e_sneak, public.e_quick; update cron.job set active = true where jobname = 'e_job'" > /dev/null
-# a dump that fails on an SQL error (its view divides by zero when refreshed) is still a proven rollback: exit 10
+# and a dump that fails on an SQL error (its view divides by zero when refreshed): pg_restore's own output is no
+# proof of a rollback either (the dump's SQL can commit before it fails), so exit 8 and nothing undone
 sql db-empty "create table public.knob4 (n int); insert into public.knob4 values (1);
   create materialized view public.e_div as select 1 / (select n from public.knob4) as v;
   update public.knob4 set n = 0; update public.e_marker set v = 'in-ediv'" > /dev/null
@@ -616,10 +619,11 @@ JOB_ENV=(-e BACKUP_SUBDIR=ediv)
 ediv=$(job db-empty "$P-empty-storage" bash /scripts/backup.sh | tail -n1); ediv=${ediv#backup: wrote }
 sql db-empty "drop materialized view public.e_div; drop table public.knob4; update public.e_marker set v = 'after-backup'" > /dev/null
 rc=0; out=$(cramped "$ediv") || rc=$?
-check '2: a dump that fails on an SQL error still exits 10' [ "$rc" = 10 ]; [ "$rc" = 10 ] || echo "$out" >&2
-check '2: it says it rolled back, and it did' bash -c 'grep -q "rolled back" <<< "$1" && [ "$2" = after-backup ]' _ "$out" "$(emarker)"
+check '2: a dump that fails on an SQL error exits 8' [ "$rc" = 8 ]; [ "$rc" = 8 ] || echo "$out" >&2
+check '2: and claims no rollback' bash -c 'grep -q "STATE UNKNOWN" <<< "$1" && ! grep -qE "rolled back|unchanged|set active again" <<< "$1"' _ "$out"
 check '2: (pg_restore'"'"'s error is shown)' grep -q 'division by zero' <<< "$out"
-check '2: the cron step is undone after it' [ "$(ejob)" = t ]
+check '2: the cron step is not undone after it' [ "$(ejob)" = f ]
+sql db-empty "update cron.job set active = true where jobname = 'e_job'" > /dev/null
 # 6: a stop that failed is not run again: a writer that, stopped at the floor after the failed stop, signals the
 # restore before it exits. Every termination fails (as above); one 30 s stop, not two
 pgrstandin fill 'trap "kill -TERM $PPID; sleep 3; exit 1" TERM; head -c 100M /dev/zero > /data/storage/.fill 2> /dev/null
@@ -630,6 +634,38 @@ rc=0; out=$(cramped "$small" 1 '' 'export PATH=/backups/standin/fill:$PATH
 took=$((SECONDS - start))
 check '6: a signal after a failed stop exits 8' [ "$rc" = 8 ]; [ "$rc" = 8 ] || echo "$out" >&2
 check '6: within one stop (under 45 s)' [ "$took" -lt 45 ]; [ "$took" -lt 45 ] || echo "took ${took}s" >&2
+sql db-empty "update cron.job set active = true where jobname = 'e_job'" > /dev/null
+# 2 (round 5): the cleanup ends within its deadline (40 s, under the container's 60 s stop timeout). A writer that
+# ignores TERM is killed: here a stand-in tar that fills the inodes past the floor and ignores TERM (exit 6, as
+# pg_restore never started) ...
+standin deaf 'cd "${@: -1}"; trap "" TERM; for i in $(seq 1900); do : > i$i; done; sleep 90; exit 1'
+start=$SECONDS
+rc=0; out=$(cramped "$small" 1 2000 'export PATH=/backups/standin/deaf:$PATH') || rc=$?
+took=$((SECONDS - start))
+check '2: a tar that ignores TERM at the floor is killed: exit 6' [ "$rc" = 6 ]; [ "$rc" = 6 ] || echo "$out" >&2
+check '2: within the deadline (under 45 s)' [ "$took" -lt 45 ]; [ "$took" -lt 45 ] || echo "took ${took}s" >&2
+check '2: no tar is left, nor its temp dir' bash -c 'grep -qx tars=0 <<< "$1" && grep -qx entries=0 <<< "$1"' _ "$out"
+# ... and a pg_restore that ignores TERM, the restore signalled after 4 s (exit 8: pg_restore had started)
+pgrstandin deafpg 'trap "" TERM; sleep 90; exit 1'
+start=$SECONDS
+rc=0; out=$(cramped "$small" 1 '' 'export PATH=/backups/standin/deafpg:$PATH; (sleep 4; pkill -TERM -f "^bash /scripts/restore.sh") &') || rc=$?
+took=$((SECONDS - start))
+check '2: a pg_restore that ignores TERM is killed: exit 8' [ "$rc" = 8 ]; [ "$rc" = 8 ] || echo "$out" >&2
+check '2: within the deadline (under 45 s) as well' [ "$took" -lt 45 ]; [ "$took" -lt 45 ] || echo "took ${took}s" >&2
+sql db-empty "update cron.job set active = true where jobname = 'e_job'" > /dev/null
+# an undo query that blocks (a test session holds a lock on cron.job, taken as the pg_cron step fails; PGOPTIONS
+# emptied, or it would inherit the hooked query's statement timeout) ends at its own statement timeout: the cron jobs
+# are left to be set active by hand, and the restore keeps its exit (1)
+start=$SECONDS
+rc=0; out=$(cramped "$small" 1 '' 'psql() { case "$*" in *"backend_type = "*)
+    PGOPTIONS= command psql -XAtq -c "begin; lock table cron.job; select pg_catalog.pg_sleep(90)" > /dev/null 2>&1 & sleep 2; return 1 ;; esac
+  command psql "$@"; }; export -f psql') || rc=$?
+took=$((SECONDS - start))
+sql db-empty "select pg_terminate_backend(pid) from pg_stat_activity where query like '%lock table cron.job%' and pid <> pg_backend_pid()" > /dev/null
+check '2: a failure whose cron undo is blocked by a lock keeps its exit (1)' [ "$rc" = 1 ]; [ "$rc" = 1 ] || echo "$out" >&2
+check '2: it ends within the deadline (under 45 s)' [ "$took" -lt 45 ]; [ "$took" -lt 45 ] || echo "took ${took}s" >&2
+check '2: and says the cron jobs are to be set active by hand' grep -q 'could NOT set cron jobs .* active again; do it by hand' <<< "$out"
+check '2: (they are still inactive)' [ "$(ejob)" = f ]
 sql db-empty "update cron.job set active = true where jobname = 'e_job'" > /dev/null
 # 1: a pg_restore that committed and exits 0 as the floor stop reaches it, signalling the restore as it goes: the
 # commit is kept (exit 7: database restored, storage not replaced), never reported as nothing changed
@@ -665,10 +701,12 @@ gfloor=$(( $(docker exec "$P-dbsmall" df -Pk /var/lib/postgresql/data | awk 'NR 
 rc=0; out=$(docker run --rm --network "$NET" -e PGHOST=dbsmall -e PGPASSWORD="$PW" -e "RESTORE_DIR=$grow" -e "BACKUP_MIN_FREE_MIB=$gfloor" \
   -v "$P-backups:/backups:ro" --mount "type=volume,src=$P-small,dst=/data/storage,volume-subpath=storage" "$IMAGE" \
   bash /scripts/restore.sh 2>&1) || rc=$?
-check 'E: a dump whose server-side growth crosses the floor is stopped (exit 6)' [ "$rc" = 6 ]; [ "$rc" = 6 ] || echo "$out" >&2
-check 'E: the stop says the floor was reached and nothing was changed' grep -q "^restore: REFUSED: the volume of the project's data reached the floor" <<< "$out"
+check 'E: a dump whose server-side growth crosses the floor is stopped (exit 8: pg_restore had started)' [ "$rc" = 8 ]; [ "$rc" = 8 ] || echo "$out" >&2
+check 'E: the stop says the floor was reached and the state is unknown, never that nothing changed' bash -c \
+  'grep -q "^restore: STOPPED: the volume of the project.s data reached the floor" <<< "$1" && grep -q "STATE UNKNOWN" <<< "$1" &&
+   ! grep -qE "rolled back|unchanged|nothing was changed" <<< "$1"' _ "$out"
 gone=$(docker exec "$P-dbsmall" psql -XAtq -U postgres -c "select to_regclass('public.e_grow') is null" 2>&1)
-check 'E: the stopped restore rolled back: the view is not there' [ "$gone" = t ]; [ "$gone" = t ] || echo "$gone" >&2
+check 'E: (the terminated restore did roll back: the view is not there)' [ "$gone" = t ]; [ "$gone" = t ] || echo "$gone" >&2
 # the dump controls its session's name: a view whose refresh first sets application_name is stopped all the same,
 # and no session of it is left running once the restore has ended. The dump's SQL can also ignore the cancel
 # pg_restore sends when it is killed (a plpgsql handler for query_canceled); only a termination ends it. Past 400000
@@ -692,7 +730,7 @@ rc=0; out=$(docker run --rm --network "$NET" -e PGHOST=dbsmall -e PGPASSWORD="$P
   bash /scripts/restore.sh 2>&1) || rc=$?
 left=$(docker exec "$P-dbsmall" psql -XAtq -U postgres -c "select count(*) from pg_stat_activity
   where backend_type = 'client backend' and pid <> pg_backend_pid()" 2>&1)
-check 'E: a view whose refresh renames its session is stopped at the floor too (exit 6)' [ "$rc" = 6 ]; [ "$rc" = 6 ] || echo "$out" >&2
+check 'E: a view whose refresh renames its session is stopped at the floor too (exit 8)' [ "$rc" = 8 ]; [ "$rc" = 8 ] || echo "$out" >&2
 check 'E: no session of the stopped restore is left running' [ "$left" = 0 ]; [ "$left" = 0 ] || echo "sessions left: $left" >&2
 check 'E: and that view is not there either' \
   [ "$(docker exec "$P-dbsmall" psql -XAtq -U postgres -c "select to_regclass('public.e_rename') is null" 2>&1)" = t ]

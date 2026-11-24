@@ -221,7 +221,7 @@ describe('import', () => {
   test.each([
     ['a lost job result (job_not_found)', () => { throw new ProvisionerError('job_not_found', 'no such job', 404) }],
     ['an exit 137 (the job container killed)', () => ({ status: 'failed' as const, exitCode: 137, tail: '' })],
-    ['an exit 10 (rolled back)', () => ({ status: 'failed' as const, exitCode: 10, tail: '' })],
+    ['an exit 10 (a dump it cannot read)', () => ({ status: 'failed' as const, exitCode: 10, tail: '' })],
   ])('%s after the restore began stops the database as well', async (_, result) => {
     fake.jobResult = result
     const out = await (await postForm(owner.token, form({ ...importFields({ name: `lost-${++lost}` }), env_file: envBlob(v1Env().text) }))).json()
@@ -281,14 +281,15 @@ describe('import', () => {
     expect((await row(p.id)).status).toBe('ACTIVE_HEALTHY')
   })
 
-  test('a restore that exits 10 fails the job with "the database was not changed"', async () => {
-    fake.jobResult = () => ({ status: 'failed', exitCode: 10, tail: 'restore: FAILED: the database restore rolled back' })
+  test('a restore that exits 10 (its dump cannot be read, before pg_restore starts) says nothing was restored', async () => {
+    fake.jobResult = () => ({ status: 'failed', exitCode: 10, tail: 'restore: FAILED: the table of contents of the dump cannot be read' })
     const res = await postForm(owner.token, form({ ...importFields({ name: 'fails' }), env_file: envBlob(v1Env().text) }))
     const out = await res.json()
     workers()
     const job = await finished(out.job_id)
     expect(job.status).toBe('failed')
-    expect(job.error).toMatch(/the database was not changed/)
+    expect(job.error).toMatch(/the dump of the backup could not be read, so nothing was restored/)
+    expect(job.error).not.toMatch(/rolled back/)
     expect((await pool.query('select status from control.projects where ref = $1', [out.project.ref])).rows[0].status).toBe('INIT_FAILED')
     expect(fake.callsOf('start')).toEqual([])
   })

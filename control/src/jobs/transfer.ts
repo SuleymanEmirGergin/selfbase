@@ -29,8 +29,9 @@ function volumeFull(tail: string): string {
 }
 
 // restore.sh's exit 6: before anything changed, it found that the archive's files and the dump's estimated size would
-// leave less than the floor free on the volume of the project's data (or its inodes), or its watchdog stopped it at
-// the floor and it rolled back. Again only the numbers and the rule are taken (the other lines get the general text)
+// leave less than the floor free on the volume of the project's data (or its inodes), or its watchdog stopped the
+// storage extraction at the floor, before the database changed (a floor stop once pg_restore started is exit 8).
+// Again only the numbers and the rule are taken (the other lines get the general text)
 const RESTORE_REFUSED = /^restore: REFUSED: (\d+) MiB free on the volume of the project's data, at least (\d+) MiB \((BACKUP_MIN_FREE_MIB|10% or 5 GiB, whichever is larger)\) needed after this restore of (about|more than) (\d+) MiB; free space first$/m
 function restoreVolumeFull(tail: string): string {
   const m = RESTORE_REFUSED.exec(tail)
@@ -69,7 +70,9 @@ async function waitFor(ctx: JobCtx, ref: string, type: 'backup' | 'restore'): Pr
     if (tail && s.status === 'succeeded') await ctx.log(`${type}_output`, { tail })
     if (s.status === 'succeeded') return s.tail
     if (type === 'backup' && s.exitCode === 4) throw new Error(volumeFull(s.tail))
-    if (type === 'restore' && s.exitCode === 10) throw new Error('the restore failed and rolled back: the database was not changed')
+    if (type === 'restore' && s.exitCode === 10) {
+      throw new Error('the dump of the backup could not be read, so nothing was restored (pg_restore never started): check the backup, then import again')
+    }
     if (type === 'restore' && s.exitCode === 6) throw new Error(restoreVolumeFull(s.tail))
     if (type === 'restore' && s.exitCode === 5) {
       throw new Error('the database was restored but its sessions could not be deleted (rotate_keys): delete this project, then import again')
