@@ -133,22 +133,37 @@ export async function ensure(ctx: Ctx, ref: string, body: unknown) {
   // A network made before the split (R1, R6) spans the whole /27: dynamic addresses, control and every service on one
   // bridge. It is made again once, as the three networks: our containers (all of them change) are removed and control
   // is detached first; a job still on it is a conflict for a later pass, refused before anything changes. Volumes are
-  // never touched.
+  // never touched. Every network ensure adopts is read back first: its labels, its subnet, its isolation.
   const old = !!existing && subnetOf(existing) === (input as { subnet: string }).subnet
-  // a network keeps its subnet; another one would mean two projects claim one /27 (control allocates them)
+  // A network made where the engine could not isolate (below Docker 28) or before the isolation existed is made again
+  // the same way, once, now that it can.
+  const weak = (n: { body: Record<string, unknown> }, e: any) => n.body.Internal === true
+    && (e.Internal !== true || e.Options?.['com.docker.network.bridge.gateway_mode_ipv4'] !== 'isolated')
+  const rebuild: { name: string; net: any }[] = []
   for (const n of spec.networks) {
     const e = n === tenant ? existing : await inspectNetwork(n.name)
-    if (e && !(n === tenant && old) && subnetOf(e) !== want(n)) refuse(409, 'subnet_conflict', `${n.name} exists with another subnet`)
-  }
-  if (old) {
-    const ours = new Set([...spec.containers.map((c) => c.name), ctx.node.controlContainer])
-    const other = (Object.values(existing.Containers ?? {}) as { Name: string }[]).find((e) => !ours.has(e.Name))
-    if (other) refuse(409, 'network_busy', `${other.Name} is on ${tenant.name}; retry when it is gone`)
-    for (const c of [...spec.containers].reverse()) await stopAndRemove(c.name)
-    if (attached(existing, ctx.node.controlContainer)) {
-      await docker('POST', `/networks/${tenant.name}/disconnect`, { Container: ctx.node.controlContainer, Force: true }, [404])
+    if (!e) continue
+    // another tool's network under our name is never adopted: its containers would share the project's bridge
+    if (e.Labels?.['selfbase.managed'] !== 'true' || e.Labels?.['selfbase.project'] !== ref) {
+      refuse(409, 'network_conflict', `${n.name} exists and is not this project's network; remove or rename it`)
     }
-    await docker('DELETE', `/networks/${tenant.name}`)
+    // a network keeps its subnet; another one would mean two projects claim one /27 (control allocates them)
+    if (!(n === tenant && old) && subnetOf(e) !== want(n)) refuse(409, 'subnet_conflict', `${n.name} exists with another subnet`)
+    if ((n === tenant && old) || weak(n, e)) rebuild.push({ name: n.name, net: e })
+  }
+  if (rebuild.length) {
+    const ours = new Set([...spec.containers.map((c) => c.name), ctx.node.controlContainer])
+    for (const { name, net } of rebuild) {
+      const other = (Object.values(net.Containers ?? {}) as { Name: string }[]).find((e) => !ours.has(e.Name))
+      if (other) refuse(409, 'network_busy', `${other.Name} is on ${name}; retry when it is gone`)
+    }
+    for (const c of [...spec.containers].reverse()) await stopAndRemove(c.name)
+    for (const { name, net } of rebuild) {
+      if (attached(net, ctx.node.controlContainer)) {
+        await docker('POST', `/networks/${name}/disconnect`, { Container: ctx.node.controlContainer, Force: true }, [404])
+      }
+      await docker('DELETE', `/networks/${name}`)
+    }
     current = current.map(() => null)
     fresh = spec.containers
   }
