@@ -38,6 +38,8 @@ Object.assign(process.env, {
   FN_URL: 'http://localhost:54331',
   // the netqueue test's stand-in servers; every other private address stays refused
   NETQUEUE_ALLOW_HOSTS: '127.0.0.1',
+  // the fake Google of auth-flows.test.ts; every other private address stays refused for core's own calls
+  OUTBOUND_ALLOW_HOSTS: '127.0.0.1',
 })
 
 afterAll(async () => {

@@ -1,6 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto'
 import nodemailer from 'nodemailer'
-import type { Transporter } from 'nodemailer'
 import { pool } from '../db.ts'
 import { config } from '../config.ts'
 import { render } from './templates.ts'
@@ -8,6 +7,7 @@ import type { MailKind } from './templates.ts'
 import { safeRedirect } from './redirect.ts'
 import type { UserRow } from './users.ts'
 import { logLine } from '../log.ts'
+import { resolveChecked } from '../netguard.ts'
 
 export const sha256 = (s: string) => createHash('sha256').update(s).digest('hex')
 
@@ -47,7 +47,6 @@ const logFailure = (err: any) => logLine('error', `auth mail failed: ${err?.code
 /** Runs a send without blocking the response, so response time does not depend on whether a mail goes out. */
 export const background = (p: Promise<unknown>) => void p.catch(logFailure)
 
-let transport: Transporter | undefined
 let warned = false
 /** nodemailer options: implicit TLS on 465; elsewhere STARTTLS is required, so a stripped upgrade never sends SMTP_PASS in clear. */
 export const smtpOptions = ({ host, port, user, pass }: typeof config.smtp) =>
@@ -59,8 +58,11 @@ async function deliver(to: string, subject: string, html: string): Promise<void>
     await pool.query(`insert into selfbase.mail_log (to_email, subject, html) values ($1, $2, $3)`, [to, subject, html])
     return
   }
-  transport ??= nodemailer.createTransport(smtpOptions(config.smtp))
-  await transport.sendMail({ from: config.smtp.from, to, subject, html })
+  // through the outbound guard (SMTP_HOST is a setting, core is on the shared proxy network), then to the checked
+  // address itself, the name kept for TLS: a second DNS answer cannot differ
+  const [{ address }] = await resolveChecked(config.smtp.host, config.outboundAllowHosts)
+  await nodemailer.createTransport({ ...smtpOptions(config.smtp), host: address, servername: config.smtp.host })
+    .sendMail({ from: config.smtp.from, to, subject, html })
 }
 
 /**

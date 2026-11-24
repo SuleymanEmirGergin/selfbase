@@ -72,6 +72,8 @@ export const config = {
   fnUrl: env.FN_URL || 'http://fn:8000',
   // hosts (names or addresses) net.http_* may reach although they resolve to a private, loopback or link-local address
   netAllowHosts: new Set(list(env.NETQUEUE_ALLOW_HOSTS).map((h) => h.toLowerCase().replace(/^\[|\]$/g, ''))),
+  // hosts core's own outbound calls (Google OAuth, SMTP) may reach although they resolve to a private address (netguard.ts)
+  outboundAllowHosts: new Set(list(env.OUTBOUND_ALLOW_HOSTS).map((h) => h.toLowerCase().replace(/^\[|\]$/g, ''))),
 }
 
 if (config.jwtSecret.length < 32) throw new Error('JWT_SECRET must be at least 32 characters')

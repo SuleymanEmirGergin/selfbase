@@ -10,6 +10,7 @@ import type { UserRow } from './users.ts'
 import { issueSession, isBanned } from './sessions.ts'
 import { safeRedirect, sessionParams, withFragment } from './redirect.ts'
 import { logLine } from '../log.ts'
+import { guardedRequest } from '../netguard.ts'
 
 const router = new Hono<AppEnv>()
 const stateKey = new TextEncoder().encode(config.jwtSecret)
@@ -37,27 +38,31 @@ router.get('/authorize', async (c) => {
 
 type GoogleProfile = { sub?: unknown; email?: unknown; email_verified?: unknown; name?: unknown; picture?: unknown }
 
-/** Exchanges the code and reads the profile; null on any failure. Never logs or returns the client secret. */
+/**
+ * Exchanges the code and reads the profile; null on any failure. Never logs or returns the client secret. Both calls go
+ * through the outbound guard: the endpoints are settings, and core is on the shared proxy network.
+ */
 async function googleProfile(code: string): Promise<GoogleProfile | null> {
   const { clientId, clientSecret, tokenUrl, userinfoUrl } = config.google
+  const allow = config.outboundAllowHosts
   try {
-    const t = await fetch(tokenUrl, {
+    const t = await guardedRequest(tokenUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ code, client_id: clientId, client_secret: clientSecret, redirect_uri: callbackUrl(), grant_type: 'authorization_code' }),
-      signal: AbortSignal.timeout(10_000),
-    })
-    if (!t.ok) {
+      body: new URLSearchParams({ code, client_id: clientId, client_secret: clientSecret, redirect_uri: callbackUrl(), grant_type: 'authorization_code' }).toString(),
+      timeoutMs: 10_000,
+    }, allow)
+    if (t.status < 200 || t.status > 299) {
       logLine('error', `google token exchange failed: ${t.status}`)
       return null
     }
-    const { access_token } = await t.json()
-    const u = await fetch(userinfoUrl, { headers: { authorization: `Bearer ${access_token}` }, signal: AbortSignal.timeout(10_000) })
-    if (!u.ok) {
+    const { access_token } = JSON.parse(t.body)
+    const u = await guardedRequest(userinfoUrl, { headers: { authorization: `Bearer ${access_token}` }, timeoutMs: 10_000 }, allow)
+    if (u.status < 200 || u.status > 299) {
       logLine('error', `google userinfo failed: ${u.status}`)
       return null
     }
-    return await u.json()
+    return JSON.parse(u.body)
   } catch (err: any) {
     logLine('error', `google oauth failed: ${err?.name ?? 'error'}`)
     return null
