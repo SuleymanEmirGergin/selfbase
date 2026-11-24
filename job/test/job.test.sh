@@ -558,11 +558,19 @@ sql db-empty "update public.e_marker set v = 'after-backup'" > /dev/null
 sql db-empty 'create database e_other' > /dev/null
 others() { sql db-empty "select count(*) from pg_stat_activity where datname = 'e_other'"; }
 compose exec -T db-empty psql -XAtq -U postgres -d e_other -c 'select pg_sleep(120)' > /dev/null 2>&1 & other=$!
-for i in $(seq 20); do [ "$(others)" = 0 ] || break; sleep 0.5; done
+# 5: and a replication=database session (a walsender, which runs SQL too) writing in that database
+compose exec -T db-empty psql -XAtq -U postgres -d e_other -c 'create table public.w (v int)' > /dev/null
+compose exec -T db-empty psql -XAtq -U postgres -d 'dbname=e_other replication=database' \
+  -c 'begin; insert into public.w values (1); select pg_sleep(120); commit' > /dev/null 2>&1 & wal=$!
+walsenders() { sql db-empty "select count(*) from pg_stat_activity where backend_type = 'walsender'"; }
+for i in $(seq 20); do [ "$(others)" -lt 2 ] || [ "$(walsenders)" = 0 ] || break; sleep 0.5; done
 rc=0; out=$(cramped "$eslow" 1 '' '(sleep 6; pkill -TERM -f "^bash /scripts/restore.sh") &') || rc=$?
-n=$(others)
+n=$(others) nw=$(walsenders)
 sql db-empty "select pg_terminate_backend(pid) from pg_stat_activity where datname = 'e_other'" > /dev/null
-wait "$other" || true
+wait "$other" || true; wait "$wal" || true
+check '5: a walsender writing in a second database was terminated too' [ "$nw" = 0 ]; [ "$nw" = 0 ] || echo "walsenders: $nw" >&2
+check '5: and its write rolled back' \
+  [ "$(compose exec -T db-empty psql -XAtq -U postgres -d e_other -c 'select count(*) from public.w')" = 0 ]
 check '2: a restore stopped by SIGTERM while pg_restore runs exits 143' [ "$rc" = 143 ]; [ "$rc" = 143 ] || echo "$out" >&2
 check '2: it says it was stopped, nothing changed' grep -q '^restore: STOPPED by a signal' <<< "$out"
 check '2: the dump was not restored (it rolled back)' [ "$(sql db-empty "select to_regclass('public.e_slow') is null")" = t ]

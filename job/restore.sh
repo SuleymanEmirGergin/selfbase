@@ -240,9 +240,11 @@ watched() {
 }
 # pg_restore's server session: killing the client alone leaves a statement that sends nothing back (a REFRESH, an
 # index build) running; terminated, its one transaction rolls back and its new files are removed. Every session of
-# the cluster goes (client backends and background workers, in every database: the cluster is the project's alone),
-# not one picked by name: the dump's own SQL can rename its session (application_name) or open another (dblink), and
-# core, rest, fn and pooler are stopped. Done once a pass finds none; a pass that cannot run (no login), a
+# the cluster goes (client backends and walsenders, which a replication=database connection makes and which run SQL
+# too, in every database: the cluster is the project's alone), not one picked by name: the dump's own SQL can rename
+# its session (application_name) or open another (dblink), and core, rest, fn and pooler are stopped. Not every
+# backend type: the launchers (autovacuum, logical replication, pg_cron) only restart. Background workers an
+# extension starts are out of scope here (wave 2 quotas). Done once a pass finds none; a pass that cannot run (no login), a
 # termination that fails or a session still there after 30 s in all returns 1: the state is unknown. The 30 s are
 # one budget (stop_by) for a stop a signal interrupted and the cleanup's stop after it
 stop_restore() {
@@ -252,7 +254,7 @@ stop_restore() {
     # <sessions found>,<terminations that failed or did not end their session within 1 s>
     found=$(PGCONNECT_TIMEOUT=5 PGOPTIONS="$PGOPTIONS -c statement_timeout=10s" q -c "select pg_catalog.count(*) || ',' ||
         pg_catalog.count(*) filter (where not pg_catalog.pg_terminate_backend(pid, 1000)) from pg_catalog.pg_stat_activity
-        where backend_type in ('client backend', 'background worker') and pid <> pg_catalog.pg_backend_pid()") || found=''
+        where backend_type in ('client backend', 'walsender') and pid <> pg_catalog.pg_backend_pid()") || found=''
     [ "$found" != 0,0 ] || { stop_by=''; return 0; }
     sleep 1
   done
