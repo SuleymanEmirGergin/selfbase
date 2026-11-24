@@ -419,7 +419,19 @@ test('9: reconcile recreates a removed container; a create survives a control ki
   assert.equal(P.c.host, P.b.host, 'C reuses the host B freed')
 })
 
-test('10: export A, import it as D on the freed host with A’s keys; a wrong passphrase leaves nothing', async () => {
+test('10: export A; while A is live its keys are refused and an import with rotate_keys is D, where A’s keys and session fail; after A is gone a plain import keeps them; a wrong passphrase leaves nothing', async () => {
+  // a session on A before the export: the refresh token the export carries
+  const user = { email: `moved-${P.a.ref}@e2e.test`, password: 'moved-password-1' }
+  const signup = await https(P.a.host, '/auth/v1/signup', { method: 'POST', headers: { apikey: P.a.anon }, body: user })
+  assert.equal(signup.status, 200, signup.text)
+  await sql(P.a.ref, `update auth.users set email_confirmed_at = now() where email = '${user.email}'`)
+  const signIn = (p) => https(p.host, '/auth/v1/token?grant_type=password', { method: 'POST', headers: { apikey: p.anon }, body: user })
+  const session = await signIn(P.a)
+  assert.equal(session.status, 200, session.text)
+  const refresh = (p) => https(p.host, '/auth/v1/token?grant_type=refresh_token', { method: 'POST', headers: { apikey: p.anon },
+    body: { refresh_token: session.json.refresh_token } })
+  const serviceA = (await ok('POST', `/projects/${P.a.ref}/api-keys/reveal`, { name: 'service_role' })).api_key
+
   const exp = await job((await ok('POST', `/projects/${P.a.ref}/export`, { passphrase: PASSPHRASE })).job_id)
   assert.equal(exp.status, 'succeeded', exp.error)
   const dir = (await ok('GET', `/projects/${P.a.ref}/backups`)).find((x) => x.location?.startsWith(`export-${P.a.ref}/`))?.location
@@ -428,34 +440,60 @@ test('10: export A, import it as D on the freed host with A’s keys; a wrong pa
   const del = await job((await ok('DELETE', `/projects/${P.c.ref}`, { confirm_name: 'c' })).job_id)
   assert.equal(del.status, 'succeeded', del.error)
 
-  const importWith = async (passphrase) => {
+  const importWith = async (passphrase, name, extra = {}) => {
     const form = new FormData()
-    for (const [k, v] of Object.entries({ organization_slug: 'default', name: 'd', size: 'micro', backup_dir: dir, passphrase })) form.set(k, v)
+    for (const [k, v] of Object.entries({ organization_slug: 'default', name, size: 'micro', backup_dir: dir, passphrase, ...extra })) form.set(k, v)
     const r = new Response(form)
     return https(CONTROL_HOST, '/platform/projects/import', { method: 'POST', body: Buffer.from(await r.arrayBuffer()),
       headers: { authorization: `Bearer ${token}`, 'content-type': r.headers.get('content-type') } })
   }
+  const imported = async (started) => {
+    assert.equal(started.status, 202, started.text)
+    const ref = started.json.project.ref
+    refs.add(ref)
+    const j = await job(started.json.job_id, 300_000)
+    assert.equal(j.status, 'succeeded', j.error)
+    await healthyProject(ref)
+    const host = (await ok('GET', `/projects/${ref}/domains`)).find((x) => x.kind === 'default').hostname
+    return { ref, host, anon: (await ok('GET', `/projects/${ref}/api-keys`)).find((k) => k.name === 'anon').api_key }
+  }
+  const notes = (p, key) => https(p.host, '/rest/v1/e2e_notes?select=note', { headers: { apikey: key, authorization: `Bearer ${key}` } })
   const count = () => psql(`select count(*) from control.projects where status <> 'REMOVED'`)
   const n = count()
-  const wrong = await importWith('not the passphrase')
+  const wrong = await importWith('not the passphrase', 'd')
   assert.ok(wrong.status >= 400 && wrong.status < 500, `${wrong.status} ${wrong.text}`)
   assert.equal(count(), n, 'a project was left behind')
+  // S1: A is live, so its JWT secret and keys may not come in a second time
+  const same = await importWith(PASSPHRASE, 'd')
+  assert.equal(same.status, 409, same.text)
+  assert.equal(same.json.error, 'keys_in_use')
+  assert.equal(count(), n, 'a refused import left a project behind')
 
-  const started = await importWith(PASSPHRASE)
-  assert.equal(started.status, 202, started.text)
-  const d = started.json.project.ref
-  refs.add(d)
-  const j = await job(started.json.job_id, 300_000)
-  assert.equal(j.status, 'succeeded', j.error)
-  await healthyProject(d)
-  const host = (await ok('GET', `/projects/${d}/domains`)).find((x) => x.kind === 'default').hostname
-  assert.equal(host, P.c.host, 'D takes the freed host')
+  const d = await imported(await importWith(PASSPHRASE, 'd', { rotate_keys: 'true' }))
+  assert.equal(d.host, P.c.host, 'D takes the freed host')
   assert.equal((await ok('GET', '/capacity')).new_hosts_this_week, 3)
-  const h = { apikey: P.a.anon, authorization: `Bearer ${P.a.anon}` }
-  const rows = await https(host, '/rest/v1/e2e_notes?select=note', { headers: h })
+  assert.notEqual(d.anon, P.a.anon, 'D has new keys')
+  const rows = await notes(d, d.anon)
   assert.equal(rows.status, 200, rows.text)
   assert.deepEqual(rows.json, [{ note: 'from studio' }])
-  P.d = { ref: d, host, anon: P.a.anon }
+  // I1: nothing of A's opens D, neither key nor the session the export carried; the user and the password moved
+  for (const key of [P.a.anon, serviceA]) assert.equal((await notes(d, key)).status, 401, 'an A key on D')
+  const onD = await refresh(d)
+  assert.equal(onD.status, 400, `A's refresh token on D: ${onD.text}`)
+  assert.equal((await signIn(d)).status, 200, 'the moved user signs in on D')
+  assert.equal((await refresh(P.a)).status, 200, 'the same refresh token is good on A')
+  P.d = d
+
+  // a plain import (same keys) once A is gone: A's keys and the exported session work on the copy
+  const gone = await job((await ok('DELETE', `/projects/${P.a.ref}`, { confirm_name: 'a' })).job_id)
+  assert.equal(gone.status, 'succeeded', gone.error)
+  const e = await imported(await importWith(PASSPHRASE, 'e'))
+  assert.equal(e.host, P.a.host, 'E takes the host A freed')
+  assert.equal(e.anon, P.a.anon, 'E keeps A’s keys')
+  assert.deepEqual((await notes(e, P.a.anon)).json, [{ note: 'from studio' }])
+  assert.equal((await notes(e, serviceA)).status, 200, 'A’s service key on E')
+  assert.equal((await refresh(e)).status, 200, 'the exported session is good on E')
+  P.e = e
 })
 
 test('11: teardown removes what the run made and nothing else', { skip: KEEP && 'E2E_KEEP=1' }, () => {
