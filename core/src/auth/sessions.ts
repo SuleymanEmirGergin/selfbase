@@ -107,9 +107,9 @@ export async function rotate(refreshToken: string): Promise<SessionJson> {
 // S4: rotation and every revocation of a user's tokens hold this per-user transaction lock. Without it a revocation's
 // UPDATE could run while a rotation had inserted its child token but not committed it: the UPDATE's snapshot misses
 // the child, which then outlives the logout. Under the lock the revocation's UPDATE starts after the rotation
-// committed, so it sees (and revokes) the child. Lock order is not uniform: the admin ban holds the auth.users row
-// (FOR UPDATE) and then asks for this lock, while a rotation holds this lock and then its child insert takes FOR KEY
-// SHARE on that row. Postgres detects that cycle and aborts one side with a 500; either side rolls back whole, so no
+// committed, so it sees (and revokes) the child. Lock order is not uniform: the admin ban and password reset hold the
+// auth.users row (FOR UPDATE) and then ask for this lock, while a rotation (and PUT /user's password change, which
+// takes it first) holds this lock and then its child insert takes FOR KEY SHARE on that row. Postgres detects that cycle and aborts one side with a 500; either side rolls back whole, so no
 // revocation is lost and no ban reports success with a live token.
 const LOCK_NS = 0x5e55 // the two-key advisory lock space of refresh tokens
 const lockUser = (c: PoolClient, userId: string) => c.query('select pg_advisory_xact_lock($1, hashtext($2::text))', [LOCK_NS, userId])
@@ -140,6 +140,16 @@ export async function revokeUserSessions(userId: string, except: string | null =
     await c.query(`update auth.refresh_tokens set revoked = true, updated_at = now()
       where user_id = $1 and not revoked and ($2::uuid is null or session_id <> $2)`, [userId, except])
   })
+}
+
+/**
+ * GoTrue's UpdatePassword: a new password ends every session of the user except `keep` (the caller's own; null for an
+ * admin reset) and clears its one-time tokens, so a stolen refresh token or link dies with the old password. Runs in
+ * the caller's transaction, next to the password write.
+ */
+export async function endSessionsForNewPassword(client: PoolClient, userId: string, keep: string | null): Promise<void> {
+  await revokeUserSessions(userId, keep, client)
+  await client.query('delete from auth.one_time_tokens where user_id = $1', [userId])
 }
 
 /** A session is live while it has an unrevoked refresh token. */

@@ -6,7 +6,7 @@ import { pool } from '../db.ts'
 import { config } from '../config.ts'
 import type { AppEnv } from '../jwt.ts'
 import { authError, checkPassword, createUser, findByEmail, findById, hashPassword, listUsers, toUserJson, withTx } from './users.ts'
-import { issueSession, isBanned, revokeSession, revokeUserSessions, rotate, sessionActive } from './sessions.ts'
+import { endSessionsForNewPassword, issueSession, isBanned, revokeSession, revokeUserSessions, rotate, sessionActive } from './sessions.ts'
 import { background, sendConfirmation, sendEmailChange } from './mail.ts'
 import { phoneDisabled, sendPhoneOtp } from './routes-phone.ts'
 
@@ -120,7 +120,7 @@ router.post('/token', async (c) => {
 router.get('/user', async (c) => c.json(toUserJson((await requireUser(c)).user)))
 
 router.put('/user', async (c) => {
-  const { user } = await requireUser(c)
+  const { user, claims } = await requireUser(c)
   const body = await readBody(c)
   // validate everything before writing anything
   const { data, password, phone } = body
@@ -138,6 +138,8 @@ router.put('/user', async (c) => {
   const hash = password === undefined ? null : await hashPassword(password)
 
   await withTx(async (tx) => {
+    // first, so the S4 lock comes before the row writes (a rotation's order); the caller's session stays
+    if (hash) await endSessionsForNewPassword(tx, user.id, claims.session_id ?? null)
     if (data !== undefined)
       // GoTrue merges top-level keys; a null value removes the key
       await tx.query(

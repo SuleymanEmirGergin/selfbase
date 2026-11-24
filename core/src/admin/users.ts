@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { pool } from '../db.ts'
 import { checkPassword, findById, hashPassword, SELECT_USER, toUserJson, withTx } from '../auth/users.ts'
 import type { UserRow } from '../auth/users.ts'
-import { revokeUserSessions } from '../auth/sessions.ts'
+import { endSessionsForNewPassword, revokeUserSessions } from '../auth/sessions.ts'
 import { adminError, audit, readBody } from './ident.ts'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -48,7 +48,11 @@ router.patch('/users/:id', async (c) => {
     }
     if (b.email_confirmed)
       await db.query('update auth.users set email_confirmed_at = coalesce(email_confirmed_at, now()), updated_at = now() where id = $1', [id])
-    if (hash) await db.query('update auth.users set encrypted_password = $2, updated_at = now() where id = $1', [id, hash])
+    if (hash) {
+      await db.query('update auth.users set encrypted_password = $2, updated_at = now() where id = $1', [id, hash])
+      // an admin reset ends every session (GoTrue's UpdatePassword without a session)
+      await endSessionsForNewPassword(db, id, null)
+    }
     await audit(db, 'users.update', id, {
       ...(ban !== undefined ? { banned_until: ban } : {}),
       ...(b.email_confirmed ? { email_confirmed: true } : {}),

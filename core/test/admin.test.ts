@@ -351,6 +351,23 @@ describe('users', () => {
     expect((await call('PATCH', `/users/${u.id}`, { body: { banned_until: 'not a date' } })).status).toBe(400)
   })
 
+  it('a password reset ends every session of the user and clears the one-time tokens', async () => {
+    const u = await newUser()
+    const other = await (await signIn(u.email)).json()
+    await pool.query(`insert into auth.one_time_tokens (user_id, token_type, token_hash, relates_to)
+      values ($1, 'recovery_token', 'stolen-link-hash', $2)`, [u.id, u.email])
+    expect((await call('PATCH', `/users/${u.id}`, { body: { password: 'new-password-2' } })).status).toBe(200)
+    for (const refresh_token of [u.refresh, other.refresh_token]) {
+      const r = await app.request('/auth/v1/token?grant_type=refresh_token', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ refresh_token }),
+      })
+      expect(r.status).toBe(400)
+    }
+    expect((await pool.query('select 1 from auth.refresh_tokens where user_id = $1 and not revoked', [u.id])).rowCount).toBe(0)
+    expect((await pool.query('select 1 from auth.one_time_tokens where user_id = $1', [u.id])).rowCount).toBe(0)
+    expect((await signIn(u.email, 'new-password-2')).status).toBe(200)
+  })
+
   it('deletes a user and their sessions', async () => {
     const u = await newUser()
     expect((await call('DELETE', `/users/${u.id}`)).status).toBe(200)
