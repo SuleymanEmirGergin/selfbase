@@ -92,14 +92,27 @@ export async function enqueue(db: Db, j: EnqueueInput): Promise<string> {
  * under a per-project transaction lock: under READ COMMITTED, `insert ... where not exists` alone lets two concurrent
  * calls both see the project idle. Its own transaction, so it takes the pool, never a client.
  */
-export async function enqueueIfIdle(db: pg.Pool, j: EnqueueInput & { projectId: string }): Promise<string | null> {
+export const enqueueIfIdle = (db: pg.Pool, j: EnqueueInput & { projectId: string }): Promise<string | null> =>
+  underEnqueueLock(db, j.projectId, (c) => insertJob(c, j, true))
+
+/**
+ * At most one pending job of this type and payload per project: an existing one is returned (it reads the project's
+ * state when it runs, so it covers this change too), else a new one queues behind whatever runs. For changes that
+ * must not be refused while another job runs (domains), yet must not pile up.
+ */
+export const enqueueCoalesced = (db: pg.Pool, j: EnqueueInput & { projectId: string }): Promise<string> =>
+  underEnqueueLock(db, j.projectId, async (c) => (await c.query(
+    `select id from control.jobs where project_id = $1 and type = $2 and payload = $3::jsonb and status = 'pending' limit 1`,
+    [j.projectId, j.type, j.payload])).rows[0]?.id ?? (await insertJob(c, j, false))!)
+
+async function underEnqueueLock<T>(db: pg.Pool, projectId: string, fn: (c: pg.PoolClient) => Promise<T>): Promise<T> {
   const c = await db.connect()
   try {
     await c.query('begin')
-    await c.query('select pg_advisory_xact_lock($1, hashtext($2))', [ENQUEUE_NS, j.projectId])
-    const id = await insertJob(c, j, true)
+    await c.query('select pg_advisory_xact_lock($1, hashtext($2))', [ENQUEUE_NS, projectId])
+    const out = await fn(c)
     await c.query('commit')
-    return id
+    return out
   } catch (e) {
     await c.query('rollback').catch(() => {})
     throw e

@@ -12,7 +12,7 @@ import { ApiError } from '../errors.ts'
 import { forwardAdmin } from '../forward.ts'
 import { addDomain, newHostsThisWeek, removeDomain } from '../hosts.ts'
 import { REF_RE } from '../ids.ts'
-import { createProject, enqueue, enqueueIfIdle, stepsOf, type Project } from '../jobs/index.ts'
+import { createProject, enqueueCoalesced, enqueueIfIdle, stepsOf, type Project } from '../jobs/index.ts'
 import { LOG_SERVICES, projectLogs } from '../logs.ts'
 import { projectConfig } from '../project-env.ts'
 import { provisioner } from '../provisioner.ts'
@@ -222,8 +222,9 @@ platformProjects.get('/projects/:ref/domains', async (c) => {
     `select hostname, kind from control.project_domains where project_id = $1 order by kind <> 'default', hostname`, [p.id])).rows)
 })
 
+// one pending apply per project, however many domain changes arrive while another job runs
 const applyCore = (c: Context<Env>, p: ProjectRow) =>
-  enqueue(pool, { type: 'project.apply', projectId: p.id, payload: { recreate: ['core'] }, createdBy: c.get('user').id })
+  enqueueCoalesced(pool, { type: 'project.apply', projectId: p.id, payload: { recreate: ['core'] }, createdBy: c.get('user').id })
 
 platformProjects.post('/projects/:ref/domains', async (c) => {
   const p = await projectFor(c, 'project.manage')
