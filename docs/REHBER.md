@@ -1228,6 +1228,11 @@ yeni bir projeye `--from-empty` ile bir migration uygulandı, tablo oluştu, Pos
   sunucuya çıkabiliyor. fn'in ise dışarı çıkması gerekiyor, bu yüzden sunucunun kendi portlarına da
   ulaşabiliyor. Bunu kapatmak istersen sunucuya eklenecek iki güvenlik duvarı kuralı
   `docs/network-isolation.md`'de. selfbase sunucunun güvenlik duvarına dokunmuyor.
+- **`rotate_keys` güvenilmeyen bir dökümü temizlemez.** Kaynaktan sızmış bir anahtara ya da oturuma karşı
+  korur: kopya yeni anahtarlarla açılır, dökümle gelen oturumlar silinir. Dökümün sahibi kötü niyetliyse
+  korumaz. Örneğin dökümle gelen bir pg_cron işi, geri yüklemenin kontrolünden sonra
+  `auth.refresh_tokens`'ı yeniden doldurabilir. Güvenmediğin bir dökümü içe aktarmadan önce cron işlerine
+  ve trigger'larına bak.
 - **`/rest/v1/` `apikey` olmadan 200 dönüyor.** PostgREST'in kök adresi (şemanın OpenAPI açıklaması)
   anahtarsız isteğe de cevap veriyor. Tablolardaki veri yine RLS ile korunur.
 - **Yeni bir micro projede `/rest/v1/` kökü 500 dönüyor** (`canceling statement due to statement
