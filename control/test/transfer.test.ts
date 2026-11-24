@@ -15,6 +15,7 @@ import { enqueueDailyBackups, msUntilNext } from '../src/schedule.ts'
 import { backfillFingerprints, fingerprint, getSecrets, putSecret } from '../src/secrets.ts'
 import { forwardTarget } from '../src/forward.ts'
 import { disk } from '../src/disk.ts'
+import { buildEnv, loadProjectEnv, projectConfig, SECRET_ENV } from '../src/project-env.ts'
 import { FakeProvisioner } from './fake-provisioner.ts'
 import { join, org, project, resetDashboard, user, v1Env, withToken } from './helpers.ts'
 
@@ -31,7 +32,8 @@ const stub = createServer(async (req, res) => {
   let body = ''
   for await (const chunk of req) body += chunk
   if (req.url?.startsWith('/admin/')) adminSeen.push({ url: req.url, body })
-  res.writeHead(200, { 'content-type': 'application/json' }).end('{}')
+  const sized = req.url === '/admin/sql' && body.includes('pg_database_size')
+  res.writeHead(200, { 'content-type': 'application/json' }).end(sized ? '{"columns":["bytes"],"rows":[["1000"]]}' : '{}')
 })
 const workers = (waits: Record<string, number> = {}) => {
   const port = (stub.address() as AddressInfo).port
@@ -680,5 +682,112 @@ describe('S8: backups cannot fill the backup volume', () => {
     } finally {
       config.exportRetentionDays = saved
     }
+  })
+})
+
+describe('fix round 2', () => {
+  const GiB = 2 ** 30
+  afterEach(() => { vi.restoreAllMocks() })
+
+  test('S1: with rotate_keys, core never runs on the restored database with the stored JWT secret before its sessions are gone', async () => {
+    const order: string[] = []
+    const ensure = fake.ensure.bind(fake)
+    const start = fake.start.bind(fake)
+    const runJob = fake.runJob.bind(fake)
+    fake.ensure = async (input) => { order.push(`ensure:${input.env.JWT_SECRET}`); return ensure(input) }
+    fake.start = async (ref, services) => { order.push('start'); return start(ref, services) }
+    fake.runJob = async (ref, type, args, env) => { order.push(`job:${type}`); return runJob(ref, type, args, env) }
+    const push = adminSeen.push.bind(adminSeen)
+    adminSeen.push = (...r) => { order.push(`admin:${r[0].url}`); return push(...r) }
+    try {
+      const res = await postForm(owner.token, form({ ...importFields({ name: 'rot-window' }), env_file: envBlob(v1Env().text), rotate_keys: 'true' }))
+      expect(res.status).toBe(202)
+      const out = await res.json()
+      workers()
+      expect((await finished(out.job_id)).status).toBe('succeeded')
+      const p = (await pool.query('select * from control.projects where ref = $1', [out.project.ref])).rows[0]
+      const stored = `ensure:${(await getSecrets(pool, p)).JWT_SECRET}`
+      const restore = order.indexOf('job:restore')
+      const deleted = order.indexOf('admin:/admin/sql')
+      expect(restore).toBeGreaterThan(-1)
+      expect(deleted).toBeGreaterThan(restore)
+      // between the restore and the deletes: no start with the stored env, no ensure with the stored secret
+      const between = order.slice(restore + 1, deleted)
+      expect(between.length).toBeGreaterThan(0)
+      expect(between.filter((e) => e === 'start' || e === stored)).toEqual([])
+      // and the throwaway secret core ran with meanwhile is never used again
+      const throwaway = between.find((e) => e.startsWith('ensure:'))!
+      expect(order.slice(deleted)).not.toContain(throwaway)
+      expect(order.slice(deleted)).toContain(stored)
+    } finally {
+      adminSeen.push = push
+    }
+  })
+
+  test('S7: a manifest whose config.auth.__proto__ carries endpoints installs none of them', async () => {
+    const own = await project(acme.id, { name: 'proto-src' })
+    mkdirSync(joinPath(dir, `export-${own.ref}`, '20261122-031500'), { recursive: true })
+    const config = JSON.parse('{"auth":{"SITE_URL":"https://exported.example","__proto__":{"SMTP_HOST":"attacker.example","GOOGLE_TOKEN_URL":"https://attacker.example/token"}}}')
+    const sealed = await sealManifest({ config, secrets: { JWT_SECRET: 'proto-jwt-secret-value-0123456789abcdef', ANON_KEY: 'a', SERVICE_ROLE_KEY: 's' } },
+      'correct horse battery')
+    writeFileSync(joinPath(dir, `export-${own.ref}`, '20261122-031500', 'project.json'), Buffer.from(sealed, 'base64'))
+    const res = await postForm(owner.token, form({ ...importFields({ name: 'proto-dst', backup_dir: `export-${own.ref}/20261122-031500` }),
+      passphrase: 'correct horse battery' }))
+    expect(res.status).toBe(202)
+    const out = await res.json()
+    const p = (await pool.query('select * from control.projects where ref = $1', [out.project.ref])).rows[0]
+    const data = (await pool.query(`select data::text as t from control.project_config where project_id = $1 and section = 'auth'`, [p.id])).rows[0].t
+    expect(data).not.toMatch(/__proto__|attacker/)
+    // the project has no host or generated secrets until its job runs: the env as built from its config
+    const env = buildEnv(p, Object.fromEntries(SECRET_ENV.map((k) => [k, 'x'])), await projectConfig(pool, p.id), ['h.example.test'])
+    expect(env.SMTP_HOST).toBe('')
+    expect(env.GOOGLE_TOKEN_URL).toBe('https://oauth2.googleapis.com/token')
+  })
+
+  test('S7: a stored row that already holds __proto__ is read as own keys only', async () => {
+    const p = await project(acme.id, { name: 'proto-row' })
+    await pool.query(`delete from control.project_config where project_id = $1`, [p.id])
+    await pool.query(`insert into control.project_config (project_id, section, data) values ($1, 'auth', $2::jsonb)`,
+      [p.id, '{"__proto__":{"SMTP_HOST":"attacker.example","GOOGLE_TOKEN_URL":"https://attacker.example/token"}}'])
+    const { env } = await loadProjectEnv(pool, p)
+    expect(env.SMTP_HOST).toBe('')
+    expect(env.GOOGLE_TOKEN_URL).toBe('https://oauth2.googleapis.com/token')
+  })
+
+  test('S8: a backup or export larger than the headroom above the floor is refused; the size comes from the project', async () => {
+    const p = await project(acme.id, { name: 'big-db' })
+    vi.spyOn(disk, 'space').mockResolvedValue({ free: 11 * GiB, total: 100 * GiB })
+    const size = vi.spyOn(disk, 'projectBytes').mockResolvedValue(12 * GiB)
+    const b = await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/backups`)
+    expect(b.status).toBe(507)
+    expect(await b.json()).toMatchObject({ error: 'backup_volume_full', message: expect.stringMatching(/12\.0 GiB/) })
+    expect((await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/export`, { passphrase: 'correct horse battery' })).status).toBe(507)
+    expect(size).toHaveBeenCalledWith(expect.objectContaining({ ref: p.ref }))
+    size.mockRejectedValue(new Error('core down'))
+    expect((await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/backups`)).status).toBe(503)
+    size.mockResolvedValue(0.5 * GiB)
+    expect((await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/backups`)).status).toBe(202)
+  })
+
+  test('S8: disk.projectBytes asks core for the database and storage size', async () => {
+    const p = await project(acme.id, { name: 'sized' })
+    adminSeen.length = 0
+    expect(await disk.projectBytes(p)).toBe(1000)
+    const q = JSON.parse(adminSeen.at(-1)!.body).query as string
+    expect(q).toMatch(/pg_database_size/)
+    expect(q).toMatch(/storage\.objects/)
+  })
+
+  test('S8: the nightly backups count each queued backup against the headroom; the rest fail with the reason', async () => {
+    await pool.query(`delete from control.jobs where type in ('project.backup', 'control.backup')`)
+    await project(acme.id, { name: 'night-a' })
+    await project(acme.id, { name: 'night-b' })
+    vi.spyOn(disk, 'space').mockResolvedValue({ free: 11 * GiB, total: 100 * GiB })
+    vi.spyOn(disk, 'projectBytes').mockResolvedValue(0.6 * GiB)
+    await enqueueDailyBackups(pool)
+    const jobs = (await pool.query(`select status, error from control.jobs where type = 'project.backup'`)).rows
+    expect(jobs.filter((j) => j.status === 'pending')).toHaveLength(1)
+    expect(jobs.length).toBeGreaterThan(1)
+    for (const j of jobs.filter((j) => j.status !== 'pending')) expect(j).toMatchObject({ status: 'failed', error: expect.stringMatching(/GiB/) })
   })
 })

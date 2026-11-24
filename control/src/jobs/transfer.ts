@@ -9,7 +9,8 @@ import { adminRequest } from '../forward.ts'
 import { ProvisionerError } from '../provisioner.ts'
 import { getSecrets } from '../secrets.ts'
 import { defineJob, type JobCtx } from './engine.ts'
-import { activate, certificate, createSteps, failTo, healthy, healthySteps, need, setStatus, step } from './project.ts'
+import { randomBytes } from 'node:crypto'
+import { activate, certificate, createSteps, ensure, failTo, healthy, healthySteps, need, setStatus, step } from './project.ts'
 
 // what an import stops for the restore; db keeps running (the restore job connects to it)
 export const RESTORE_STOPS = ['core', 'rest', 'fn', 'pooler']
@@ -128,14 +129,17 @@ defineJob('control.backup', 'heavy', [
   }, false),
 ])
 
-// rotate_keys: the restored sessions were issued under the old secret; their refresh tokens would mint access tokens
-// signed with the new one. Right after core is healthy (it has to run to take SQL): the gap is that one step.
+// rotate_keys: the restored refresh tokens would mint access tokens signed with the new secret, and core is publicly
+// routed as soon as it runs (it has to run to take the deletes). So core first comes up on the restored database with a
+// throwaway JWT secret, never stored: whatever it signs before the sessions are gone dies with that secret. Only then
+// is it recreated with the project's real secret, on a database without the restored sessions.
+const rotating = (ctx: JobCtx) => ctx.job.payload.rotate_keys === true
 const END_SESSIONS = `do $$ begin
   if to_regclass('auth.refresh_tokens') is not null then delete from auth.refresh_tokens; end if;
   if to_regclass('auth.sessions') is not null then delete from auth.sessions; end if;
 end $$`
 async function endSessions(ctx: JobCtx) {
-  if (ctx.job.payload.rotate_keys !== true) return
+  if (!rotating(ctx)) return
   const res = await adminRequest(need(ctx), 'selfbase-control', '/admin/sql', {
     method: 'POST', headers: new Headers({ 'content-type': 'application/json' }), body: JSON.stringify({ query: END_SESSIONS }) })
   const out = await res.json().catch(() => null)
@@ -162,9 +166,14 @@ defineJob('project.import', 'heavy', [
     await startJob(ctx, p.ref, 'restore', { dir: ctx.job.payload.backup_dir }, { PGHOST: 'db', PGPASSWORD: await dbPassword(ctx) })
   }),
   step('restored', (ctx) => waitFor(ctx, need(ctx).ref, 'restore'), false),
-  step('start', (ctx) => ctx.provisioner.start(need(ctx).ref, RESTORE_STOPS)),
+  step('start', (ctx) => rotating(ctx)
+    ? ensure(ctx, [], { JWT_SECRET: randomBytes(32).toString('base64url') })
+    : ctx.provisioner.start(need(ctx).ref, RESTORE_STOPS)),
   step('started', healthy, false),
   step('sessions', endSessions),
+  // the real secret: core, rest and fn are recreated with it
+  step('rekey', async (ctx) => { if (rotating(ctx)) await ensure(ctx) }),
+  step('rekeyed', async (ctx) => { if (rotating(ctx)) await healthy(ctx) }, false),
   healthySteps[1], // warm
   step('coming_up', (ctx) => setStatus(ctx, 'COMING_UP')),
   step('certificate', certificate, false),
