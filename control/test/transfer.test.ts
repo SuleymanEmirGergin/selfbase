@@ -790,6 +790,53 @@ describe('fix round 2', () => {
     expect((await row(p.id)).status).toBe('INIT_FAILED')
   })
 
+  // review Important 1: the job record, not the job's error message, decides whether a rotating import may start
+  const pauseRestore = async (ref: string) => {
+    const paused = await finished((await (await withToken(owner.token, 'POST', `/platform/projects/${ref}/pause`)).json()).job_id)
+    expect(paused.status).toBe('succeeded')
+    const r = await withToken(owner.token, 'POST', `/platform/projects/${ref}/restore`)
+    expect(r.status).toBe(202)
+    return finished((await r.json()).job_id)
+  }
+
+  test('R1: a rotating import that failed before its sessions were confirmed deleted: pause then restore is refused and starts nothing', async () => {
+    fake.jobResult = () => ({ status: 'failed', exitCode: 5, tail: 'restore: FAILED: the DATABASE WAS RESTORED' })
+    const out = await (await postForm(owner.token, form({ ...importFields({ name: 'rot-reopen' }), env_file: envBlob(v1Env().text),
+      rotate_keys: 'true' }))).json()
+    workers()
+    expect((await finished(out.job_id)).status).toBe('failed')
+    const p = (await pool.query('select * from control.projects where ref = $1', [out.project.ref])).rows[0]
+    expect(p.status).toBe('INIT_FAILED')
+    const ensures = fake.callsOf('ensure').length
+    expect(await pauseRestore(p.ref)).toMatchObject({ status: 'failed',
+      error: expect.stringMatching(/rotate_keys.*sessions.*delete this project, then import again/) })
+    expect(fake.callsOf('ensure').length).toBe(ensures)
+    expect(fake.callsOf('start')).toEqual([])
+    expect((await row(p.id)).status).toBe('RESTORE_FAILED')
+  })
+
+  test('R1: a rotating import that failed after its sessions were confirmed deleted may be paused and restored', async () => {
+    fake.jobResult = () => ({ status: 'succeeded', exitCode: 0, tail: ROTATED_TAIL })
+    fake.fail('start', 3)
+    const out = await (await postForm(owner.token, form({ ...importFields({ name: 'rot-reopen-ok' }), env_file: envBlob(v1Env().text),
+      rotate_keys: 'true' }))).json()
+    workers()
+    expect(await finished(out.job_id)).toMatchObject({ status: 'failed', error: expect.stringMatching(/fake start failure/) })
+    const ensures = fake.callsOf('ensure').length
+    expect((await pauseRestore(out.project.ref)).status).toBe('succeeded')
+    expect(fake.callsOf('ensure').length).toBe(ensures + 1)
+  })
+
+  test('R1: an import an earlier control left in flight fails with core, rest, fn and pooler stopped (it may have started core on the throwaway secret)', async () => {
+    const p = await project(acme.id, { name: 'rot-inflight-stop', status: 'RESTORING' })
+    const id = (await pool.query(`insert into control.jobs (type, lane, project_id, step, status, payload)
+      values ('project.import', 'heavy', $1, '8', 'running', $2) returning id`, [p.id, { backup_dir: 'import/acme/v1-dump', rotate_keys: true }])).rows[0].id
+    workers()
+    expect((await finished(id)).status).toBe('failed')
+    expect(fake.callsOf('stop').map((c) => c.args)).toEqual([[p.ref, ['core', 'rest', 'fn', 'pooler']]])
+    expect(fake.calls.filter((c) => ['ensure', 'start'].includes(c.method))).toEqual([])
+  })
+
   test('S7: a manifest whose config.auth.__proto__ carries endpoints installs none of them', async () => {
     const own = await project(acme.id, { name: 'proto-src' })
     mkdirSync(joinPath(dir, `export-${own.ref}`, '20261122-031500'), { recursive: true })

@@ -8,7 +8,7 @@ import { ApiError } from '../errors.ts'
 import { ProvisionerError } from '../provisioner.ts'
 import { getSecrets } from '../secrets.ts'
 import { defineJob, type JobCtx } from './engine.ts'
-import { activate, certificate, createSteps, failTo, healthy, healthySteps, need, setStatus, step } from './project.ts'
+import { activate, certificate, createSteps, failTo, healthy, healthySteps, need, sessionsUnconfirmed, setStatus, step } from './project.ts'
 
 // what an import stops for the restore; db keeps running (the restore job connects to it)
 export const RESTORE_STOPS = ['core', 'rest', 'fn', 'pooler']
@@ -164,6 +164,7 @@ defineJob('control.backup', 'heavy', [
 // them (ROTATE_KEYS=1) while core, rest, fn and pooler are stopped, so the plain start brings up a database without them.
 const rotating = (ctx: JobCtx) => ctx.job.payload.rotate_keys === true
 const SESSIONS_DELETED = /^restore: the restored sessions are deleted \(ROTATE_KEYS\)$/m
+const importFailed = failTo('INIT_FAILED', ['certificate'])
 
 // The project comes up empty as a create would (status RESTORING until the data is back), then the backup replaces its
 // database and storage with core, rest, fn and pooler stopped; core applies the platform migrations when it starts
@@ -197,4 +198,9 @@ defineJob('project.import', 'heavy', [
   step('certificate', certificate, false),
   activate,
 // version 2: the sessions moved into the restore job; an import an earlier control left past its restore fails (I1)
-], { ...failTo('INIT_FAILED', ['certificate']), version: 2 })
+], { version: 2, onFail: async (ctx) => {
+  await importFailed.onFail(ctx)
+  // not past a confirmed 'restored' (an earlier control's job may have started core on its throwaway secret): the four
+  // stop, and ensure refuses to start them again
+  if (ctx.project && rotating(ctx) && await sessionsUnconfirmed(ctx.db, ctx.project.id)) await ctx.provisioner.stop(ctx.project.ref, RESTORE_STOPS)
+} })
