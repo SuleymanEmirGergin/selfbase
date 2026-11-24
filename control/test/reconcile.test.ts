@@ -96,6 +96,33 @@ test("reconcile's finished applies older than a week are deleted; other jobs sta
     .toEqual([{ type: 'project.apply', auto: false }, { type: 'project.apply', auto: true }, { type: 'project.backup', auto: true }])
 })
 
+test('a release apply that failed is retried with core recreated, under the backoff, until one succeeds', async () => {
+  const p = await add('ACTIVE_HEALTHY')
+  fake.running(p.ref, 'test')
+  await pool.query(`insert into control.jobs (type, project_id, lane, status, payload) values
+    ('project.apply', $1, 'light', 'failed', '{"recreate":["core"],"released":"gone.example.test"}')`, [p.id])
+  const pending = async () => (await jobsOf(p.id)).filter((j) => j.status === 'pending')
+  // the failed one just ended: the first retry waits a minute like any of reconcile's applies
+  expect((await reconcileOnce(deps())).actions).toContainEqual({ ref: p.ref, action: 'backoff' })
+  expect(await pending()).toEqual([])
+  await pool.query(`update control.jobs set updated_at = now() - interval '2 minutes' where project_id = $1`, [p.id])
+  expect((await reconcileOnce(deps())).actions).toContainEqual({ ref: p.ref, action: 'apply release' })
+  expect(await pending()).toEqual([{ type: 'project.apply', status: 'pending', payload: { recreate: ['core'] } }])
+  // once a later apply succeeded the router no longer has the name: nothing more to do
+  await pool.query(`update control.jobs set status = 'succeeded', updated_at = now() - interval '2 hours' where project_id = $1 and status = 'pending'`, [p.id])
+  await reconcileOnce(deps())
+  expect(await pending()).toEqual([])
+})
+
+test("a failed release apply older than a week is kept while it still holds its name", async () => {
+  const p = await add('ACTIVE_HEALTHY')
+  fake.running(p.ref, 'test')
+  await pool.query(`insert into control.jobs (type, project_id, lane, status, payload, created_at) values
+    ('project.apply', $1, 'light', 'failed', '{"recreate":["core"],"released":"gone.example.test"}', now() - interval '8 days')`, [p.id])
+  await reconcileOnce(deps())
+  expect((await jobsOf(p.id)).filter((j) => j.status === 'failed')).toHaveLength(1)
+})
+
 test('a core detached from the proxy network is attached again', async () => {
   const p = await add('ACTIVE_HEALTHY')
   fake.running(p.ref, 'test')

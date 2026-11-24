@@ -4,7 +4,7 @@
 import type pg from 'pg'
 import { probeCertificate } from './cert.ts'
 import { config } from './config.ts'
-import { hostsOf } from './hosts.ts'
+import { hostsOf, RELEASE_HELD } from './hosts.ts'
 import { DESIRED_RUNNING, enqueueIfIdle, type Project } from './jobs/index.ts'
 import { sessionsUnconfirmed } from './jobs/project.ts'
 import { RESTORE_STOPS } from './jobs/transfer.ts'
@@ -21,9 +21,10 @@ const BUSY = `exists (select 1 from control.jobs j where j.project_id = p.id and
 const RECENT_APPLIES = `select count(*)::int as n, max(updated_at) as last from control.jobs
   where project_id = $1 and type = 'project.apply' and created_by is null and created_at > now() - interval '6 hours'`
 const backoffMs = (n: number) => Math.min(60_000 * 2 ** (n - 1), 3_600_000)
-// finished applies reconcile made are history nobody reads after a week: the job table stays bounded
-const PRUNE = `delete from control.jobs where type = 'project.apply' and created_by is null and status in ('succeeded', 'failed')
-  and created_at < now() - interval '7 days'`
+// finished applies reconcile made are history nobody reads after a week: the job table stays bounded. A failed release
+// apply stays while it holds its name (hosts.ts refuses the name on it)
+const PRUNE = `delete from control.jobs j where type = 'project.apply' and created_by is null and status in ('succeeded', 'failed')
+  and created_at < now() - interval '7 days' and not (${RELEASE_HELD})`
 // audit retention: 90 days
 const PRUNE_AUDIT = `delete from control.audit_log where at < now() - interval '90 days'`
 // exports are listed for EXPORT_RETENTION_DAYS; their files go by the same rule, through the nightly project.prune
@@ -74,13 +75,23 @@ export async function reconcileOnce(deps: ReconcileDeps): Promise<ReconcileRepor
       }
       // other statuses (INIT_FAILED, *_FAILED, ...) wait for the operator
       if (!DESIRED_RUNNING.includes(p.status)) continue
+      const backoff = async () => {
+        const recent = (await deps.db.query(RECENT_APPLIES, [p.id])).rows[0]
+        return recent.n && Date.now() - new Date(recent.last).getTime() < backoffMs(recent.n)
+      }
+      // a release apply that failed leaves the evicted name on the router: core is recreated without it, as it would have
+      if ((await deps.db.query(`select 1 from control.jobs j where j.project_id = $1 and ${RELEASE_HELD}`, [p.id])).rowCount) {
+        if (await backoff()) { act('backoff'); continue }
+        if (await still(DESIRED_RUNNING)
+          && await enqueueIfIdle(deps.db, { type: 'project.apply', projectId: p.id, payload: { recreate: ['core'] }, createdBy: null })) act('apply release')
+        continue
+      }
       const drift = !s.network || s.services.some((x) => !x.exists || x.state !== 'running' || x.templateVersion !== p.template_version
         || x.proxyStale)
       if (drift || !s.controlAttached) {
         // a service that is missing, exited or restarting: the project is not healthy, whatever the apply does next
         if (s.services.some((x) => !x.exists || x.state !== 'running') && p.status !== 'ACTIVE_UNHEALTHY') await setStatus('ACTIVE_UNHEALTHY')
-        const recent = (await deps.db.query(RECENT_APPLIES, [p.id])).rows[0]
-        if (recent.n && Date.now() - new Date(recent.last).getTime() < backoffMs(recent.n)) { act('backoff'); continue }
+        if (await backoff()) { act('backoff'); continue }
         if (await still(DESIRED_RUNNING)
           && await enqueueIfIdle(deps.db, { type: 'project.apply', projectId: p.id, payload: { recreate: [] }, createdBy: null })) act('apply')
         continue

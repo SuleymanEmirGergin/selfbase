@@ -124,6 +124,14 @@ async function checkCap(db: Db): Promise<void> {
     { cap, retryAfter })
 }
 
+/**
+ * A release apply (evictStaleLegacyNames) whose name the router may still serve: it has not succeeded, and no later
+ * apply, restore or delete of its project has. Over `control.jobs j`. Reconcile retries these (reconcile.ts).
+ */
+export const RELEASE_HELD = `j.type = 'project.apply' and j.payload ? 'released' and j.status <> 'succeeded'
+  and not exists (select 1 from control.jobs k where k.project_id = j.project_id and k.status = 'succeeded'
+                    and k.type in ('project.apply', 'project.restore', 'project.delete') and k.created_at > j.created_at)`
+
 /** The slot stays (its certificate is kept) with no project and its org (a tombstone); the default domain row goes. */
 export async function releaseHost(db: Db, projectId: string): Promise<void> {
   await tx(db, async (c) => {
@@ -172,10 +180,7 @@ export async function addDomain(db: Db, projectId: string, hostname: string, kin
     if (taken.rowCount) throw new HostError('hostname_taken', `${h} is already used by a project on this server. Choose another hostname.`)
     // the tombstone of a name evicted at start (evictStaleLegacyNames): held until its project's router is rebuilt
     // without it, by that apply or a later apply, restore or delete of the project
-    const releasing = await c.query(
-      `select 1 from control.jobs j where j.type = 'project.apply' and j.payload->>'released' = $1 and j.status <> 'succeeded'
-          and not exists (select 1 from control.jobs k where k.project_id = j.project_id and k.status = 'succeeded'
-                            and k.type in ('project.apply', 'project.restore', 'project.delete') and k.created_at > j.created_at)`, [h])
+    const releasing = await c.query(`select 1 from control.jobs j where j.payload->>'released' = $1 and ${RELEASE_HELD}`, [h])
     if (releasing.rowCount) {
       throw new HostError('hostname_taken', `${h} is being released from another project on this server. Try again in a few minutes.`)
     }
