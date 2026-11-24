@@ -101,6 +101,34 @@ describe('gateway', () => {
     expect((await app.request('/rest/v1/items')).headers.get('content-security-policy')).toBeNull()
   })
 
+  for (const path of ['/rest/v1/redirect', '/functions/v1/redirect']) {
+    it(`${path}: an upstream redirect reaches the client as it is and core never follows it`, async () => {
+      let hits = 0
+      const target = createServer((_req, res) => {
+        hits++
+        res.end('inside')
+      })
+      await new Promise<void>((r) => target.listen(0, '127.0.0.1', r))
+      const location = `http://127.0.0.1:${(target.address() as { port: number }).port}/private`
+      const relay = upstream.listeners('request')[0] as (...a: unknown[]) => void
+      upstream.removeAllListeners('request')
+      upstream.on('request', (_req, res) => {
+        res.writeHead(302, { location })
+        res.end()
+      })
+      try {
+        const res = await app.request(path)
+        expect(res.status).toBe(302)
+        expect(res.headers.get('location')).toBe(location)
+        expect(hits).toBe(0)
+      } finally {
+        upstream.removeAllListeners('request')
+        upstream.on('request', relay)
+        await new Promise((r) => target.close(r))
+      }
+    })
+  }
+
   it('there is no /panel any more', async () => {
     expect((await app.request('/panel')).status).toBe(404)
   })

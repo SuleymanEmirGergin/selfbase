@@ -46,6 +46,8 @@ export async function sendPhoneOtp(user: UserRow, phone: string): Promise<void> 
     method: 'POST',
     headers: { 'content-type': 'application/json', 'webhook-id': id, 'webhook-timestamp': ts, 'webhook-signature': `v1,${signature}` },
     body,
+    // a function-chosen redirect target is never fetched: a 3xx is a failed send
+    redirect: 'manual',
     signal: AbortSignal.timeout(10_000),
   }).catch(() => null)
   await res?.body?.cancel()

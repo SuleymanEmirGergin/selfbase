@@ -438,6 +438,7 @@ let lastTokenRequest: URLSearchParams | null = null
 let googleUser: Record<string, unknown> = {}
 let tokenStatus = 200
 let hookStatus = 200
+let redirectHits = 0
 const readAll = async (req: IncomingMessage) => {
   let s = ''
   for await (const chunk of req) s += chunk
@@ -459,6 +460,10 @@ beforeAll(async () => {
     } else if (req.url === '/send-phone-otp-hook') {
       if (hookStatus === 200) hookCalls.push({ headers: req.headers, body })
       res.statusCode = hookStatus
+      if (hookStatus === 302) res.setHeader('location', `${fakeUrl}/redirected`)
+      res.end('{}')
+    } else if (req.url === '/redirected') {
+      redirectHits++
       res.end('{}')
     } else {
       res.statusCode = 404
@@ -832,6 +837,20 @@ describe('phone', () => {
     expect((await pool.query('select phone_change from auth.users where id = $1', [s.user.id])).rows[0].phone_change).toBe(p)
     const otp = await requestOtp(s.access_token, p)
     expect((await guess(s.access_token, p, otp)).status).toBe(200)
+  })
+
+  it('a hook that answers with a redirect is a failed send, and core never follows it', async () => {
+    enablePhone()
+    const s = await session()
+    redirectHits = 0
+    hookStatus = 302
+    try {
+      const res = await call('PUT', '/user', { phone: phone() }, s.access_token)
+      expect(res.status).toBe(500)
+      expect(redirectHits).toBe(0)
+    } finally {
+      hookStatus = 200
+    }
   })
 
   it('an empty AUTH_SMS_HOOK_SECRET refuses to send (500, generic error)', async () => {

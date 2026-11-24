@@ -56,7 +56,9 @@ const forward = (target: () => string, prefix: string) => async (c: Context) => 
       customFetch: (req) => {
         for (const h of SPOOFABLE) req.headers.delete(h)
         for (const h of IP_HEADERS) req.headers.set(h, ip)
-        return fetch(req)
+        // the client gets an upstream 3xx as it is: following it would fetch a PostgREST- or function-chosen
+        // address from core, outside the outbound guard
+        return fetch(req, { redirect: 'manual' })
       },
     })
   } catch {
