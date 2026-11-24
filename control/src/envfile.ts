@@ -24,7 +24,9 @@ const IGNORED_PREFIX = /^(PANEL_|CORE_|BACKUP_|NODE_|COOLIFY_)/
 // GOOGLE_AUTH_URL (a browser redirect, but it decides where users sign in with this project's client id). The
 // operator sets these through the platform (CONFIG_DEFAULTS keeps them). Kept, because core never fetches them and
 // they are the imported app's own browser redirects: SITE_URL, AUTH_SET_PASSWORD_URL and AUTH_REDIRECT_ALLOWLIST.
-const ENDPOINT = /_(URL|HOST|PORT)$/
+// Allow-lists of hosts or addresses (*_HOSTS, *_IPS: OUTBOUND_ALLOW_HOSTS, NETQUEUE_ALLOW_HOSTS, TRUSTED_PROXY_IPS)
+// go the same way: which private hosts core may reach, or whose forwarded addresses it trusts, is the operator's.
+const ENDPOINT = /_(URL|HOSTS?|PORT|IPS)$/
 const KEPT = new Set(['SITE_URL', 'AUTH_SET_PASSWORD_URL'])
 const isEndpoint = (key: string) => ENDPOINT.test(key) && !KEPT.has(key)
 

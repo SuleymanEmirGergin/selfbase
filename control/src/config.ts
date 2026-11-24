@@ -9,6 +9,7 @@ export type Config = ReturnType<typeof loadConfig>
 // organization slugs as platform-orgs.ts makes them
 const SLUG_RE = /^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$/
 export const HOSTNAME_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
+const LABELS_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
 
 export function loadConfig(input: Record<string, string | undefined> = process.env) {
   // secrets come from <KEY>_FILE (compose secrets: not in the container's Config.Env, which a socket proxy's inspect
@@ -61,6 +62,12 @@ export function loadConfig(input: Record<string, string | undefined> = process.e
   const proxyMode = oneOf('PROXY_MODE', 'coolify', ['coolify', 'own'])
   const trustedProxyIps = (env.TRUSTED_PROXY_HOSTS || '').split(',').map((h) => h.trim()).filter(Boolean)
   if (trustedProxyIps.some((h) => !isIP(h))) fail('TRUSTED_PROXY_HOSTS takes IP addresses only (the proxy container is PROXY_CONTAINER)')
+  // core matches these exactly (core/src/config.ts): plain names (one label too) or addresses, never a pattern or URL
+  const outboundAllowHosts = (env.OUTBOUND_ALLOW_HOSTS || '').split(',').map((h) => h.trim().toLowerCase().replace(/^\[(.*)\]$/, '$1'))
+    .filter(Boolean)
+  if (outboundAllowHosts.some((h) => !isIP(h) && !LABELS_RE.test(h))) {
+    fail('OUTBOUND_ALLOW_HOSTS must be a comma-separated list of hostnames or IP addresses')
+  }
 
   return {
     port: num('PORT', 8080),
@@ -80,6 +87,8 @@ export function loadConfig(input: Record<string, string | undefined> = process.e
     // fixed proxy addresses whose X-Forwarded-For counts, besides the proxy container's (from the provisioner, which
     // reads PROXY_CONTAINER by exact name). Addresses only: a name would be resolved by DNS, which is steerable.
     trustedProxyIps,
+    // the private hosts every project's core may call (a mail relay on the operator's network); a node setting only
+    outboundAllowHosts,
     proxyNetwork: env.PROXY_NETWORK || 'coolify',
     templateVersion: need('TEMPLATE_VERSION'),
     memoryBudgetMb: num('MEMORY_BUDGET_MB', 16384),

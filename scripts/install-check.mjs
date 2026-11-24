@@ -14,7 +14,7 @@ const REQUIRED = ['BASE_DOMAIN', 'REGISTRY', 'TEMPLATE_VERSION', 'PROXY_MODE', '
 // compose secrets (SECRETS_DIR/<file>), never env: a container's Config.Env is readable by a socket proxy's inspect
 const SECRET_FILES = { SELFBASE_MASTER_KEY: 'master_key', CONTROL_DB_PASSWORD: 'control_db_password',
   CONTROL_JWT_SECRET: 'control_jwt_secret', PROVISIONER_TOKEN: 'provisioner_token' }
-const OPTIONAL = ['PROJECT_SUBNET_POOL', 'CONTROL_NET_PREFIX', 'BACKUP_MIN_FREE_MIB', 'SECRETS_DIR', 'SECRETS_GID', 'TRUSTED_PROXY_HOSTS', 'PROXY_CONTAINER',
+const OPTIONAL = ['PROJECT_SUBNET_POOL', 'CONTROL_NET_PREFIX', 'BACKUP_MIN_FREE_MIB', 'OUTBOUND_ALLOW_HOSTS', 'SECRETS_DIR', 'SECRETS_GID', 'TRUSTED_PROXY_HOSTS', 'PROXY_CONTAINER',
   'PUBLIC_URL', 'TEST_HOST', 'NODE_NAME', 'LEGACY_HOSTNAMES', 'MEMORY_BUDGET_MB', 'OVERCOMMIT', 'SHARED_RESERVED_MB',
   'JOB_SLOT_MB', 'MAX_NEW_HOSTS_PER_WEEK', 'BRANCH_HOST_SLOTS', 'CERT_PROBE', 'BACKUP_RETENTION_DAYS', 'SMTP_HOST', 'SMTP_PORT',
   'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM', 'AUTH_RATE_LIMIT_SIGN_IN', 'PROXY_ENTRYPOINT_HTTP', 'PROXY_ENTRYPOINT_HTTPS',
@@ -95,6 +95,10 @@ if (socketGid && socketGid !== '0' && v('DOCKER_SOCKET_GID') !== socketGid) bad(
 if (v('TRUSTED_PROXY_HOSTS').split(',').map((h) => h.trim()).filter(Boolean).some((h) => !isIP(h))) {
   bad('TRUSTED_PROXY_HOSTS', 'must be comma-separated IP addresses (the proxy container itself is PROXY_CONTAINER)')
 }
+// as control/src/config.ts reads it: names or addresses that core matches exactly
+const LABELS = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
+if (v('OUTBOUND_ALLOW_HOSTS').split(',').map((h) => h.trim().toLowerCase().replace(/^\[(.*)\]$/, '$1')).filter(Boolean)
+  .some((h) => !isIP(h) && !LABELS.test(h))) bad('OUTBOUND_ALLOW_HOSTS', 'must be comma-separated hostnames or IP addresses')
 if (v('PROXY_CONTAINER') && !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(v('PROXY_CONTAINER'))) bad('PROXY_CONTAINER', 'must be a plain container name [A-Za-z0-9_-]+')
 
 const pool = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(v('PROJECT_SUBNET_POOL'))

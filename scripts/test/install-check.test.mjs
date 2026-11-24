@@ -162,6 +162,13 @@ rootTest('TRUSTED_PROXY_HOSTS takes IP addresses only and PROXY_CONTAINER a plai
   assert.equal(run({ ...good, TRUSTED_PROXY_HOSTS: '10.0.0.5, fd00::1', PROXY_CONTAINER: 'my-traefik' }).status, 0)
 })
 
+rootTest('OUTBOUND_ALLOW_HOSTS takes hostnames or IP addresses, never a URL or pattern', () => {
+  const r = run({ ...good, OUTBOUND_ALLOW_HOSTS: 'relay.example.test,http://x.example.test' })
+  assert.equal(r.status, 1)
+  assert.match(r.out, /OUTBOUND_ALLOW_HOSTS: must be comma-separated hostnames or IP addresses/)
+  assert.equal(run({ ...good, OUTBOUND_ALLOW_HOSTS: 'relay.example.test, mailrelay, 10.0.0.5, [fd00::1]' }).status, 0)
+})
+
 test('a secret file must be owned by uid 0 and readable by group SECRETS_GID', { skip: !asRoot }, () => {
   const dir = mkdtempSync(join(tmpdir(), 'sb-install-check-'))
   const file = join(dir, '.env')

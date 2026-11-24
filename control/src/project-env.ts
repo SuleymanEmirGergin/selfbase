@@ -2,6 +2,7 @@
 // stored per section in project_config under v1's env names; only the names below reach a container, so a
 // config row can never set a secret, REGISTRY or anything the template does not read. REGISTRY,
 // TEMPLATE_VERSION, DB_SHARED_BUFFERS, DB_MAX_CONNECTIONS and POOL_SIZE are added by the provisioner.
+import { config as node } from './config.ts'
 import type { Db } from './db.ts'
 import { hostsOf } from './hosts.ts'
 import { getSecrets } from './secrets.ts'
@@ -59,6 +60,8 @@ export function buildEnv(project: { ref: string }, secrets: Record<string, strin
   env.PROJECT_REF = project.ref
   env.PUBLIC_URL = publicUrl
   env.SITE_URL = str(own('SITE_URL')) || publicUrl
+  // the operator's, for every project: which private hosts core may reach is never a project's (or an import's) choice
+  env.OUTBOUND_ALLOW_HOSTS = node.outboundAllowHosts.join(',')
   return env
 }
 
