@@ -19,4 +19,7 @@ export function assertRef(ref: unknown): asserts ref is string {
 
 export const containerName = (ref: string, service: string) => `sb-${ref}-${service}`
 export const networkName = (ref: string) => `sb-${ref}`
+// R6: core and control only (core's admin port), and fn's own way out; see spec.ts buildProject
+export const ctlNetworkName = (ref: string) => `sb-${ref}-ctl`
+export const egressNetworkName = (ref: string) => `sb-${ref}-egress`
 export const volumeName = (ref: string, volume: string) => `sb-${ref}-${volume}`

@@ -55,7 +55,8 @@ services:
       ADMIN_PORT: "8081"
       ADMIN_TOKEN: ${ADMIN_TOKEN:-}
       PROJECT_REF: ${PROJECT_REF:-}
-      # the project's /27: the admin port refuses any peer outside it (core is on the shared proxy network too)
+      # the project's control /29 (sb-<ref>-ctl: core and control only): the admin port refuses any peer outside it,
+      # fn and the shared proxy network included
       PROJECT_SUBNET: ${PROJECT_SUBNET:-}
       PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL (public https origin of core)}
       TRUST_PROXY: ${TRUST_PROXY:-true}

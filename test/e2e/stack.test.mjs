@@ -10,7 +10,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
-import { CONTROL_HOST, E2E_DIR, FIXED, IMPOSTOR, ORIGIN, PROXY_NETWORK, SECRETS_DIR, SOCKET_GID, compose, connectFrom, docker, dockerOk, envFile,
+import { CONTROL_HOST, E2E_DIR, FIXED, HTTPS_PORT, IMPOSTOR, ORIGIN, PROXY_NETWORK, SECRETS_DIR, SOCKET_GID, compose, connectFrom, docker, dockerOk, envFile,
   https, inspect, resolveFrom, root, run, runResources, snapshot, waitFor } from './helpers.mjs'
 
 process.chdir(root)
@@ -165,7 +165,7 @@ test('1: owner, sign-in, project A healthy in under 120 s; admin and panel paths
   for (const path of ['/admin/ready', '/panel/']) assert.equal((await https(host, path)).status, 404, path)
 })
 
-test('2: project B is isolated from A', async () => {
+test('2: project B is isolated from A', async (t) => {
   await finish(await create('b'), 'b')
   const a = `sb-${P.a.ref}-core`
   const b = (s) => `sb-${P.b.ref}-${s}`
@@ -174,18 +174,21 @@ test('2: project B is isolated from A', async () => {
   const bNet = `sb-${P.b.ref}`
   // the two cores share the proxy network (spec 7.3), so B's core name resolves from A, but only to that address
   assert.equal(resolveFrom(a, b('core')), ipOn(b('core'), PROXY_NETWORK))
+  t.diagnostic(`R1 ledger: A's core resolves ${b('core')} to ${resolveFrom(a, b('core'))} (B's proxy address ${ipOn(b('core'), PROXY_NETWORK)}); B's db, rest, pooler: ${[b('db'), b('rest'), b('pooler')].map((n) => resolveFrom(a, n)).join(' ')}`)
   assert.equal(connectFrom(a, ipOn(b('db'), bNet), 5432), 'timeout')
   assert.equal(connectFrom(a, ipOn(b('core'), bNet), 8080), 'timeout')
   assert.equal(connectFrom(a, ipOn(b('core'), bNet), 8081), 'timeout')
   // and B's admin port refuses a peer from there (core's /27 check), token or not
   const admin = run('docker', ['exec', a, 'node', '-e', `fetch('http://${ipOn(b('core'), PROXY_NETWORK)}:8081/admin/ready').then(r=>console.log(r.status),e=>console.log(e.message))`])
   assert.equal(admin, '403')
+  t.diagnostic(`R1 ledger: A's core -> B's core ${ipOn(b('core'), PROXY_NETWORK)}:8081/admin/ready -> ${admin}`)
   const onB = await https(P.b.host, '/rest/v1/', { headers: { apikey: P.a.anon, authorization: `Bearer ${P.a.anon}` } })
   assert.equal(onB.status, 401)
   const subnet = (ref) => JSON.parse(docker('network', 'inspect', `sb-${ref}`))[0].IPAM.Config[0].Subnet
   const [sa, sb] = [subnet(P.a.ref), subnet(P.b.ref)]
   assert.notEqual(sa, sb)
-  for (const s of [sa, sb]) assert.match(s, /^10\.218\.\d+\.\d+\/27$/)
+  // R6: the tenant /28 of each project's /27
+  for (const s of [sa, sb]) assert.match(s, /^10\.218\.\d+\.\d+\/28$/)
 })
 
 test('3: every project container is capped and hardened; control has no Docker socket', () => {
@@ -245,6 +248,44 @@ go()`
   const core = envOf(`sb-${P.a.ref}-core`)
   assert.equal(core.DB_HOST, ipOn(`sb-${P.a.ref}-db`, `sb-${P.a.ref}`))
   assert.equal(new URL(core.PGRST_URL).hostname, ipOn(`sb-${P.a.ref}-rest`, `sb-${P.a.ref}`))
+})
+
+// R6: a stand-in on exactly the networks of each tenant container (reachability is the network's, not the image's)
+const PROBE = `const net=require('net');const [t,admin]=process.argv.slice(1);Promise.all(JSON.parse(t).map(([h,p])=>new Promise((r)=>{`
+  + `const s=net.connect({host:h,port:p,timeout:3000});s.on('connect',()=>{s.destroy();r('open')});`
+  + `s.on('timeout',()=>{s.destroy();r('timeout')});s.on('error',(e)=>r(e.code==='ECONNREFUSED'?'refused':e.code))})))`
+  + `.then(async(x)=>{const a=await fetch(admin,{signal:AbortSignal.timeout(3000)}).then((r)=>String(r.status),(e)=>e.cause?.code??e.name);`
+  + `console.log(JSON.stringify([...x,a]))})`
+
+test('3b: R6: from fn, rest and db, neither control nor core\'s admin port answers, nor the host gateway (db, rest); the project still works', async (t) => {
+  const a = (s) => `sb-${P.a.ref}-${s}`
+  const net = `sb-${P.a.ref}`
+  const ipOn = (c, n) => inspect(c).NetworkSettings.Networks[n].IPAddress
+  const netInfo = (n) => JSON.parse(docker('network', 'inspect', n))[0]
+  const control = Object.values(inspect('selfbase-control').NetworkSettings.Networks).map((n) => n.IPAddress)
+  const coreCtl = ipOn(a('core'), `${net}-ctl`)
+  const gateway = netInfo(net).IPAM.Config[0].Gateway
+  const isolated = netInfo(net).Internal === true
+  // control is on sb-<ref>-ctl with core only, never on a tenant network
+  assert.deepEqual(Object.keys(inspect('selfbase-control').NetworkSettings.Networks).filter((n) => n.startsWith(net)), [`${net}-ctl`])
+  for (const s of ['fn', 'rest', 'db']) {
+    const nets = Object.keys(inspect(a(s)).NetworkSettings.Networks)
+    assert.ok(!nets.includes(`${net}-ctl`), `${s} on ${nets}`)
+    const targets = [...control.map((ip) => [ip, 8080]), [coreCtl, 8081], [gateway, HTTPS_PORT]]
+    const out = JSON.parse(run('docker', ['run', '--rm', ...nets.flatMap((n) => ['--network', n]), '--entrypoint', 'node',
+      inspect(a('core')).Config.Image, '-e', PROBE, JSON.stringify(targets), `http://${ipOn(a('core'), net)}:8081/admin/ready`]))
+    t.diagnostic(`R6 ${s} (${nets.join(', ')}): control ${control.join(',')}:8080, core ${coreCtl}:8081, gateway ${gateway}:${HTTPS_PORT}, `
+      + `core's admin on the tenant network -> ${out.join(' ')}`)
+    const [admin, gw, ...rest] = [out.at(-1), out.at(-2), ...out.slice(0, -2)]
+    assert.ok(rest.every((x) => x !== 'open'), `${s}: ${out.join(' ')}`)
+    // core's admin port answers its control /29 only: a tenant peer gets 403 before any token is read
+    assert.equal(admin, '403', s)
+    // the host gateway: closed where the engine isolates the tenant network; fn keeps its own egress network
+    // (docs/network-isolation.md: the operator's host firewall rule)
+    if (isolated && s !== 'fn') assert.notEqual(gw, 'open', `${s}: gateway ${gw}`)
+  }
+  const { host, anon } = P.a
+  assert.equal((await https(host, '/rest/v1/', { headers: { apikey: anon, authorization: `Bearer ${anon}` } })).status, 200)
 })
 
 test('4: Studio against the real stack: table editor, SQL, logs', async () => {
@@ -351,7 +392,8 @@ test('8: the new-host cap refuses a third project; deleting B frees its host and
   const gone = await job((await ok('DELETE', `/projects/${b.ref}`, { confirm_name: 'b' })).job_id)
   assert.equal(gone.status, 'succeeded', gone.error)
   assert.deepEqual(containersOf(b.ref), [])
-  assert.equal(docker('network', 'ls', '-q', '--filter', `name=^sb-${b.ref}$`), '')
+  // sb-<ref> and its -ctl and -egress networks
+  assert.equal(docker('network', 'ls', '-q', '--filter', `name=^sb-${b.ref}`), '')
   assert.equal(docker('volume', 'ls', '-q', '--filter', `name=^sb-${b.ref}-`), '')
   assert.equal(psql(`select coalesce(project_id::text, 'free') from control.host_slots where hostname = '${b.host}'`), 'free')
 })

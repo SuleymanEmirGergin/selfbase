@@ -80,7 +80,8 @@ test('renders for every size; only core joins the proxy, on 8080; the admin port
     assert.ok(!('POSTGRES_PASSWORD' in envOf('fn')) && !('SUPABASE_DB_URL' in envOf('fn')))
     for (const c of p.containers) {
       assert.equal(c.body.Image, `${NODE.registry}/selfbase-${c.service}:2.0.0`)
-      assert.deepEqual(c.networks, c.service === 'core' ? [`sb-${ENV.PROJECT_REF}`, 'proxy'] : [`sb-${ENV.PROJECT_REF}`])
+      // R6: core also on the control /29 (with control only), fn on its egress network
+      assert.deepEqual(c.networks, c.service === 'core' ? [net, `${net}-ctl`, 'proxy'] : c.service === 'fn' ? [net, `${net}-egress`] : [net])
       const labels = Object.entries(c.body.Labels)
       assert.ok(!labels.some(([k]) => k.startsWith('coolify.')), `${c.service}: no coolify labels`)
       assert.ok(!labels.some(([, v]) => v.includes('8081')), `${c.service}: 8081 never labelled`)

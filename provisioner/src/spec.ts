@@ -1,8 +1,14 @@
 // Pure spec builder: (template, size table, project input, node settings) -> exact Docker payloads.
 // Nothing here talks to Docker; ops (Task 7) sends what this returns, unchanged.
 //
-// buildProject(input: EnsureInput, tpl: Template, sizes: Sizes, node: NodeSettings) returns
-//   network:    { name: 'sb-<ref>', body }   body = POST /networks/create payload (bridge, the given /27)
+// buildProject(input: EnsureInput, tpl: Template, sizes: Sizes, node: NodeSettings, proxyIps, isolate) returns
+//   networks:   [{ name, body }]   POST /networks/create payloads, the given /27 cut in three (R6):
+//               sb-<ref>        base/28: every service at base+2.., jobs from base+8/29 (the tenant network)
+//               sb-<ref>-ctl    base+16/29: core at base+18 and control (base+20/30) only; core's admin port
+//                               answers this /29 only (PROJECT_SUBNET)
+//               sb-<ref>-egress base+24/29: fn alone (EGRESS), its way out (only when the template has fn)
+//               isolate (the engine has gateway_mode_ipv4, Docker 28+): sb-<ref> and -ctl are Internal with an
+//               isolated gateway, so db, rest and pooler reach neither the internet nor the host
 //   volumes:    ['sb-<ref>-<volume>', ...]   every volume the template declares
 //   containers: ContainerSpec[] in start order (each after its depends_on)
 // buildJob(input: JobInput, node: NodeSettings) returns one ContainerSpec for a one-off job container.
@@ -16,7 +22,7 @@
 // is only its template `environment`, rendered. Every refusal is a ProvisionError thrown before anything is returned.
 import { createHash } from 'node:crypto'
 import { isIP } from 'node:net'
-import { assertRef, containerName, networkName, ProvisionError, volumeName } from './names.ts'
+import { assertRef, containerName, ctlNetworkName, egressNetworkName, networkName, ProvisionError, volumeName } from './names.ts'
 import { parseCidr, VERSION_RE, type NodeSettings } from './settings.ts'
 import { ENV_KEY_RE, isObj, MissingVarError, render, startOrder, type Template } from './template.ts'
 
@@ -62,7 +68,10 @@ const refuse = (status: number, code: string, message?: string): never => {
 
 const dotted = (n: number) => [24, 16, 8, 0].map((s) => (n >>> s) & 255).join('.')
 // base+2..base+15 are the services' fixed addresses; Docker hands out the upper /28 to everything else (control, jobs)
-const MAX_SERVICES = 14
+const MAX_SERVICES = 6
+// the services that need a way out (Deno fetch); everything else on sb-<ref> has none where the engine can isolate
+const EGRESS = new Set(['fn'])
+const ISOLATED = { Internal: true, Options: { 'com.docker.network.bridge.gateway_mode_ipv4': 'isolated' } }
 
 const ns = (d: string) => [...d.matchAll(/(\d+)(ms|s|m|h)/g)].reduce((t, [, n, u]) => t + Number(n) * NS[u], 0)
 
@@ -140,8 +149,8 @@ function traefikLabels(ref: string, hosts: string[], node: NodeSettings): Record
 }
 
 /** proxyIps: the proxy container's addresses (ops reads them by exact name); core trusts X-Forwarded-For from these only. */
-export function buildProject(input: EnsureInput, tpl: Template, sizes: Sizes, node: NodeSettings, proxyIps: string[] = []):
-  { network: { name: string; body: Record<string, unknown> }; volumes: string[]; containers: ContainerSpec[] } {
+export function buildProject(input: EnsureInput, tpl: Template, sizes: Sizes, node: NodeSettings, proxyIps: string[] = [],
+  isolate = false): { networks: { name: string; body: Record<string, unknown> }[]; volumes: string[]; containers: ContainerSpec[] } {
   const { ref, templateVersion, size, subnet, hosts } = input
   assertRef(ref)
   if (typeof templateVersion !== 'string' || !VERSION_RE.test(templateVersion)) refuse(400, 'invalid_template_version')
@@ -179,9 +188,12 @@ export function buildProject(input: EnsureInput, tpl: Template, sizes: Sizes, no
   // names only: the values are control's and may be secrets
   if (dropped.length) console.warn(`provisioner: ${ref}: ignored provisioner-set env names from the request: ${dropped.join(', ')}`)
   const net = networkName(ref)
+  const ctl = ctlNetworkName(ref)
+  const egress = egressNetworkName(ref)
   const names = Object.keys(tpl.services)
-  if (names.length > MAX_SERVICES) refuse(500, 'template_invalid', `at most ${MAX_SERVICES} services have a fixed address in a /27`)
+  if (names.length > MAX_SERVICES) refuse(500, 'template_invalid', `at most ${MAX_SERVICES} services have a fixed address in the tenant /28`)
   const addr: Record<string, string> = Object.fromEntries(names.map((s, i) => [s, dotted(sub.base + 2 + i)]))
+  const outbound = names.filter((s) => EGRESS.has(s))
   // Siblings by address only: core is also on the proxy network, where Docker's DNS answers a name or alias any
   // container there carries (db.sb-<ref> included) before the project network's own service. Bare names in the
   // template go to /etc/hosts (ExtraHosts), which is read before Docker's DNS.
@@ -193,7 +205,7 @@ export function buildProject(input: EnsureInput, tpl: Template, sizes: Sizes, no
     TRUSTED_PROXY_IPS: proxyIps.filter((a) => isIP(a)).join(','),
     REGISTRY: node.registry,
     TEMPLATE_VERSION: templateVersion,
-    PROJECT_SUBNET: subnet,
+    PROJECT_SUBNET: `${dotted(sub.base + 16)}/29`,
     ...(db?.shared_buffers !== undefined ? { DB_SHARED_BUFFERS: db.shared_buffers } : {}),
     ...(db?.max_connections !== undefined ? { DB_MAX_CONNECTIONS: String(db.max_connections) } : {}),
     ...(pooler?.pool_size !== undefined ? { POOL_SIZE: String(pooler.pool_size) } : {}),
@@ -228,16 +240,23 @@ export function buildProject(input: EnsureInput, tpl: Template, sizes: Sizes, no
         ...(s.init ? { Init: true } : {}),
         ExtraHosts: extraHosts,
       },
-      NetworkingConfig: { EndpointsConfig: { [net]: { Aliases: [service], IPAMConfig: { IPv4Address: addr[service] } } } },
+      NetworkingConfig: { EndpointsConfig: {
+        [net]: { Aliases: [service], IPAMConfig: { IPv4Address: addr[service] } },
+        ...(service === 'core' ? { [ctl]: { Aliases: [service], IPAMConfig: { IPv4Address: dotted(sub.base + 18) } } } : {}),
+        ...(EGRESS.has(service) ? { [egress]: { Aliases: [service], IPAMConfig: { IPv4Address: dotted(sub.base + 26 + outbound.indexOf(service)) } } } : {}),
+      } },
     }
-    return seal(name, service, body, service === 'core' ? [net, node.proxyNetwork] : [net])
+    return seal(name, service, body, service === 'core' ? [net, ctl, node.proxyNetwork] : EGRESS.has(service) ? [net, egress] : [net])
   })
 
+  // each gateway is pinned to its range's first address (with IPRange set Docker would take the range's first)
+  const network = (name: string, at: number, prefix: number, range: string | null, internal: boolean) => ({ name, body: {
+    Name: name, Driver: 'bridge', ...(internal ? ISOLATED : {}),
+    IPAM: { Driver: 'default', Config: [{ Subnet: `${dotted(sub.base + at)}/${prefix}`, ...(range ? { IPRange: range } : {}), Gateway: dotted(sub.base + at + 1) }] },
+    Labels: { 'selfbase.managed': 'true', 'selfbase.project': ref } } })
   return {
-    network: { name: net, body: { Name: net, Driver: 'bridge',
-      // the gateway stays base+1 (Docker would take the range's first address), which core's admin port refuses
-      IPAM: { Driver: 'default', Config: [{ Subnet: subnet, IPRange: `${dotted(sub.base + 16)}/28`, Gateway: dotted(sub.base + 1) }] },
-      Labels: { 'selfbase.managed': 'true', 'selfbase.project': ref } } },
+    networks: [network(net, 0, 28, `${dotted(sub.base + 8)}/29`, isolate), network(ctl, 16, 29, `${dotted(sub.base + 20)}/30`, isolate),
+      ...(outbound.length ? [network(egress, 24, 29, null, false)] : [])],
     volumes: tpl.volumes.map((v) => volumeName(ref, v)),
     containers,
   }

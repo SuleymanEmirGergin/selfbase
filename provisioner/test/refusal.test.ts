@@ -103,11 +103,11 @@ test('provisioner-set variables cannot come from project env, even when a size o
   const cmd = p.containers.find((c) => c.service === 'db')!.body.Cmd as string[]
   assert.ok(cmd.includes('shared_buffers=128MB') && cmd.includes('max_connections=60'), cmd.join(' '))
   assert.ok(envOf(p, 'pooler').includes('POOL_SIZE=15'))
-  assert.ok(envOf(p, 'core').includes('PROJECT_SUBNET=10.207.0.32/27'))
+  assert.ok(envOf(p, 'core').includes('PROJECT_SUBNET=10.207.0.48/29'))
 })
 
-test('core gets its own /27 as PROJECT_SUBNET', () => {
-  assert.ok(envOf(buildProject(input(), tpl, SIZES, NODE), 'core').includes('PROJECT_SUBNET=10.207.0.32/27'))
+test('core gets its control /29 (sb-<ref>-ctl, R6) as PROJECT_SUBNET', () => {
+  assert.ok(envOf(buildProject(input(), tpl, SIZES, NODE), 'core').includes('PROJECT_SUBNET=10.207.0.48/29'))
 })
 
 test('a size entry that is null, fractional, too small or with bad derived values is refused', () => {

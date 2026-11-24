@@ -68,7 +68,7 @@ test('per-service memory equals sizes for every size, swap equal', () => {
 })
 
 test('containers come in depends_on order with rendered values', () => {
-  const { containers, network, volumes } = buildProject(input({ size: 'small' }), tpl, SIZES, NODE)
+  const { containers, networks: [network], volumes } = buildProject(input({ size: 'small' }), tpl, SIZES, NODE)
   const order = containers.map((c) => c.service)
   assert.ok(order.indexOf('db') < order.indexOf('rest') && order.indexOf('rest') < order.indexOf('core'))
   const db = containers.find((c) => c.service === 'db')!
@@ -83,14 +83,14 @@ test('containers come in depends_on order with rendered values', () => {
   assert.deepEqual((db.body.NetworkingConfig as any).EndpointsConfig,
     { [`sb-${REF}`]: { Aliases: ['db'], IPAMConfig: { IPv4Address: '10.207.0.34' } } })
   assert.equal(network.name, `sb-${REF}`)
-  assert.deepEqual((network.body as any).IPAM.Config, [{ Subnet: '10.207.0.32/27', IPRange: '10.207.0.48/28', Gateway: '10.207.0.33' }])
+  assert.deepEqual((network.body as any).IPAM.Config, [{ Subnet: '10.207.0.32/28', IPRange: '10.207.0.40/29', Gateway: '10.207.0.33' }])
   assert.equal((network.body as any).Labels['selfbase.project'], REF)
   assert.deepEqual(volumes, ['pgdata', 'storage', 'functions', 'denocache'].map((v) => `sb-${REF}-${v}`))
 })
 
 test('R1: every service has a fixed address in the /27, and siblings are reached by address, never by a DNS name', () => {
   const { containers } = buildProject(input(), tpl, SIZES, NODE)
-  // declaration order from base+2; dynamic addresses (control, jobs) come from the upper /28 only
+  // declaration order from base+2; dynamic addresses (jobs) come from base+8/29 only
   const want: Record<string, string> = { db: '10.207.0.34', rest: '10.207.0.35', core: '10.207.0.36', fn: '10.207.0.37', pooler: '10.207.0.38' }
   const hosts = Object.entries(want).map(([s, a]) => `${s}:${a}`)
   for (const c of containers) {
@@ -110,10 +110,40 @@ test('R1: every service has a fixed address in the /27, and siblings are reached
   // a project env value cannot steer them
   const steered = buildProject(input({ env: { ...dryRunEnv(real), DB_HOST: 'evil', PGRST_URL: 'http://evil' } }), real, sizes, NODE)
   assert.ok((steered.containers.find((c) => c.service === 'core')!.body.Env as string[]).includes('DB_HOST=10.207.0.34'))
-  // more services than the lower /28 holds
+  // more services than base+2..base+7 holds
   const big = structuredClone(tpl)
   for (let i = 0; i < 10; i++) big.services[`x${i}`] = structuredClone(tpl.services.pooler)
   assert.throws(() => buildProject(input(), big, SIZES, NODE), code('template_invalid'))
+})
+
+test('R6: core and control alone on sb-<ref>-ctl, whose /29 is all the admin port answers; fn alone on an egress network; the tenant network isolated where the engine can', () => {
+  const real = validateTemplate(parse(readFileSync(fileURLToPath(new URL('../../template/compose.yml', import.meta.url)), 'utf8')))
+  const sizes = JSON.parse(readFileSync(fileURLToPath(new URL('../../template/sizes.json', import.meta.url)), 'utf8'))
+  const iso = buildProject(input({ env: dryRunEnv(real) }), real, sizes, NODE, [], true)
+  const n = Object.fromEntries(iso.networks.map((x) => [x.name, x.body as any]))
+  // the project's /27 in three: tenant /28 (jobs from base+8/29), control /29, egress /29
+  assert.deepEqual(Object.keys(n), [`sb-${REF}`, `sb-${REF}-ctl`, `sb-${REF}-egress`])
+  assert.deepEqual(n[`sb-${REF}`].IPAM.Config, [{ Subnet: '10.207.0.32/28', IPRange: '10.207.0.40/29', Gateway: '10.207.0.33' }])
+  assert.deepEqual(n[`sb-${REF}-ctl`].IPAM.Config, [{ Subnet: '10.207.0.48/29', IPRange: '10.207.0.52/30', Gateway: '10.207.0.49' }])
+  assert.deepEqual(n[`sb-${REF}-egress`].IPAM.Config, [{ Subnet: '10.207.0.56/29', Gateway: '10.207.0.57' }])
+  for (const x of Object.values(n)) assert.equal(x.Labels['selfbase.project'], REF)
+  // no route out and no host gateway for db, rest, pooler (and core's admin side); fn keeps egress on its own network
+  const isolated = { Internal: true, Options: { 'com.docker.network.bridge.gateway_mode_ipv4': 'isolated' } }
+  for (const k of [`sb-${REF}`, `sb-${REF}-ctl`]) assert.deepEqual({ Internal: n[k].Internal, Options: n[k].Options }, isolated, k)
+  assert.ok(!('Internal' in n[`sb-${REF}-egress`]) && !('Options' in n[`sb-${REF}-egress`]))
+  // an engine without the gateway mode: the same split, no isolation flags
+  for (const x of buildProject(input({ env: dryRunEnv(real) }), real, sizes, NODE).networks) {
+    assert.ok(!('Internal' in x.body) && !('Options' in x.body), x.name)
+  }
+  const ep = (s: string) => (iso.containers.find((c) => c.service === s)!.body.NetworkingConfig as any).EndpointsConfig
+  assert.deepEqual(ep('core')[`sb-${REF}-ctl`], { Aliases: ['core'], IPAMConfig: { IPv4Address: '10.207.0.50' } })
+  assert.deepEqual(Object.keys(ep('core')), [`sb-${REF}`, `sb-${REF}-ctl`])
+  assert.deepEqual(ep('fn')[`sb-${REF}-egress`], { Aliases: ['fn'], IPAMConfig: { IPv4Address: '10.207.0.58' } })
+  assert.deepEqual(Object.keys(ep('fn')), [`sb-${REF}`, `sb-${REF}-egress`])
+  for (const s of ['db', 'rest', 'pooler']) assert.deepEqual(Object.keys(ep(s)), [`sb-${REF}`], s)
+  // core's admin port answers PROJECT_SUBNET's peers only: the control /29, never the tenant /28 where fn runs
+  const coreEnv = iso.containers.find((c) => c.service === 'core')!.body.Env as string[]
+  assert.ok(coreEnv.includes('PROJECT_SUBNET=10.207.0.48/29'), coreEnv.join(' '))
 })
 
 test('json-file logs when no syslog address', () => {
@@ -147,11 +177,11 @@ test('only core is on the proxy network and carries traefik labels, all named sb
   for (const c of containers) {
     const traefik = Object.entries(c.body.Labels as Record<string, string>).filter(([k]) => k.startsWith('traefik.'))
     if (c.service !== 'core') {
-      assert.deepEqual(c.networks, [`sb-${REF}`])
+      assert.deepEqual(c.networks, c.service === 'fn' ? [`sb-${REF}`, `sb-${REF}-egress`] : [`sb-${REF}`], c.service)
       assert.equal(traefik.length, 0)
       continue
     }
-    assert.deepEqual(c.networks, [`sb-${REF}`, 'coolify'])
+    assert.deepEqual(c.networks, [`sb-${REF}`, `sb-${REF}-ctl`, 'coolify'])
     const l = Object.fromEntries(traefik)
     for (const [k] of traefik) {
       const name = /^traefik\.http\.(?:routers|services|middlewares)\.([^.]+)\./.exec(k)?.[1]

@@ -15,9 +15,25 @@ const leftovers = () => {
   for (const r of [REF, MISSING, UNLABELLED]) {
     for (const s of ['db', 'core', 'job-backup']) tryDocker('rm', '-f', `sb-${r}-${s}`)
     for (const v of ['pgdata', 'storage']) tryDocker('volume', 'rm', `sb-${r}-${v}`)
-    tryDocker('network', 'rm', `sb-${r}`)
+    for (const n of ['-ctl', '-egress', '']) tryDocker('network', 'rm', `sb-${r}${n}`)
   }
 }
+// the engine has gateway_mode_ipv4 (Docker 28+): the provisioner isolates the tenant and control networks
+const ISOLATES = Number(docker('version', '-f', '{{.Server.Version}}').split('.')[0]) >= 28
+const ipOn = (c: string, net: string) => docker('inspect', '-f', `{{(index .NetworkSettings.Networks "${net}").IPAddress}}`, c)
+const ipam = (net: string) =>
+  docker('network', 'inspect', '-f', '{{(index .IPAM.Config 0).Subnet}} {{(index .IPAM.Config 0).IPRange}} {{(index .IPAM.Config 0).Gateway}} {{.Internal}}', net)
+const listen = (c: string, port: number) =>
+  docker('exec', '-d', c, 'node', '-e', `require('net').createServer((s)=>s.end('hi')).listen(${port})`)
+// TCP connects from a new container on `nets` (a tenant container's networks): open, refused, timeout or an error code
+const PROBE = `const net=require('net');Promise.all(JSON.parse(process.argv[1]).map(([h,p])=>new Promise((r)=>{`
+  + `const s=net.connect({host:h,port:p,timeout:2000});s.on('connect',()=>{s.destroy();r('open')});`
+  + `s.on('timeout',()=>{s.destroy();r('timeout')});s.on('error',(e)=>r(e.code==='ECONNREFUSED'?'refused':e.code))})))`
+  + `.then((x)=>console.log(JSON.stringify(x)))`
+const probe = (nets: string[], targets: [string, number][]): string[] =>
+  JSON.parse(docker('run', '--rm', ...nets.flatMap((n) => ['--network', n]), IMAGE, 'node', '-e', PROBE, JSON.stringify(targets)))
+const probeIn = (c: string, targets: [string, number][]): string[] =>
+  JSON.parse(docker('exec', c, 'node', '-e', PROBE, JSON.stringify(targets)))
 
 before(async () => {
   leftovers()
@@ -61,13 +77,18 @@ test('ensure creates network, volumes and labelled containers', async () => {
   assert.equal(r.body.controlAttached, true)
   assert.deepEqual(r.body.services.map((s: any) => [s.service, s.exists, s.state, s.memLimitMb]), [['db', true, 'running', 32], ['core', true, 'running', 32]])
   assert.deepEqual(r.body.services.map((s: any) => s.proxyAttached), [false, true])
-  // control connects to this address, never to a name Docker's DNS may answer from another network
-  for (const s of r.body.services) assert.equal(s.projectIp, docker('inspect', '-f', `{{(index .NetworkSettings.Networks "sb-${REF}").IPAddress}}`, `sb-${REF}-${s.service}`))
-  // fixed addresses from base+2; the gateway stays base+1
-  assert.deepEqual(r.body.services.map((s: any) => s.projectIp), ['10.207.250.2', '10.207.250.3'])
-  assert.equal(docker('network', 'inspect', '-f', '{{(index .IPAM.Config 0).Gateway}}', `sb-${REF}`), '10.207.250.1')
-  assert.match(r.body.services[1].projectIp, /^10\.207\.250\.\d+$/)
-  assert.equal(docker('network', 'inspect', '-f', '{{(index .IPAM.Config 0).Subnet}} {{index .Labels "selfbase.project"}}', `sb-${REF}`), `10.207.250.0/27 ${REF}`)
+  // control connects to this address, never to a name Docker's DNS may answer from another network: core's on
+  // sb-<ref>-ctl (the one network control shares with it), db's on sb-<ref>
+  assert.equal(r.body.services[0].projectIp, ipOn(`sb-${REF}-db`, `sb-${REF}`))
+  assert.equal(r.body.services[1].projectIp, ipOn(`sb-${REF}-core`, `sb-${REF}-ctl`))
+  // fixed addresses from base+2 on the tenant /28, core at base+18 on the control /29; each gateway its first address
+  assert.deepEqual(r.body.services.map((s: any) => s.projectIp), ['10.207.250.2', '10.207.250.18'])
+  assert.equal(ipOn(`sb-${REF}-core`, `sb-${REF}`), '10.207.250.3')
+  assert.equal(ipam(`sb-${REF}`), `10.207.250.0/28 10.207.250.8/29 10.207.250.1 ${ISOLATES}`)
+  assert.equal(ipam(`sb-${REF}-ctl`), `10.207.250.16/29 10.207.250.20/30 10.207.250.17 ${ISOLATES}`)
+  assert.equal(docker('network', 'inspect', '-f', '{{index .Labels "selfbase.project"}}', `sb-${REF}-ctl`), REF)
+  // no fn in the fixture template: no egress network
+  assert.equal(tryDocker('network', 'inspect', `sb-${REF}-egress`), null)
   for (const v of ['pgdata', 'storage']) assert.equal(docker('volume', 'inspect', '-f', '{{index .Labels "selfbase.managed"}}', `sb-${REF}-${v}`), 'true')
   for (const s of ['db', 'core']) {
     const labels = JSON.parse(docker('inspect', '-f', '{{json .Config.Labels}}', `sb-${REF}-${s}`))
@@ -199,7 +220,7 @@ test('delete keeps volumes with volumes=false and removes them with true', async
   assert.equal(kept.status, 200)
   assert.deepEqual(kept.body.removed, { containers: [`sb-${REF}-core`, `sb-${REF}-db`], volumes: [], network: true })
   assert.notEqual(tryDocker('volume', 'inspect', `sb-${REF}-pgdata`), null)
-  assert.equal(tryDocker('network', 'inspect', `sb-${REF}`), null)
+  for (const n of ['', '-ctl']) assert.equal(tryDocker('network', 'inspect', `sb-${REF}${n}`), null, n)
   assert.ok(!docker('inspect', '-f', '{{json .NetworkSettings.Networks}}', 'selfbase-test-control').includes(`sb-${REF}`))
   const gone = await api('DELETE', `/projects/${REF}?volumes=true`)
   assert.deepEqual(gone.body.removed, { containers: [], volumes: [`sb-${REF}-pgdata`, `sb-${REF}-storage`], network: false })
@@ -274,10 +295,9 @@ test('R1: impostors aliased db, db.sb-<ref>, rest.sb-<ref> and fn.sb-<ref> on th
   }
 })
 
-test('R1 upgrade: a project made before fixed addresses is recreated in place on them; its volumes and data stay', async () => {
+test('R1/R6 upgrade: a project made before fixed addresses is recreated in place on the split networks, in one rebuild; its volumes and data stay', async () => {
   assert.equal((await api('DELETE', `/projects/${REF}?volumes=true`)).status, 200)
   const net = `sb-${REF}`
-  const ipOn = (c: string) => docker('inspect', '-f', `{{(index .NetworkSettings.Networks "${net}").IPAddress}}`, c)
   // as an earlier provisioner left it: a /27 without an IPRange, dynamic addresses, data in the volume
   docker('network', 'create', '--subnet', '10.207.250.0/27', '--label', 'selfbase.managed=true', '--label', `selfbase.project=${REF}`, net)
   docker('volume', 'create', `sb-${REF}-pgdata`)
@@ -297,14 +317,48 @@ test('R1 upgrade: a project made before fixed addresses is recreated in place on
   docker('network', 'connect', '--ip', '10.207.250.3', net, 'selfbase-test-control')
   const r = await api('POST', `/projects/${REF}/ensure`, input())
   assert.equal(r.status, 200, JSON.stringify(r.body))
-  assert.deepEqual(r.body.services.map((s: any) => [s.service, s.state, s.projectIp]), [['db', 'running', '10.207.250.2'], ['core', 'running', '10.207.250.3']])
+  assert.deepEqual(r.body.services.map((s: any) => [s.service, s.state, s.projectIp]), [['db', 'running', '10.207.250.2'], ['core', 'running', '10.207.250.18']])
   assert.equal(r.body.controlAttached, true)
-  const controlIp = Number(ipOn('selfbase-test-control').split('.')[3])
-  assert.ok(controlIp >= 16 && controlIp < 31, `control at .${controlIp}`)
+  // control only on the control /29 (base+20/30), no longer on the tenant network
+  const controlIp = Number(ipOn('selfbase-test-control', `${net}-ctl`).split('.')[3])
+  assert.ok(controlIp >= 20 && controlIp <= 22, `control at .${controlIp}`)
+  assert.ok(!docker('inspect', '-f', '{{json .NetworkSettings.Networks}}', 'selfbase-test-control').includes(`"${net}"`))
   assert.equal(tryDocker('run', '--rm', '-v', `sb-${REF}-pgdata:/d`, IMAGE, 'cat', '/d/data-marker'), 'kept')
-  assert.equal(docker('network', 'inspect', '-f', '{{(index .IPAM.Config 0).Subnet}} {{(index .IPAM.Config 0).IPRange}} {{(index .IPAM.Config 0).Gateway}}', net),
-    '10.207.250.0/27 10.207.250.16/28 10.207.250.1')
+  assert.equal(ipam(net), `10.207.250.0/28 10.207.250.8/29 10.207.250.1 ${ISOLATES}`)
+  assert.equal(ipam(`${net}-ctl`), `10.207.250.16/29 10.207.250.20/30 10.207.250.17 ${ISOLATES}`)
   const upgraded = ids()
   assert.equal((await api('POST', `/projects/${REF}/ensure`, input())).status, 200)
   assert.deepEqual(ids(), upgraded)
+})
+
+test('R6 probe: from the tenant network, neither control nor core on its control network nor the host gateway answers; the project still works', async () => {
+  const r = await api('POST', `/projects/${REF}/ensure`, input())
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+  const HOST = 'selfbase-test-host-listener'
+  tryDocker('rm', '-f', HOST)
+  // stand-ins for what listens: control :8080, core's admin :8081, db :5432, and a host service on :18999
+  listen('selfbase-test-control', 8080)
+  listen(`sb-${REF}-core`, 8081)
+  listen(`sb-${REF}-db`, 5432)
+  docker('run', '-d', '--init', '--name', HOST, '--network', 'host', IMAGE, 'node', '-e', `require('net').createServer((s)=>s.end('hi')).listen(18999)`)
+  try {
+    await new Promise((ok) => setTimeout(ok, 1000))
+    const control = Object.values(JSON.parse(docker('inspect', '-f', '{{json .NetworkSettings.Networks}}', 'selfbase-test-control')))
+      .map((n: any) => n.IPAddress as string)
+    const coreCtl = ipOn(`sb-${REF}-core`, `sb-${REF}-ctl`)
+    const dbIp = ipOn(`sb-${REF}-db`, `sb-${REF}`)
+    // a tenant container (db, rest, pooler: only sb-<ref>)
+    const fromTenant = probe([`sb-${REF}`], [...control.map((ip): [string, number] => [ip, 8080]), [coreCtl, 8081],
+      ['10.207.250.1', 18999], [dbIp, 5432]])
+    const blocked = fromTenant.slice(0, -1)
+    assert.ok(blocked.every((x) => x !== 'open'), `control ${control.join(',')}, core ${coreCtl}, gateway: ${fromTenant.join(' ')}`)
+    if (!ISOLATES) console.log(`# the engine has no gateway_mode_ipv4: the gateway answered ${fromTenant.at(-2)}`)
+    // the project still works: db answers its sibling, control reaches core's admin port, core reaches db
+    assert.equal(fromTenant.at(-1), 'open')
+    assert.deepEqual(probeIn('selfbase-test-control', [[coreCtl, 8081]]), ['open'])
+    assert.deepEqual(probeIn(`sb-${REF}-core`, [[dbIp, 5432]]), ['open'])
+    console.log(`# R6 probe from sb-${REF}: control ${control.join(',')}:8080, core ${coreCtl}:8081, gateway 10.207.250.1:18999, db ${dbIp}:5432 -> ${fromTenant.join(' ')}`)
+  } finally {
+    tryDocker('rm', '-f', HOST)
+  }
 })
