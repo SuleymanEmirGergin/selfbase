@@ -25,7 +25,9 @@
 #      the writer is stopped (the database's client sessions are terminated, so pg_restore's one transaction rolls back), the temp
 #      dir removed, and the restore ends with exit 6, nothing changed: what the server writes for the dump (a
 #      materialized view it refreshes, an index it builds) is no line of the dump, so no estimate can bound it. A
-#      writer that exits 0 as it is stopped had already finished (pg_restore committed): the restore goes on
+#      writer that exits 0 as it is stopped had already finished (pg_restore committed): the restore goes on.
+#      A signal (a job container stopped) ends the restore as a failure (exit 128 + its number): the writer is
+#      stopped and reaped first, then the temp dir removed and the cron and ledger steps undone
 #   2. cron: every active job is set inactive (committed) and running job sessions are terminated, so no job runs
 #      during the restore; the restore brings back the backup's job states (on failure the jobs set inactive here
 #      are set active again)
@@ -138,10 +140,13 @@ echo "restore: about $(( (storage_k + db_k) / 1024 )) MiB to write, $((room / 10
 # public || then hides the ROTATE_KEYS tables), and a ddl trigger could block or alter the restore's own steps.
 export PGOPTIONS='-c event_triggers=off'
 q() { PGOPTIONS="$PGOPTIONS -c search_path=pg_catalog" psql -XAtq -v ON_ERROR_STOP=1 "$@"; }
-jobs='' db_done=0 t='' held=0
+jobs='' db_done=0 t='' held=0 w='' wstop='' wrc=0
 HOLD=selfbase_restore_hold
 cleanup() {
-  local rc=$?
+  local rc=$? was=$wstop
+  # a signal ended the script while a writer ran: it is stopped and reaped before its temp dir goes, so nothing writes
+  # there after; a pg_restore that still exited 0 had committed
+  if [ -n "$w" ]; then reap; [ "$was" != stop_restore ] || [ "$wrc" != 0 ] || { db_done=1 held=0 jobs=''; }; fi
   [ -z "$t" ] || rm -rf "$t"
   [ "$rc" != 0 ] || return 0
   if [ "$db_done" = 1 ]; then
@@ -157,9 +162,12 @@ cleanup() {
     else echo "restore: could NOT set cron jobs $jobs active again; do it by hand: update cron.job set active = true where jobid in ($jobs)" >&2; fi
   fi
   [ "$rc" != 10 ] || echo "restore: FAILED: the database restore rolled back; the database and storage are unchanged" >&2
+  [ "$rc" -lt 129 ] || echo "restore: STOPPED by a signal (exit $rc); the database and storage are unchanged" >&2
   exit "$rc"
 }
 trap cleanup EXIT
+# a signal is a failure the cleanup sees (bash runs the EXIT trap on one with $? of the last command, often 0)
+trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 # at_floor: the volume is at the floor, in space or (where it counts them) in inodes: 10% of them, as in step 1b
 at_floor() {
   local t i
@@ -170,23 +178,29 @@ at_floor() {
 # watched <stop> <writer...>: runs the writer in a process group of its own (setsid) and reads the free space and
 # inodes every second; at the floor <stop> runs (empty: none), the writer's group is killed and the restore ends with
 # exit 6. The cleanup trap then removes the temp dir and undoes the cron and ledger steps.
+# reap: stops the running writer (its <stop> first), kills its process group and waits for it; wrc: its exit status
+reap() {
+  [ -z "$wstop" ] || "$wstop" || true
+  kill -TERM -- "-$w" 2> /dev/null || kill -TERM "$w" 2> /dev/null || true
+  wrc=0; wait "$w" 2> /dev/null || wrc=$?
+  w=''
+}
 watched() {
-  local stop=$1 w rc=0; shift
+  wstop=$1; shift
   setsid "$@" & w=$!
   while kill -0 "$w" 2> /dev/null; do
     if at_floor; then
-      [ -z "$stop" ] || "$stop" || true
-      kill -TERM -- "-$w" 2> /dev/null || kill -TERM "$w" 2> /dev/null || true
-      wait "$w" 2> /dev/null || rc=$?
+      reap
       # a writer that exited 0 had finished before the stop reached it (pg_restore committed): nothing to roll back
-      [ "$rc" != 0 ] || return 0
+      [ "$wrc" != 0 ] || return 0
       echo "restore: REFUSED: the volume of the project's data reached the floor; at least $((need / 1024)) MiB ($rule) and 10% of its inodes must stay free; the restore was stopped and rolled back, nothing was changed; free space first" >&2
       exit 6
     fi
     sleep 1
   done
-  wait "$w" || rc=$?
-  return "$rc"
+  wrc=0; wait "$w" || wrc=$?
+  w=''
+  return "$wrc"
 }
 # pg_restore's server session: killing the client alone leaves a statement that sends nothing back (a REFRESH, an
 # index build) running; terminated, its one transaction rolls back and its new files are removed. Every client

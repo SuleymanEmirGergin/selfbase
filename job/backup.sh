@@ -36,7 +36,12 @@ storage=/data/storage
 keep=${BACKUP_RETENTION_DAYS:-7}
 ts=$(date -u +%Y%m%d-%H%M%S)
 tmp="$backups/.tmp-$ts"
-trap 'rc=$?; [ $rc = 0 ] || { rm -rf "$tmp"; echo "backup: FAILED (exit $rc); no backup written for $sub/$ts" >&2; }' EXIT
+# the writer capped() runs (its process group), stopped and reaped before the temp dir goes; a signal is a failure the
+# trap sees (bash runs the EXIT trap on one with $? of the last command, often 0)
+w=''
+trap 'rc=$?; [ -z "$w" ] || { kill -TERM -- "-$w" 2> /dev/null; wait "$w" 2> /dev/null; }
+  [ $rc = 0 ] || { rm -rf "$tmp"; echo "backup: FAILED (exit $rc); no backup written for $sub/$ts" >&2; }' EXIT
+trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 
 export_keep=${EXPORT_RETENTION_DAYS:-7}
 max=${BACKUP_MAX_COUNT:-14}
@@ -114,7 +119,7 @@ find "$backups" -mindepth 1 -maxdepth 1 -name '.tmp-*' -mmin +1440 -exec rm -rf 
 # writer's process group (setsid) once the volume is at the floor, whoever filled it (another backup, an export).
 free_k() { df -Pk "$backups" | awk 'NR == 2 { print $4 }'; }
 capped() {
-  local file=$1 room rc=0 w; shift
+  local file=$1 room rc=0; shift
   room=$(( $(free_k) - need ))
   [ "$room" -gt 0 ] || outgrown
   ( ulimit -f "$room" && exec setsid "$@" ) & w=$!
@@ -122,12 +127,14 @@ capped() {
     if [ "$(free_k)" -le "$need" ]; then
       kill -TERM -- "-$w" 2> /dev/null || kill -TERM "$w" 2> /dev/null || true
       wait "$w" 2> /dev/null || true
+      w=''
       echo "backup: REFUSED: the backup volume reached the floor while ${file##*/} was written; at least $((need / 1024)) MiB ($rule) must stay free on it; free space first" >&2
       exit 4
     fi
     sleep 1
   done
   wait "$w" || rc=$?
+  w=''
   if [ "$rc" != 0 ] && { [ "$rc" = 153 ] || [ "$(stat -c %s "$file" 2> /dev/null || echo 0)" -ge $((room * 1024)) ]; }; then outgrown; fi
   return "$rc"
 }

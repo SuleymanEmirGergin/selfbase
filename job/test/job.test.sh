@@ -125,7 +125,8 @@ floor=$((256 - dbm - 64))
 # sized <storage volume> [floor MiB] [shell prefix, e.g. a function standing in for psql]
 sized() { docker run --rm --network "$NET" -e PGHOST=db -e PGPASSWORD="$PW" -e BACKUP_SUBDIR=t -e "BACKUP_MIN_FREE_MIB=${2:-$floor}" \
   --mount type=tmpfs,destination=/backups,tmpfs-size=256m -v "$1:/data/storage:ro" "$IMAGE" \
-  bash -c "${3:-}"' bash /scripts/backup.sh; rc=$?; echo "entries=$(ls -A /backups/t 2>/dev/null | wc -l)"; exit $rc' 2>&1; }
+  bash -c "${3:-}"' bash /scripts/backup.sh; rc=$?; echo "entries=$(ls -A /backups/t 2>/dev/null | wc -l)"
+    echo "writers=$(pgrep -cx pg_dump)"; exit $rc' 2>&1; }
 rc=0; out=$(sized "$P-storage") || rc=$?
 check 'I2: with 64 MiB of headroom above the floor the backup runs' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
 # 100 MiB of storage files whose rows say nothing, or a negative size: the job counts the files
@@ -159,6 +160,14 @@ rc=0; out=$(sized "$P-storage" '' "$slow") || rc=$?
 check 'D: a dump running while the volume fills past the floor is stopped there (exit 4)' [ "$rc" = 4 ]; [ "$rc" = 4 ] || echo "$out" >&2
 check 'D: the stop says the floor was reached' grep -q 'backup: REFUSED: the backup volume reached the floor' <<< "$out"
 check 'D: and leaves neither a backup nor a temp directory (watchdog)' grep -qx 'entries=0' <<< "$out"
+# a backup ended by SIGTERM (a stopped job container) stops its writer, then removes its temp dir: a stand-in
+# pg_dump that never ends, the backup signalled after 3 s
+stuck='mkdir -p /tmp/w; printf "#!/bin/bash\nwhile :; do sleep 0.2; done\n" > /tmp/w/pg_dump; chmod +x /tmp/w/pg_dump;
+  export PATH=/tmp/w:$PATH; (sleep 3; pkill -TERM -f "^bash /scripts/backup.sh") &'
+rc=0; out=$(sized "$P-storage" '' "$stuck") || rc=$?
+check 'D: a backup stopped by SIGTERM exits 143' [ "$rc" = 143 ]; [ "$rc" = 143 ] || echo "$out" >&2
+check 'D: its writer is stopped with it' grep -qx 'writers=0' <<< "$out"
+check 'D: and it leaves no temp directory' grep -qx 'entries=0' <<< "$out"
 # a database that grew after control admitted the backup: refused when the job starts
 sql db "create table public.grow (b text);
   insert into public.grow select string_agg(md5(random()::text), '') from generate_series(1, 98304) g, generate_series(1, 32) h group by g" > /dev/null
@@ -462,6 +471,14 @@ rc=0; out=$(cramped "$small" 1 '' 'export PATH=/backups/standin/fills:$PATH') ||
 check 'E: a writer that exits 0 when stopped at the floor lets the restore finish' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
 check 'E: and no rollback is reported' bash -c '! grep -q "rolled back" <<< "$1"' _ "$out"
 sql db-empty "update public.e_marker set v = 'after-backup'" > /dev/null
+# a restore ended by SIGTERM (a stopped job container) stops its writer before the temp dir goes: a stand-in tar
+# that keeps making directories, the restore signalled after 4 s
+standin hang 'cd "${@: -1}"; while :; do mkdir -p late$((i += 1)); sleep 0.2; done'
+rc=0; out=$(cramped "$small" 1 '' 'export PATH=/backups/standin/hang:$PATH; (sleep 4; pkill -TERM -f "^bash /scripts/restore.sh") &') || rc=$?
+check 'E: a restore stopped by SIGTERM exits 143' [ "$rc" = 143 ]; [ "$rc" = 143 ] || echo "$out" >&2
+check 'E: its writer is stopped with it' grep -qx tars=0 <<< "$out"
+check 'E: and its temp dir is gone' grep -qx entries=0 <<< "$out"
+check 'E: and it says it was stopped, nothing changed' grep -q '^restore: STOPPED by a signal' <<< "$out"
 # E: the watchdog. What the server writes counts too: a materialized view the dump refreshes is one short line in the
 # estimate, over a row count kept in a table (1 when it was refreshed, 2 million in the dump). The database and the
 # storage volume share one 512 MiB tmpfs, as Docker volumes share a disk; 100 MiB of room above the floor
