@@ -23,14 +23,20 @@ reverse proxy (Coolify, Caddy, nginx)
 Only `core` is published. `net.http_post` calls are queued in the database and sent by core;
 `*.supabase.co` targets are rewritten to the internal services.
 
+On a server, that stack is one *project*. A single control stack (`control/compose.yml`) runs Studio, the
+control API, a control database, the Docker provisioner behind a socket proxy, and a log store. It creates,
+pauses, backs up, upgrades and deletes project stacks (`sb-<ref>-*` containers on their own network), each
+reachable at `https://<ref>.<BASE>` through Traefik: Coolify's proxy (`PROXY_MODE=coolify`) or one the control
+stack brings (`PROXY_MODE=own`). Projects keep serving while the control stack is down.
+
 | Path | What |
 |---|---|
 | `package.json` | npm workspaces: `core`, `control`, `provisioner`, `studio`, `client`, `acceptance`; one lockfile at the root |
-| `template/` | `compose.yml`, the whole stack (values from `.env`, see `.env.example`); `compose.test.yml`, the test database |
-| `db/` | Postgres image and `bootstrap/*.sql` (Supabase-compatible schemas, roles and shims) |
+| `template/` | project template: `compose.yml` (five services), `sizes.json`; `compose.build.yml` and `compose.local.yml` for a local stack (`.env.example`); `compose.test.yml`, the test databases |
+| `db/` | Postgres image and `platform/*.sql` (Supabase-compatible schemas, roles and shims; core applies them) |
 | `core/` | auth, storage, realtime, admin API, gateway (Node 24, Hono) |
 | `fn/` | edge function host (Deno) |
-| `studio/` | dashboard (React), today's admin panel |
+| `studio/` | Studio, the dashboard (React, English and Turkish); built into the control image |
 | `control/`, `provisioner/` | control plane (Studio's API, jobs, reconcile; `control/compose.yml`) and the Docker provisioner |
 | `rest/`, `pooler/`, `job/` | PostgREST and PgBouncer images; backup/restore job image (`job/backup.sh`, `job/restore.sh`) |
 | `client/` | `selfbase-js`, the supabase-js drop-in; `client/dist/` is committed |
@@ -43,8 +49,10 @@ Needs Docker with Compose 2.24+ and Node 22+. Run everything from the repository
 
 ```sh
 cp template/.env.example .env
-node scripts/gen-keys.mjs       # paste the 3 lines into .env, add POSTGRES_PASSWORD (URL-safe)
-docker compose -f template/compose.yml --env-file .env up -d --build
+node scripts/gen-keys.mjs       # paste the 3 lines into .env; also set POSTGRES_PASSWORD and
+                                # AUTHENTICATOR_PASSWORD (URL-safe), ADMIN_TOKEN (32+ chars), PUBLIC_URL, SITE_URL
+docker compose -f template/compose.yml -f template/compose.build.yml --env-file .env up -d --build
+# no --wait: rest restarts until core has migrated the database; give it about 30 s
 curl -s http://localhost:8080/health   # {"ok":true}
 ```
 
@@ -59,17 +67,21 @@ Development: `npm ci` at the root installs every workspace. Tests need the test 
 `up -d rest` (it restarts until core's tests have migrated db), and
 `docker compose -f control/compose.test.yml up -d --build --wait` (control's, on port 54340), then
 `TEST_COMPOSE_PROJECT=sb-test TEST_COMPOSE_FILE=../template/compose.test.yml npm test --workspaces --if-present`.
-CI (`.github/workflows/ci.yml`) does the same and builds all eight images; a `v*` tag pushes them to
-GHCR (`images.yml`).
+CI (`.github/workflows/ci.yml`) does the same and builds all eight images; `images.yml` lists them and
+would push a `v*` tag to GHCR. Actions is currently blocked by billing, so a release is built on the
+server from a checkout of its tag (`docker build -f <name>/Dockerfile .` for each image in `images.yml`),
+with no registry login; the previous tag's images stay for rollback.
 
 The dashboard is Studio, served by control (`control/compose.yml`); a single template stack has none.
 
 ## Guide
 
-The full operator guide is in Turkish: [`docs/REHBER.md`](docs/REHBER.md). It covers every `.env`
-line, Coolify and plain-Docker deployment, migrating from Supabase (`scripts/migrate/`), connecting an
-app, the panel, sync, backups, a second installation for another app, known limits and
-troubleshooting.
+The full operator guide is in Turkish: [`docs/REHBER.md`](docs/REHBER.md). It covers installing the
+control stack next to Coolify and on a server of your own (every `.env` line), Studio accounts, roles and
+access tokens, projects and the memory budget, domains and the weekly certificate cap, secrets and the
+master key, backups, export and import, logs, upgrades, living with Coolify's cleanup, troubleshooting,
+removal, a local single-project stack, migrating data from Supabase (`scripts/migrate/`), connecting an
+app, and sync. Studio screenshots: `docs/screens/v2/`. Wave 1 evidence: `docs/proofs/`.
 
 Other docs: `scripts/migrate/README.md` (migration internals), `client/README.md` (client build and
 tests), `docs/functions-status.md`, `docs/auth-settings.md`.

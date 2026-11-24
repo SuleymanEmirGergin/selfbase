@@ -1,7 +1,7 @@
 # Wave 1: deploy record (Task 20)
 
 Date: 2026-11-23, 22:48 to 23:01 UTC (server clock). Machine: the shared Coolify server of spec section 15.
-`<BASE>` is `<ip>.sslip.io`. Release: tag `v2.1.0` = `cba2de6` (branch `v2`), cloned from the public repository into
+`<BASE>` is `<ip>.sslip.io`. Release: tag `v2.1.0` = `058dc53` (branch `v2`), cloned from the public repository into
 `/opt/selfbase/src`. Docker Engine 29.6.1, Compose v5.3.0, `coolify-proxy` Traefik v3.6.22.
 
 ## Images
@@ -80,7 +80,7 @@ certificate: the counter stayed at 2.
 - Step 7: the five control containers stopped for 60 s while project 1 ran: 29 probes, each `/health` and `/rest/v1/`
   with the anon key over the public host, all 200. After the start, and 35 s for a reconcile pass: the project's five
   container ids unchanged, no new job, status `ACTIVE_HEALTHY`.
-- Router priority (carried from Task 12's R-1 ruling): our project routers carry `priority=10`. No Coolify router on
+- Router priority (carried from Task 12's R-1 ruling), label-verified (no live tie): our project routers carry `priority=10`. No Coolify router on
   the server sets a priority label, so Traefik gives each its rule length, 37 to 71 here, and every Coolify router beats
   one of ours for the same host. Read from the labels of the 19 foreign routers; a live tie against another team's host
   was not attempted.
