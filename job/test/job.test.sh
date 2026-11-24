@@ -586,6 +586,30 @@ check '2: it says the state is unknown and claims no rollback' \
   bash -c 'grep -q "STATE UNKNOWN" <<< "$1" && ! grep -qE "rolled back|unchanged|set active again" <<< "$1"' _ "$out"
 sql db-empty "select pg_terminate_backend(pid) from pg_stat_activity where backend_type = 'client backend' and pid <> pg_backend_pid()" > /dev/null
 sql db-empty "update cron.job set active = true where jobname = 'e_job'" > /dev/null
+# 2: "unchanged" needs proof. A stand-in pg_restore commits a transaction the watchdog's poll sees (it holds its xid
+# 2 s), then exits nonzero: exit 8, no rollback claimed
+pgrstandin sneak 'psql -XAtq -c "begin; create table public.e_sneak (v int); select pg_sleep(2); commit" > /dev/null; exit 1'
+rc=0; out=$(cramped "$small" 1 '' 'export PATH=/backups/standin/sneak:$PATH') || rc=$?
+check '2: a pg_restore that committed, then exited nonzero, exits 8' [ "$rc" = 8 ]; [ "$rc" = 8 ] || echo "$out" >&2
+check '2: and claims no rollback' bash -c 'grep -q "STATE UNKNOWN" <<< "$1" && ! grep -qE "rolled back|unchanged" <<< "$1"' _ "$out"
+check '2: (it did commit)' [ "$(sql db-empty "select to_regclass('public.e_sneak') is not null")" = t ]
+# one that commits faster than a poll and exits nonzero without an SQL error: no proof either way, exit 8
+pgrstandin quick 'psql -XAtq -c "create table public.e_quick (v int)" > /dev/null; exit 1'
+rc=0; out=$(cramped "$small" 1 '' 'export PATH=/backups/standin/quick:$PATH') || rc=$?
+check '2: a quick commit, then a nonzero exit without an SQL error, exits 8' [ "$rc" = 8 ]; [ "$rc" = 8 ] || echo "$out" >&2
+sql db-empty "drop table if exists public.e_sneak, public.e_quick; update cron.job set active = true where jobname = 'e_job'" > /dev/null
+# a dump that fails on an SQL error (its view divides by zero when refreshed) is still a proven rollback: exit 10
+sql db-empty "create table public.knob4 (n int); insert into public.knob4 values (1);
+  create materialized view public.e_div as select 1 / (select n from public.knob4) as v;
+  update public.knob4 set n = 0; update public.e_marker set v = 'in-ediv'" > /dev/null
+JOB_ENV=(-e BACKUP_SUBDIR=ediv)
+ediv=$(job db-empty "$P-empty-storage" bash /scripts/backup.sh | tail -n1); ediv=${ediv#backup: wrote }
+sql db-empty "drop materialized view public.e_div; drop table public.knob4; update public.e_marker set v = 'after-backup'" > /dev/null
+rc=0; out=$(cramped "$ediv") || rc=$?
+check '2: a dump that fails on an SQL error still exits 10' [ "$rc" = 10 ]; [ "$rc" = 10 ] || echo "$out" >&2
+check '2: it says it rolled back, and it did' bash -c 'grep -q "rolled back" <<< "$1" && [ "$2" = after-backup ]' _ "$out" "$(emarker)"
+check '2: (pg_restore'"'"'s error is shown)' grep -q 'division by zero' <<< "$out"
+check '2: the cron step is undone after it' [ "$(ejob)" = t ]
 # 6: a stop that failed is not run again: a writer that, stopped at the floor after the failed stop, signals the
 # restore before it exits. Every termination fails (as above); one 30 s stop, not two
 pgrstandin fill 'trap "kill -TERM $PPID; sleep 3; exit 1" TERM; head -c 100M /dev/zero > /data/storage/.fill 2> /dev/null

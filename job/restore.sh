@@ -32,7 +32,9 @@
 #      stopped and reaped first, then the temp dir removed and the cron and ledger steps undone.
 #      A stop that cannot show the sessions ended within 30 s (a termination that fails, sessions that keep coming,
 #      a database it cannot reach) undoes nothing and claims no rollback: exit 8, the state is unknown (control then
-#      stops the project's database as well)
+#      stops the project's database as well). Once pg_restore has started, "unchanged" (exit 6, 10, a signal's) is
+#      said only when its transaction is shown aborted (prove: the xids the watchdog saw, else pg_restore's own SQL
+#      error); anything else is exit 8 too
 #   2. cron: every active job is set inactive (committed) and running job sessions are terminated, so no job runs
 #      during the restore; the restore brings back the backup's job states (on failure the jobs set inactive here
 #      are set active again)
@@ -152,10 +154,17 @@ echo "restore: about $(( (storage_k + db_k) / 1024 )) MiB to write, $((room / 10
 # public || then hides the ROTATE_KEYS tables), and a ddl trigger could block or alter the restore's own steps.
 export PGOPTIONS='-c event_triggers=off'
 q() { PGOPTIONS="$PGOPTIONS -c search_path=pg_catalog" psql -XAtq -v ON_ERROR_STOP=1 "$@"; }
+# a session's backend_xid (32 bits) as the xid8 pg_xact_status takes: the epoch of the next xid (n.x), or the one
+# before when its low 32 bits are above the next xid's
+XID8='(n.x - ((n.x - a.backend_xid::text::bigint) % 4294967296))'
+NEXT='(select pg_catalog.pg_snapshot_xmax(pg_catalog.pg_current_snapshot())::text::bigint as x) n'
 # the cleanup's state (no function declares a local of these names: the trap runs in the scope of the function a
-# signal stopped). db_done: pg_restore committed; swapped: the storage swap began; contained: no stop failed to show
-# that the restore's sessions ended; stop_by: the deadline of the stop under way
-jobs='' db_done=0 swapped=0 t='' held=0 w='' wstop='' wrc=0 contained=1 stop_by=''
+# signal stopped). db_done: pg_restore committed; swapped: the storage swap began; contained: nothing failed to show
+# that the restore's sessions ended and its transaction rolled back; stop_by: the deadline of the stop under way;
+# rs: '' before pg_restore, run once it started, aborted once prove showed it rolled back; xids: the xid8s the polls
+# and stops saw; blind: one of them could not read; wnat: wrc is pg_restore's own exit, not a stopped one's; plog: its
+# stderr
+jobs='' db_done=0 swapped=0 t='' held=0 w='' wstop='' wrc=0 contained=1 stop_by='' rs='' xids='' blind=0 wnat=0 plog=''
 HOLD=selfbase_restore_hold
 # committed: pg_restore exited 0, the database is the backup's; the cron and ledger steps are never undone over it
 committed() { db_done=1 held=0 jobs='' contained=1; }
@@ -165,9 +174,12 @@ cleanup() {
   # there after (reap records a pg_restore that still exited 0 as committed)
   [ -z "$w" ] || reap
   [ -z "$t" ] || rm -rf "$t"
+  # pg_restore started and did not commit: nothing is said unchanged (or undone) unless prove shows it rolled back
+  [ "$rc" = 0 ] || [ "$rs" != run ] || [ "$db_done" = 1 ] || prove || true
+  [ -z "$plog" ] || rm -f "$plog"
   [ "$rc" != 0 ] || return 0
   if [ "$contained" = 0 ]; then
-    echo "restore: STOPPED, STATE UNKNOWN (exit $rc): the sessions of the restore of $rel could not be shown to have ended, so its transaction may yet commit or roll back; nothing was undone; stop the project's database, then delete this project and import again" >&2
+    echo "restore: STOPPED, STATE UNKNOWN (exit $rc): the restore of $rel could not be shown to have rolled back (its sessions may not have ended, or its transaction may have committed), so the database may be in either state; nothing was undone; stop the project's database, then delete this project and import again" >&2
     exit 8
   fi
   if [ "$db_done" = 1 ] && [ "$swapped" = 1 ]; then
@@ -210,33 +222,78 @@ at_floor() {
 reap() {
   [ -z "$wstop" ] || [ "$contained" = 0 ] || "$wstop" || contained=0
   kill -TERM -- "-$w" 2> /dev/null || kill -TERM "$w" 2> /dev/null || true
-  wrc=0; wait "$w" 2> /dev/null || wrc=$?
+  wrc=0 wnat=0; wait "$w" 2> /dev/null || wrc=$?
   # 127: watched's own wait had already reaped it when the signal came, and its status is lost with it: a pg_restore
   # not yet recorded as committed may have committed
   [ "$wrc" != 127 ] || [ "$wstop" != stop_restore ] || [ "$db_done" = 1 ] || contained=0
   # recorded before w is cleared: a signal between the two finds the commit
   [ "$wrc" != 0 ] || [ "$wstop" != stop_restore ] || committed
   w=''
+  [ "$wstop" != stop_restore ] || cat "$plog" >&2 || true
 }
 watched() {
   wstop=$1; shift
-  setsid "$@" & w=$!
+  if [ "$wstop" = stop_restore ]; then
+    plog=$(mktemp) rs=run
+    setsid "$@" 2> "$plog" & w=$!
+  else
+    setsid "$@" & w=$!
+  fi
   while kill -0 "$w" 2> /dev/null; do
     if at_floor; then
       reap
       # a writer that exited 0 had finished before the stop reached it (pg_restore committed, as reap recorded)
       [ "$wrc" != 0 ] || return 0
-      [ "$contained" = 1 ] || exit 8
+      [ "$wstop" != stop_restore ] || prove || exit 8
       echo "restore: REFUSED: the volume of the project's data reached the floor; at least $((need / 1024)) MiB ($rule) and 10% of its inodes must stay free; the restore was stopped and rolled back, nothing was changed; free space first" >&2
       exit 6
     fi
+    [ "$wstop" != stop_restore ] || seen
     sleep 1
   done
   wrc=0; wait "$w" || wrc=$?
+  wnat=1
   # recorded before w is cleared: a signal from here on finds the commit (or, with w still set, the lost status above)
   [ "$wrc" != 0 ] || [ "$wstop" != stop_restore ] || committed
   w=''
+  [ "$wstop" != stop_restore ] || cat "$plog" >&2 || true
   return "$wrc"
+}
+# record <xid8...>: keeps the xids a poll or a stop saw, for prove; anything but ids is a read that failed
+record() {
+  local x
+  [[ $1 =~ ^[0-9\ ]*$ ]] || { blind=1; return 0; }
+  for x in $1; do [[ " $xids " == *" $x "* ]] || xids="${xids:+$xids }$x"; done
+}
+# seen: the watchdog's poll while pg_restore runs: the xid of every session that holds one
+seen() {
+  local got
+  got=$(PGCONNECT_TIMEOUT=5 PGOPTIONS="$PGOPTIONS -c statement_timeout=10s" q -c "select
+      coalesce(pg_catalog.string_agg(distinct $XID8::text, ' '), '') from pg_catalog.pg_stat_activity a, $NEXT
+      where a.backend_type in ('client backend', 'walsender') and a.pid <> pg_catalog.pg_backend_pid()") || got=x
+  record "$got"
+}
+# prove: whether pg_restore's transaction is shown rolled back, the only ground for saying the database is unchanged
+# (exit 6, 10, a signal's). The method: the watchdog's poll (every second while pg_restore runs) and the stop's
+# terminations record the xid of every session they see (a session without one has written nothing so far); once no
+# session is left (a stop finds none), pg_xact_status must be 'aborted' for each of them. A pg_restore that ended
+# on its own before any poll saw an xid is shown by its own output instead: an SQL error (which aborts the
+# transaction) and no lost connection (which may have lost a COMMIT's answer). Anything else is exit 8 (contained=0).
+# Limits: a transaction that takes its xid and commits within one poll interval is never seen, so a dump whose SQL
+# commits early (it can say COMMIT) and then fails at once can pass for rolled back; and where only another
+# session's xid was seen (dblink), pg_restore's own may be missing.
+prove() {
+  if [ "$contained" = 1 ] && stop_restore && [ "$blind" = 0 ]; then
+    if [ -n "$xids" ]; then
+      [ "$(q -c "select pg_catalog.count(*) from pg_catalog.unnest('{${xids// /,}}'::bigint[]) x
+          where pg_catalog.pg_xact_status(x::text::xid8) is distinct from 'aborted'" 2> /dev/null)" != 0 ] || { rs=aborted; return 0; }
+    elif [ "$wnat" = 1 ] && grep -q '^pg_restore: error: could not execute query: ERROR: ' "$plog" && ! grep -qE \
+        'FATAL:|PANIC:|server closed the connection|connection to server|could not (send|receive) data|no connection to the server|SSL SYSCALL|terminating connection' "$plog"; then
+      rs=aborted; return 0
+    fi
+  fi
+  contained=0
+  return 1
 }
 # pg_restore's server session: killing the client alone leaves a statement that sends nothing back (a REFRESH, an
 # index build) running; terminated, its one transaction rolls back and its new files are removed. Every session of
@@ -244,18 +301,22 @@ watched() {
 # too, in every database: the cluster is the project's alone), not one picked by name: the dump's own SQL can rename
 # its session (application_name) or open another (dblink), and core, rest, fn and pooler are stopped. Not every
 # backend type: the launchers (autovacuum, logical replication, pg_cron) only restart. Background workers an
-# extension starts are out of scope here (wave 2 quotas). Done once a pass finds none; a pass that cannot run (no login), a
-# termination that fails or a session still there after 30 s in all returns 1: the state is unknown. The 30 s are
-# one budget (stop_by) for a stop a signal interrupted and the cleanup's stop after it
+# extension starts are out of scope here (wave 2 quotas). Done once a pass finds none; a pass that cannot run (no
+# login), a termination that fails or a session still there after 30 s in all returns 1: the state is unknown. The
+# 30 s are one budget (stop_by) for a stop a signal interrupted and the cleanup's stop after it
 stop_restore() {
   local found
   [ -n "$stop_by" ] || stop_by=$((SECONDS + 30))
   while [ "$SECONDS" -lt "$stop_by" ]; do
-    # <sessions found>,<terminations that failed or did not end their session within 1 s>
+    # <sessions found>,<terminations that failed or did not end their session within 1 s>,<their xids (for prove)>
     found=$(PGCONNECT_TIMEOUT=5 PGOPTIONS="$PGOPTIONS -c statement_timeout=10s" q -c "select pg_catalog.count(*) || ',' ||
-        pg_catalog.count(*) filter (where not pg_catalog.pg_terminate_backend(pid, 1000)) from pg_catalog.pg_stat_activity
-        where backend_type in ('client backend', 'walsender') and pid <> pg_catalog.pg_backend_pid()") || found=''
-    [ "$found" != 0,0 ] || { stop_by=''; return 0; }
+        pg_catalog.count(*) filter (where not pg_catalog.pg_terminate_backend(pid, 1000)) || ',' ||
+        coalesce(pg_catalog.string_agg(distinct $XID8::text, ' '), '') from pg_catalog.pg_stat_activity a, $NEXT
+        where a.backend_type in ('client backend', 'walsender') and a.pid <> pg_catalog.pg_backend_pid()") || found=x
+    # a pass that could not read may have ended a session whose xid is then unknown
+    [[ $found =~ ^[0-9]+,[0-9]+,[0-9\ ]*$ ]] || found=x,x,x
+    record "${found##*,}"
+    [ "${found%,*}" != 0,0 ] || { stop_by=''; return 0; }
     sleep 1
   done
   echo "restore: WARNING: the sessions of the restore could not be shown to have ended within 30 s" >&2
@@ -286,7 +347,7 @@ if [ "$v1" = 1 ] && [ "$(q -c "select pg_catalog.to_regclass('selfbase.platform_
   held=1
 fi
 watched stop_restore pg_restore --clean --if-exists --single-transaction --exit-on-error \
-  -d "${PGDATABASE:-postgres}" "$dir/db.dump" || exit 10
+  -d "${PGDATABASE:-postgres}" "$dir/db.dump" || { prove || exit 8; exit 10; }
 # from here a failure or a signal is exit 7 (3 once the swap began), never an undo
 committed
 if [ "$v1" = 1 ]; then
