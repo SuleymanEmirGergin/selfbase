@@ -113,7 +113,11 @@ echo "restore: about $(( (storage_k + db_k) / 1024 )) MiB to write, $((room / 10
 # psql resolves names in pg_catalog only, whatever search_path the role or database sets (a shadowing
 # public.to_regclass would hide the tables the ROTATE_KEYS step deletes), and its calls are qualified as well.
 # pg_restore keeps the default: extension scripts it runs (postgis_tiger_geocoder) need it.
-q() { PGOPTIONS='-c search_path=pg_catalog' psql -XAtq -v ON_ERROR_STOP=1 "$@"; }
+# Every connection of this job (psql and pg_restore) runs with event triggers off (Postgres 17, superuser only): a
+# login trigger the project's superuser made runs after the startup options and could set search_path back (a
+# public || then hides the ROTATE_KEYS tables), and a ddl trigger could block or alter the restore's own steps.
+export PGOPTIONS='-c event_triggers=off'
+q() { PGOPTIONS="$PGOPTIONS -c search_path=pg_catalog" psql -XAtq -v ON_ERROR_STOP=1 "$@"; }
 jobs='' db_done=0 t='' held=0
 HOLD=selfbase_restore_hold
 cleanup() {

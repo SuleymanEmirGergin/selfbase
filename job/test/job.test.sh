@@ -332,6 +332,22 @@ rc=0; out=$(job db "$P-storage" bash /scripts/restore.sh 2>&1) || rc=$?
 sql db "alter role postgres reset search_path; drop function if exists public.to_regclass(text)" > /dev/null
 check 'D: a rotating restore under a shadowed to_regclass succeeds' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
 check 'D: and really deletes the restored sessions' [ "$(sql db 'select count(*) from auth.refresh_tokens')" = 0 ]
+# D: a login event trigger (Postgres 17) runs after the startup options and can set search_path back to public first,
+# where a public || hides every table from the ROTATE_KEYS delete; the job's connections run with event_triggers=off
+sql db "insert into auth.refresh_tokens (token, session_id) values ('login-token', gen_random_uuid())" > /dev/null
+JOB_ENV=(-e BACKUP_SUBDIR=login)
+b=$(job db "$P-storage" bash /scripts/backup.sh | tail -n1)
+sql db "create function public.cat_shadow(text, text) returns text language sql immutable as \$\$ select 'auth.none' \$\$;
+  create operator public.|| (leftarg = text, rightarg = text, function = public.cat_shadow);
+  create function public.reset_path() returns event_trigger language plpgsql as \$\$ begin
+    perform pg_catalog.set_config('search_path', 'public, pg_catalog', false); end \$\$;
+  create event trigger reset_path on login execute function public.reset_path()" > /dev/null
+JOB_ENV=(-e "RESTORE_DIR=${b#backup: wrote }" -e ROTATE_KEYS=1)
+rc=0; out=$(job db "$P-storage" bash /scripts/restore.sh 2>&1) || rc=$?
+sql db "drop event trigger reset_path; drop function public.reset_path();
+  drop operator public.|| (text, text); drop function public.cat_shadow(text, text)" > /dev/null
+check 'D: a rotating restore under a login trigger that resets search_path succeeds' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
+check 'D: and still deletes the restored sessions' [ "$(sql db 'select count(*) from auth.refresh_tokens')" = 0 ]
 # a foreign dump with neither table: nothing to delete, no error (into a database with pg_cron, as every project's is)
 sql db-empty "create extension if not exists pg_cron" > /dev/null
 JOB_ENV=(-e BACKUP_SUBDIR=empty)
@@ -399,15 +415,14 @@ v1ts=${last#backup: wrote v1/}
 # the drop area for v1 dumps: import/<org slug>/<name>
 in_backups "mkdir -p /backups/import/acme && mv /backups/v1/$v1ts /backups/import/acme/v1-dump"
 # the hold schema cannot be dropped: the restore still succeeds and the old ledger is never moved back over it
-sql db "create function public.block_hold_drop() returns event_trigger language plpgsql as \$\$ begin
-  if current_query() ilike '%selfbase_restore_hold%cascade%' then raise exception 'blocked by the test'; end if; end \$\$;
-  create event trigger block_hold_drop on ddl_command_start execute function public.block_hold_drop()" > /dev/null
+# (a psql stand-in: the job's own connections run with event triggers off, so an event trigger cannot block it)
 JOB_ENV=(-e RESTORE_DIR=import/acme/v1-dump)
-rc=0; out=$(job db "$P-storage" bash /scripts/restore.sh 2>&1) || rc=$?
+rc=0; out=$(job db "$P-storage" bash -c 'psql() { case "$*" in *"selfbase_restore_hold cascade"*) echo "blocked by the test" >&2; return 1 ;; esac
+  command psql "$@"; }; export -f psql; bash /scripts/restore.sh' 2>&1) || rc=$?
 check 'a v1 backup restores into a migrated database' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
 check 'the ledger is gone from selfbase after a v1 restore' [ "$(sql db "select to_regclass('selfbase.platform_migrations') is null")" = t ]
 check 'a hold that cannot be dropped is a warning naming it' grep -q 'left in schema selfbase_restore_hold' <<< "$out"
-sql db "drop event trigger block_hold_drop; drop function public.block_hold_drop(); drop schema selfbase_restore_hold cascade" > /dev/null
+sql db "drop schema selfbase_restore_hold cascade" > /dev/null
 migrate > /dev/null
 check 'after core starts the ledger holds 0001...current' [ "$(ledger)" = "$current" ]
 check 'the v1 user row is there' [ "$(sql db "select email from auth.users where id = '11111111-1111-1111-1111-111111111111'")" = v1@example.test ]

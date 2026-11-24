@@ -87,9 +87,12 @@ if [ -n "$min_free" ]; then need=$((min_free * 1024)) rule=BACKUP_MIN_FREE_MIB
 else need=$(( total / 10 > 5242880 ? total / 10 : 5242880 )) rule='10% or 5 GiB, whichever is larger'; fi
 # what this backup will write, at most: the database as postgres stores it (the dump is smaller) and the storage
 # files as they are on disk, measured here and now (control's check before queueing is an early refusal only)
+# every connection of this job (psql, pg_dump, pg_dumpall) runs with event triggers off (Postgres 17, superuser
+# only): a login trigger the project's superuser made runs after the startup options and could undo them
+export PGOPTIONS='-c event_triggers=off'
 # psql resolves names in pg_catalog only, whatever search_path the role or database sets (a tenant's
 # public.pg_database_size would answer first): the client's startup options win over those settings
-db_bytes=$(PGOPTIONS='-c search_path=pg_catalog' psql -XAtq -v ON_ERROR_STOP=1 -c 'select pg_catalog.pg_database_size(pg_catalog.current_database())')
+db_bytes=$(PGOPTIONS="$PGOPTIONS -c search_path=pg_catalog" psql -XAtq -v ON_ERROR_STOP=1 -c 'select pg_catalog.pg_database_size(pg_catalog.current_database())')
 # at most 18 digits: a longer answer would overflow the arithmetic below and pass the check
 [[ $db_bytes =~ ^[0-9]{1,18}$ ]] || { echo "backup: the database size could not be read" >&2; exit 1; }
 est=$((db_bytes / 1024))
