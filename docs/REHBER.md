@@ -1228,6 +1228,15 @@ yeni bir projeye `--from-empty` ile bir migration uygulandı, tablo oluştu, Pos
   sunucuya çıkabiliyor. fn'in ise dışarı çıkması gerekiyor, bu yüzden sunucunun kendi portlarına da
   ulaşabiliyor. Bunu kapatmak istersen sunucuya eklenecek iki güvenlik duvarı kuralı
   `docs/network-isolation.md`'de. selfbase sunucunun güvenlik duvarına dokunmuyor.
+- **O iki kural core'un dış isteklerini kapsamıyor.** Projenin SQL'inden gelen `net.http_*` istekleri (Google
+  OAuth ve SMTP de) core'dan çıkar, projenin /27'sinden değil core'un proxy ağındaki adresinden. Kurallar
+  sadece `PROJECT_SUBNET_POOL`'a bakıyor, core'a uygulanmıyor. Arada sadece core'un kendi koruması
+  (`core/src/netguard.ts`) var: özel, loopback ve link-local adresleri ve core'un kendi ağlarını reddeder, ama
+  sunucunun genel IP'si ona sıradan bir genel adres. Yani sunucuda 0.0.0.0'da dinleyen bir servis ya da
+  yayımlanmış bir port bu yoldan erişilebilir. `NETQUEUE_ALLOW_HOSTS`'taki bir adres korumayı tamamen atlar.
+  Basit bir sunucu kuralı yok: proxy ağı ortak, bütün alt ağını kesen bir kural oradaki başka şeyleri de keser
+  (Coolify sunucuya o ağdan SSH ile bağlanıyor). Core'un istekleri kendi ağından çıkana kadar, sunucunun genel
+  adresinde dinleyen her servisi herhangi bir projenin SQL'inden erişilebilir say.
 - **`rotate_keys` güvenilmeyen bir dökümü temizlemez** (kalıcı sınır, dalga 2'de değişmeyecek). Kaynaktan sızmış bir anahtara ya da oturuma karşı
   korur: kopya yeni anahtarlarla açılır, dökümle gelen oturumlar silinir. Dökümün sahibi kötü niyetliyse
   korumaz. Örneğin dökümle gelen bir pg_cron işi, geri yüklemenin kontrolünden sonra
