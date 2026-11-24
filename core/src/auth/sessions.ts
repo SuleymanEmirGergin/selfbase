@@ -3,7 +3,7 @@ import type { PoolClient } from 'pg'
 import { pool } from '../db.ts'
 import { config } from '../config.ts'
 import { sign } from '../jwt.ts'
-import { authError, findById, toUserJson } from './users.ts'
+import { authError, findById, toUserJson, withTx } from './users.ts'
 import type { UserJson, UserRow } from './users.ts'
 
 const ACCESS_TTL = 3600
@@ -58,10 +58,14 @@ export async function issueSession(user: UserRow): Promise<SessionJson> {
  * (lost response, two tabs) gets that same child back with a fresh access token.
  */
 export async function rotate(refreshToken: string): Promise<SessionJson> {
+  // a token's user never changes: read it unlocked, then take the user's lock before the token row's
+  const owner = (await pool.query(`select user_id from auth.refresh_tokens where token = $1`, [refreshToken])).rows[0]
+  if (!owner) throw authError(400, 'refresh_token_not_found', 'Invalid Refresh Token: Refresh Token Not Found')
   const client = await pool.connect()
   let result: { user_id: string; session_id: string; token: string } | 'reused'
   try {
     await client.query('begin')
+    await lockUser(client, owner.user_id)
     const old = (await client.query(
       `select *, updated_at > now() - make_interval(secs => $2) as recent from auth.refresh_tokens where token = $1 for update`,
       [refreshToken, config.authRefreshReuseInterval],
@@ -100,12 +104,39 @@ export async function rotate(refreshToken: string): Promise<SessionJson> {
   return sessionJson(user, result.session_id, result.token)
 }
 
-const revokeIn = (c: PoolClient | typeof pool, sessionId: string) =>
+// S4: rotation and every revocation of a user's tokens hold this per-user transaction lock. Without it a revocation's
+// UPDATE could run while a rotation had inserted its child token but not committed it: the UPDATE's snapshot misses
+// the child, which then outlives the logout. Under the lock the revocation's UPDATE starts after the rotation
+// committed, so it sees (and revokes) the child. Lock order: an auth.users row lock may come before it, never after.
+const LOCK_NS = 0x5e55 // the two-key advisory lock space of refresh tokens
+const lockUser = (c: PoolClient, userId: string) => c.query('select pg_advisory_xact_lock($1, hashtext($2::text))', [LOCK_NS, userId])
+
+const revokeIn = (c: PoolClient, sessionId: string) =>
   c.query(`update auth.refresh_tokens set revoked = true, updated_at = now() where session_id = $1 and not revoked`, [sessionId])
+
+/** Runs `fn` in `client`'s transaction when given (the caller's), else in one of its own. */
+const inTx = (client: PoolClient | undefined, fn: (c: PoolClient) => Promise<void>) => (client ? fn(client) : withTx(fn))
 
 /** Revokes every refresh token of the session (there is no sessions table). */
 export async function revokeSession(sessionId: string): Promise<void> {
-  await revokeIn(pool, sessionId)
+  const owner = (await pool.query(`select user_id from auth.refresh_tokens where session_id = $1 limit 1`, [sessionId])).rows[0]
+  if (!owner) return
+  await inTx(undefined, async (c) => {
+    await lockUser(c, owner.user_id)
+    await revokeIn(c, sessionId)
+  })
+}
+
+/**
+ * Revokes every refresh token of the user, except those of session `except` when given (logout scope=others, a
+ * password reset). `client`: run inside the caller's transaction (an admin ban), which then holds the lock to its end.
+ */
+export async function revokeUserSessions(userId: string, except: string | null = null, client?: PoolClient): Promise<void> {
+  await inTx(client, async (c) => {
+    await lockUser(c, userId)
+    await c.query(`update auth.refresh_tokens set revoked = true, updated_at = now()
+      where user_id = $1 and not revoked and ($2::uuid is null or session_id <> $2)`, [userId, except])
+  })
 }
 
 /** A session is live while it has an unrevoked refresh token. */

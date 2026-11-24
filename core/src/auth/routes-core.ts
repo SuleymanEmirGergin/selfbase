@@ -6,7 +6,7 @@ import { pool } from '../db.ts'
 import { config } from '../config.ts'
 import type { AppEnv } from '../jwt.ts'
 import { authError, checkPassword, createUser, findByEmail, findById, hashPassword, listUsers, toUserJson, withTx } from './users.ts'
-import { issueSession, isBanned, revokeSession, rotate, sessionActive } from './sessions.ts'
+import { issueSession, isBanned, revokeSession, revokeUserSessions, rotate, sessionActive } from './sessions.ts'
 import { background, sendConfirmation, sendEmailChange } from './mail.ts'
 import { phoneDisabled, sendPhoneOtp } from './routes-phone.ts'
 
@@ -173,9 +173,7 @@ router.post('/logout', async (c) => {
   const { user, claims } = await requireUser(c, { allowBanned: true })
   const scope = c.req.query('scope') ?? 'global'
   if (scope === 'local') await revokeSession(claims.session_id!)
-  else if (scope === 'global' || scope === 'others')
-    await pool.query(`update auth.refresh_tokens set revoked = true, updated_at = now() where user_id = $1 and not revoked and ($2::uuid is null or session_id <> $2)`,
-      [user.id, scope === 'others' ? claims.session_id : null])
+  else if (scope === 'global' || scope === 'others') await revokeUserSessions(user.id, scope === 'others' ? claims.session_id ?? null : null)
   else throw authError(400, 'validation_failed', 'scope must be global, local or others')
   return c.body(null, 204)
 })
