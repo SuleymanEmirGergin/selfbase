@@ -21,8 +21,8 @@
 #   1c. the storage archive is extracted into a temp dir inside the volume (owner: the volume's, modes from the umask,
 #      never the archive's) and checked again for anything but files and directories; a failure here changed nothing
 #      (exit 1; the temp dir is removed)
-#   watchdog: while tar (1c) and pg_restore (3) run, the free space and inodes are read every second; at the floor
-#      the writer is stopped (the database's client sessions are terminated, so pg_restore's one transaction rolls back), the temp
+#   watchdog: while tar (1c) and pg_restore (3) run, the free space and inodes are read every second; below the floor
+#      (step 1b admits a restore that leaves exactly the floor free) the writer is stopped (the database's client sessions are terminated, so pg_restore's one transaction rolls back), the temp
 #      dir removed, and the restore ends with exit 6, nothing changed: what the server writes for the dump (a
 #      materialized view it refreshes, an index it builds) is no line of the dump, so no estimate can bound it. A
 #      writer that exits 0 as it is stopped had already finished (pg_restore committed): the restore goes on.
@@ -170,12 +170,13 @@ cleanup() {
 trap cleanup EXIT
 # a signal is a failure the cleanup sees (bash runs the EXIT trap on one with $? of the last command, often 0)
 trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
-# at_floor: the volume is at the floor, in space or (where it counts them) in inodes: 10% of them, as in step 1b
+# at_floor: the volume is below the floor, in space or (where it counts them) in inodes: 10% of them. Step 1b admits
+# a restore that leaves exactly the floor free, so exactly at it is not below
 at_floor() {
   local fs_inodes fs_ifree
-  [ "$(df -Pk "$storage" | awk 'NR == 2 { print $4 }')" -gt "$need" ] || return 0
+  [ "$(df -Pk "$storage" | awk 'NR == 2 { print $4 }')" -ge "$need" ] || return 0
   read -r fs_inodes fs_ifree < <(df -Pi "$storage" | awk 'NR == 2 { print $2, $4 }')
-  [[ $fs_inodes =~ ^[1-9][0-9]{0,17}$ && $fs_ifree =~ ^[0-9]{1,18}$ ]] && [ "$fs_ifree" -le $((fs_inodes / 10)) ]
+  [[ $fs_inodes =~ ^[1-9][0-9]{0,17}$ && $fs_ifree =~ ^[0-9]{1,18}$ ]] && [ "$fs_ifree" -lt $((fs_inodes / 10)) ]
 }
 # watched <stop> <writer...>: runs the writer in a process group of its own (setsid) and reads the free space and
 # inodes every second; at the floor <stop> runs (empty: none), the writer's group is killed and the restore ends with

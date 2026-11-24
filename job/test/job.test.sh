@@ -492,6 +492,12 @@ check 'E: a restore stopped by SIGTERM exits 143' [ "$rc" = 143 ]; [ "$rc" = 143
 check 'E: its writer is stopped with it' grep -qx tars=0 <<< "$out"
 check 'E: and its temp dir is gone' grep -qx entries=0 <<< "$out"
 check 'E: and it says it was stopped, nothing changed' grep -q '^restore: STOPPED by a signal' <<< "$out"
+# 7: a restore step 1b admits is not stopped when its last file lands at exactly the floor: a stand-in tar extracts,
+# then fills the volume to exactly the floor (1 MiB free) and holds it there
+standin brim '/usr/bin/tar "$@" || exit; a=$(df -Pk /data/storage | awk "NR == 2 { print \$4 }")
+  head -c $(( (a - 1024) * 1024 )) /dev/zero > "${@: -1}/brim"; sleep 3; exit 0'
+rc=0; out=$(cramped "$small" 1 '' 'export PATH=/backups/standin/brim:$PATH') || rc=$?
+check '7: a restore that leaves exactly the floor free finishes' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
 # E: the watchdog. What the server writes counts too: a materialized view the dump refreshes is one short line in the
 # estimate, over a row count kept in a table (1 when it was refreshed, 2 million in the dump). The database and the
 # storage volume share one 512 MiB tmpfs, as Docker volumes share a disk; 100 MiB of room above the floor
