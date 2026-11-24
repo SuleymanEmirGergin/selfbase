@@ -76,6 +76,9 @@ async function otherLinkPending(userId: string, newEmail: string): Promise<boole
   return true
 }
 
+// GoTrue's amr method of each link session
+const AMR: Record<MailKind, string> = { signup: 'email/signup', recovery: 'recovery', magiclink: 'magiclink', email_change: 'email_change' }
+
 router.get('/verify', async (c) => {
   const { token, type, redirect_to } = c.req.query()
   const target = safeRedirect(redirect_to)
@@ -102,7 +105,8 @@ router.get('/verify', async (c) => {
   const passwordless = kind === 'signup' && !user.encrypted_password && (user.identities ?? []).every((i) => i.provider === 'email')
   // AUTH_SET_PASSWORD_URL goes through the allowlist like any redirect (outside it: SITE_URL)
   const landing = passwordless && config.authSetPasswordUrl ? safeRedirect(config.authSetPasswordUrl) : target
-  return c.redirect(withFragment(landing, { ...sessionParams(await issueSession(user)), type: passwordless ? 'recovery' : kind }), 302)
+  const shown = passwordless ? 'recovery' : kind
+  return c.redirect(withFragment(landing, { ...sessionParams(await issueSession(user, AMR[shown])), type: shown }), 302)
 })
 
 export default router

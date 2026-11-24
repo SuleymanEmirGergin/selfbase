@@ -19,7 +19,7 @@ export type SessionJson = {
 
 const newToken = () => randomBytes(32).toString('base64url')
 
-async function sessionJson(user: UserRow, sessionId: string, refreshToken: string): Promise<SessionJson> {
+async function sessionJson(user: UserRow, sessionId: string, refreshToken: string, amr?: string): Promise<SessionJson> {
   const claims = {
     sub: user.id,
     role: 'authenticated' as const,
@@ -29,6 +29,9 @@ async function sessionJson(user: UserRow, sessionId: string, refreshToken: strin
     app_metadata: user.raw_app_meta_data ?? {},
     user_metadata: user.raw_user_meta_data ?? {},
     session_id: sessionId,
+    // GoTrue's authentication method claim. shortcut: only the first access token of an email-link session carries
+    // it (there is no sessions table to keep it across refreshes); upgrade with one if a client needs it later
+    ...(amr ? { amr: [{ method: amr, timestamp: Math.floor(Date.now() / 1000) }] } : {}),
   }
   return {
     access_token: await sign(claims, ACCESS_TTL),
@@ -42,13 +45,16 @@ async function sessionJson(user: UserRow, sessionId: string, refreshToken: strin
 
 export const isBanned = (user: UserRow) => user.banned_until && new Date(user.banned_until) > new Date()
 
-/** Starts a new session for a signed-in user: first refresh token, last_sign_in_at bumped. */
-export async function issueSession(user: UserRow): Promise<SessionJson> {
+/**
+ * Starts a new session for a signed-in user: first refresh token, last_sign_in_at bumped. `amr`: the method of an
+ * email-link session (GoTrue's names, `recovery` for a password reset link), put in its access token.
+ */
+export async function issueSession(user: UserRow, amr?: string): Promise<SessionJson> {
   const sessionId = randomUUID()
   const token = newToken()
   await pool.query(`insert into auth.refresh_tokens (token, user_id, session_id) values ($1, $2, $3)`, [token, user.id, sessionId])
   await pool.query(`update auth.users set last_sign_in_at = now() where id = $1`, [user.id])
-  return sessionJson((await findById(user.id))!, sessionId, token)
+  return sessionJson((await findById(user.id))!, sessionId, token, amr)
 }
 
 /**

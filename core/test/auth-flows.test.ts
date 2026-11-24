@@ -139,7 +139,13 @@ describe('email links', () => {
     expect(await (await call('POST', '/recover', { email: s.user.email })).json()).toEqual({})
     const res = await open(linkIn((await mails(s.user.email))[0].html))
     expect(fragment(res).get('type')).toBe('recovery')
-    expect((await verify(fragment(res).get('access_token')!)).sub).toBe(s.user.id)
+    const claims = await verify(fragment(res).get('access_token')!)
+    expect(claims.sub).toBe(s.user.id)
+    // GoTrue's amr: what proved the session; control's password route reads it
+    expect(claims.amr).toEqual([{ method: 'recovery', timestamp: expect.any(Number) }])
+    // a password sign-in is no recovery session
+    const pw = await (await call('POST', '/token?grant_type=password', { email: s.user.email, password: PW })).json()
+    expect(JSON.stringify((await verify(pw.access_token)).amr ?? [])).not.toContain('recovery')
   })
 
   it('/recover and /otp for an unknown email are 200 and send nothing', async () => {
@@ -156,7 +162,9 @@ describe('email links', () => {
     expect((await call('POST', '/otp', { email: s.user.email, create_user: false })).status).toBe(200)
     const res = await open(linkIn((await mails(s.user.email))[0].html))
     expect(fragment(res).get('type')).toBe('magiclink')
-    expect((await verify(fragment(res).get('access_token')!)).sub).toBe(s.user.id)
+    const claims = await verify(fragment(res).get('access_token')!)
+    expect(claims.sub).toBe(s.user.id)
+    expect(claims.amr).toEqual([{ method: 'magiclink', timestamp: expect.any(Number) }])
   })
 
   it('a link only verifies as its own type', async () => {

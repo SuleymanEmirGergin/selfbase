@@ -10,10 +10,10 @@ import { randomUUID } from 'node:crypto'
 import { pool } from '../db.ts'
 import type { Db } from '../db.ts'
 import { resetPasswordUrl } from '../core-env.ts'
-import { coreAuth, hashPassword, revokeSession, revokeUserSessions, verify } from '../core.ts'
+import { coreAuth, hashPassword, revokeSession, verify } from '../core.ts'
 import { ApiError } from '../errors.ts'
 import { newAccessToken } from '../ids.ts'
-import { ACCESS_COOKIE, REFRESH_COOKIE, checkOrigin, clearSessionCookies, endIfExpired, sessionOfRefresh, setSessionCookies } from '../session.ts'
+import { ACCESS_COOKIE, REFRESH_COOKIE, checkOrigin, clearSessionCookies, endIfExpired, sessionLive, sessionOfRefresh, setSessionCookies } from '../session.ts'
 import type { Env } from '../session.ts'
 
 export const platformAuth = new Hono<Env>()
@@ -126,19 +126,30 @@ platformAuth.post('/auth/v1/recover', async (c) =>
   passOn(await callCore(c, 'POST', `/recover?${new URLSearchParams({ redirect_to: resetPasswordUrl })}`, { body: await c.req.text() })))
 // the mailed link: core redirects with the session in the fragment (#access_token=…&type=recovery)
 platformAuth.get('/auth/v1/verify', async (c) => passOn(await callCore(c, 'GET', `/verify?${new URL(c.req.url).searchParams}`)))
-// Studio's reset screen sends the recovery access token as the bearer; core checks it and its session
-// Only the password is passed on (no email, phone or metadata changes from here). A new password ends every other
-// session of the user: a stolen cookie or refresh token stops working with the reset.
+// Studio's reset screen sends the recovery access token as the bearer. Any other Studio access token (a stolen cookie)
+// also needs the current password. Only the password is passed on (no email, phone or metadata changes from here).
+// Core's new password ends every other session of the user and its one-time tokens, in the same transaction under
+// its per-user lock (S4): a stolen cookie or refresh token stops working with the reset.
 platformAuth.put('/auth/v1/user', async (c) => {
   const b = await c.req.json().catch(() => null)
   if (typeof b?.password !== 'string') throw new ApiError(400, 'validation_failed', 'password is required')
-  const bearer = c.req.header('authorization')
-  const res = await passOn(await callCore(c, 'PUT', '/user', { body: JSON.stringify({ password: b.password }), bearer }))
-  // core accepted the bearer, so its claims are valid
-  const claims = await verify(bearer!.replace(/^Bearer\s+/i, ''))
-  // under core's per-user lock: a refresh rotating at this moment cannot keep a token alive past the reset (S4)
-  await revokeUserSessions(claims.sub!, claims.session_id ?? null)
-  return res
+  const bearer = c.req.header('authorization') ?? ''
+  const claims = await verify(bearer.replace(/^Bearer\s+/i, '')).catch(() => null)
+  if (!claims?.sub || claims.role !== 'authenticated') throw new ApiError(401, 'unauthorized', 'Unauthorized')
+  // control's absolute and idle lifetimes, as at /platform/refresh: core only asks whether the session is revoked
+  if (!(await sessionLive(claims.session_id))) {
+    if (claims.session_id) await revokeSession(claims.session_id)
+    throw new ApiError(401, 'unauthorized', 'Unauthorized')
+  }
+  if (!claims.amr?.some((a) => a?.method === 'recovery')) {
+    if (typeof b.current_password !== 'string')
+      throw new ApiError(403, 'reauthentication_needed', 'current_password is required without a recovery link')
+    // through core's password grant, so its sign-in rate limit and ban check apply; the session it starts ends at once
+    const email = (await pool.query('select email from auth.users where id = $1', [claims.sub])).rows[0]?.email ?? ''
+    const check = await passOn(await callCore(c, 'POST', '/token?grant_type=password', { body: JSON.stringify({ email, password: b.current_password }) }))
+    await revokeSession((await verify((await check.json()).access_token)).session_id!)
+  }
+  return passOn(await callCore(c, 'PUT', '/user', { body: JSON.stringify({ password: b.password }), bearer }))
 })
 
 // ---- personal access tokens (org.tokens: every user, for their own tokens) ----

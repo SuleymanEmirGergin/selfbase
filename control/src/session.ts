@@ -62,7 +62,7 @@ async function sessionState(sessionId: string): Promise<{ open: boolean; expired
 }
 
 /** Live: not revoked (logout, a password reset) and not past either lifetime. */
-async function sessionLive(sessionId: string | undefined): Promise<boolean> {
+export async function sessionLive(sessionId: string | undefined): Promise<boolean> {
   if (!sessionId) return false
   const s = await sessionState(sessionId)
   return s.open && !s.expired
