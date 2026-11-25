@@ -302,14 +302,26 @@ defineJob('project.delete', 'light', [
     // legacy and custom names too: free for the org's other projects at once, for other orgs after the hold
     await releaseDomains(ctx.db, need(ctx).id)
   }),
-  step('secrets', async (ctx) => {
-    await ctx.db.query('delete from control.project_secrets where project_id = $1', [need(ctx).id])
-    // the REMOVED row stays, so the cascade never fires: a project-scoped member would keep reaching the org (its
-    // member list), and an open invitation would still let someone in
-    await ctx.db.query('delete from control.memberships where project_id = $1', [need(ctx).id])
-    await ctx.db.query('delete from control.invitations where project_id = $1', [need(ctx).id])
+  step('secrets', (ctx) => ctx.db.query('delete from control.project_secrets where project_id = $1', [need(ctx).id])),
+  // The REMOVED row stays, so the cascade never fires: a project-scoped member would keep reaching the org (its
+  // member list), and an open invitation would still let someone in. One transaction on the locked project row:
+  // invitation create and accept take the same row (platform-orgs.ts), so none lands between the cleanup and REMOVED.
+  step('removed', async (ctx) => {
+    const c = await ctx.db.connect()
+    try {
+      await c.query('begin')
+      await c.query('select 1 from control.projects where id = $1 for update', [need(ctx).id])
+      await c.query('delete from control.memberships where project_id = $1', [need(ctx).id])
+      await c.query('delete from control.invitations where project_id = $1', [need(ctx).id])
+      await c.query(`update control.projects set status = 'REMOVED' where id = $1`, [need(ctx).id])
+      await c.query('commit')
+    } catch (e) {
+      await c.query('rollback').catch(() => {})
+      throw e
+    } finally {
+      c.release()
+    }
   }),
-  step('removed', (ctx) => setStatus(ctx, 'REMOVED')),
 ], failTo('REMOVE_FAILED'))
 
 const recreateOf = (ctx: JobCtx): string[] => (Array.isArray(ctx.job.payload.recreate) ? ctx.job.payload.recreate : [])

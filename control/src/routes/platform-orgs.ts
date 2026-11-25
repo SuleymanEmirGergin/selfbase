@@ -190,18 +190,23 @@ platformOrgs.post('/organizations/:slug/invitations', async (c) => {
   c.set('audit', { ...c.get('audit'), target: email })
   const r = role(b.role)
   if (r === 'owner' && !can(callerRole, 'org.owner')) throw new ApiError(403, 'forbidden', 'Forbidden')
-  let projectId: string | null = null
-  if (b.project_ref !== undefined && b.project_ref !== null) {
-    if (r === 'owner') throw bad('owner is an organization-wide role')
-    projectId = (await pool.query(`select id from control.projects where ref = $1 and org_id = $2`, [String(b.project_ref), org.id])).rows[0]?.id
-    if (!projectId) throw notFound('project')
-  }
+  const projectRef = b.project_ref ?? null
+  if (projectRef !== null && r === 'owner') throw bad('owner is an organization-wide role')
   const token = randomBytes(32).toString('base64url')
-  const inv = (await pool.query(
-    `insert into control.invitations (org_id, email, role, project_id, token_hash, expires_at)
-     values ($1, $2, $3, $4, $5, now() + make_interval(days => $6)) returning id, expires_at`,
-    [org.id, email, r, projectId, hashToken(token), INVITATION_DAYS],
-  )).rows[0]
+  const inv = await tx(async (client) => {
+    let projectId: string | null = null
+    if (projectRef !== null) {
+      // FOR SHARE: a delete's cleanup (jobs/project.ts) holds the row FOR UPDATE; a REMOVED project takes no one
+      projectId = (await client.query(`select id from control.projects where ref = $1 and org_id = $2 and status <> 'REMOVED' for share`,
+        [String(projectRef), org.id])).rows[0]?.id
+      if (!projectId) throw notFound('project')
+    }
+    return (await client.query(
+      `insert into control.invitations (org_id, email, role, project_id, token_hash, expires_at)
+       values ($1, $2, $3, $4, $5, now() + make_interval(days => $6)) returning id, expires_at`,
+      [org.id, email, r, projectId, hashToken(token), INVITATION_DAYS],
+    )).rows[0]
+  })
   const link = `${config.publicUrl}/invite/${token}`
   if (config.smtp.host) {
     background(mailInvitation(email, org.name, link))
@@ -234,6 +239,9 @@ platformOrgs.post('/invitations/accept', async (c) => {
     throw new ApiError(422, 'weak_password', `Password should be at least ${MIN_PASSWORD} characters.`)
   }
   await tx(async (client) => {
+    // the project row first, as the delete's cleanup takes it (same order: no deadlock); a REMOVED project takes no one
+    if (inv.project_id && !(await client.query(`select 1 from control.projects where id = $1 and status <> 'REMOVED' for share`,
+      [inv.project_id])).rowCount) throw invalid()
     // single use: whoever deletes the row owns the acceptance
     if (!(await client.query(`delete from control.invitations where id = $1`, [inv.id])).rowCount) throw invalid()
     const userId = existing?.id ?? (await createConfirmedUser(inv.email, password, client)).id
