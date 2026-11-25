@@ -344,7 +344,7 @@ check 'm-5: it says the backup is whole but not recorded, never that no backup w
 check 'm-5: and the backup is in place' in_backups '[ -f "$(ls -d /backups/late/[0-9]*-[0-9]* | head -n1)/MANIFEST" ]'
 # round 2: a TERM that lands as the rename itself finishes (a stand-in mv signals right after it) is the same case
 JOB_ENV=(-e BACKUP_SUBDIR=latemv)
-rc=0; out=$(job db "$P-storage" bash -c 'mv() { case "$1" in */.tmp-*) command mv "$@" && kill -TERM $$; return ;; esac; command mv "$@"; }
+rc=0; out=$(job db "$P-storage" bash -c 'mv() { case "$*" in */.tmp-*) command mv "$@" && kill -TERM $$; return ;; esac; command mv "$@"; }
   export -f mv; bash /scripts/backup.sh' 2>&1) || rc=$?
 check 'm-5: a TERM as the rename finishes exits 143' [ "$rc" = 143 ]; [ "$rc" = 143 ] || echo "$out" >&2
 check 'm-5: it says that backup is whole but not recorded, never that no backup was written' bash -c \
@@ -383,6 +383,25 @@ check 'M-6: the next run removes the leftover' bash -c '[ "$1" = 0 ]' _ "$rc"
 # round 2: and says it deleted that backup first, as control reads it, so a row a failed run kept goes now
 check 'M-6: it reports the swept leftover deleted, under its backup name' grep -qx 'backup: deleted quar/20200101-000000 (left by an earlier run)' <<< "$out"
 check 'M-6: (it is gone, and only timestamp dirs are left)' in_backups '! ls -A /backups/quar | grep -qvE "^[0-9]{8}-[0-9]{6}$"'
+# round 3: the sweep names a backup only for an exact .deleting-<ts> whose <ts> is not live; other leftovers, a
+# dangling link among them, go silently, and a link goes without its target (a long retention keeps the live 2020 one)
+in_backups 'mkdir -p "/backups/sweep/20200101-000000" "/backups/sweep/.deleting-20200101-000000" "/backups/sweep/.deleting-20200101-000000 extra" /backups/sweep-target &&
+  touch /backups/sweep/20200101-000000/keep /backups/sweep-target/t && ln -s /backups/sweep/nowhere /backups/sweep/.deleting-dangling &&
+  ln -s /backups/sweep-target /backups/sweep/.deleting-link'
+JOB_ENV=(-e BACKUP_SUBDIR=sweep -e BACKUP_RETENTION_DAYS=36500)
+rc=0; out=$(job db "$P-storage" bash /scripts/backup.sh 2>&1) || rc=$?
+check 'sweep: the run succeeds' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
+check 'sweep: no deleted line names the live backup' bash -c '! grep -q "^backup: deleted sweep/20200101-000000" <<< "$1"' _ "$out"
+check 'sweep: the live backup stays' in_backups '[ -f /backups/sweep/20200101-000000/keep ]'
+check 'sweep: every leftover is gone, the dangling link too' in_backups '! ls -A /backups/sweep | grep -q "^\.deleting-"'
+check 'sweep: a linked leftover goes without its target' in_backups '[ -f /backups/sweep-target/t ]'
+# round 3: the publish rename is mv -T: a <ts> dir that appears after the exists check is never moved into
+JOB_ENV=(-e BACKUP_SUBDIR=race)
+rc=0; out=$(job db "$P-storage" bash -c 'mv() { case "$*" in */.tmp-*) mkdir -p "${@: -1}" && touch "${@: -1}/x" ;; esac; command mv "$@"; }
+  export -f mv; bash /scripts/backup.sh' 2>&1) || rc=$?
+check 'race: a <ts> dir in the way fails the backup' [ "$rc" != 0 ]; [ "$rc" != 0 ] || echo "$out" >&2
+check 'race: it says no backup was written' grep -q 'no backup written for race/' <<< "$out"
+check 'race: (nothing was moved into that dir)' in_backups '! ls -A /backups/race/[0-9]*-[0-9]* | grep -q "^\.tmp-"'
 # m-6: prune-only still prints pruned when the retention fails (the stand-in mv), so control reads the deleted lines
 in_backups 'mkdir -p /backups/export-pf/20200101-000000 /backups/export-pf/20200102-000000'
 rc=0; out=$(docker run --rm --network none -v "$P-backups:/backups" -e BACKUP_SUBDIR=export-pf -e BACKUP_PRUNE_ONLY=1 "$IMAGE" bash -c \

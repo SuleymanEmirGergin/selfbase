@@ -66,8 +66,10 @@ retain() {
   [[ $sub == export-* ]] && days=$export_keep || days=$keep
   cutoff=$(date -u -d "-$days days" +%Y%m%d-%H%M%S)
   for q in "$backups"/.deleting-*; do
-    [ -e "$q" ] || continue
-    echo "backup: deleted $sub/${q##*/.deleting-} (left by an earlier run)"
+    [ -e "$q" ] || [ -L "$q" ] || continue # a dangling link too (rm -rf removes the link, never its target)
+    d=${q##*/.deleting-}
+    # only a quarantine retain() made names a backup: an odd name, or a <ts> that is live again, goes silently
+    if [[ $d =~ ^[0-9]{8}-[0-9]{6}$ ]] && [ ! -e "$backups/$d" ]; then echo "backup: deleted $sub/$d (left by an earlier run)"; fi
     rm -rf "$q" || { echo "backup: WARNING: could not remove the leftover $sub/${q##*/}" >&2; bad=1; }
   done
   for d in $(ls "$backups" | grep -E '^[0-9]{8}-[0-9]{6}$' | sort -r || true); do
@@ -192,7 +194,7 @@ for f in $files; do
   echo "$f $size $sum"
 done > "$tmp/MANIFEST"
 moving=1
-mv "$tmp" "$backups/$ts"
+mv -T "$tmp" "$backups/$ts" # -T: never into a <ts> dir that appeared after the exists check
 # the backup is whole and in place: from here a failure is a warning (exit 0), never "no backup written", and the
 # wrote line control records the backup by still comes last
 retain || echo "backup: WARNING: the retention of $sub did not finish; older backups may be left" >&2
