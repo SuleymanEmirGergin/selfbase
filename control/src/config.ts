@@ -8,7 +8,11 @@ export type Config = ReturnType<typeof loadConfig>
 
 // organization slugs as platform-orgs.ts makes them
 const SLUG_RE = /^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$/
-export const HOSTNAME_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
+// The last label is never a number, decimal or 0x hex: that is exactly when the WHATWG URL parser reads a name as
+// IPv4 (203.0.113.5, 0x7f.0x1) or refuses it (a.0x7f). No TLD looks like one.
+export const HOSTNAME_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+(?!([0-9]+|0x[0-9a-f]*)$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
+// BASE_DOMAIN and TEST_HOST: a hostname, or localhost itself for a local install (REHBER, test/e2e)
+const serverHost = (h: string) => h === 'localhost' || HOSTNAME_RE.test(h)
 const LABELS_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
 
 export function loadConfig(input: Record<string, string | undefined> = process.env) {
@@ -53,6 +57,7 @@ export function loadConfig(input: Record<string, string | undefined> = process.e
   const jwtSecret = need('CONTROL_JWT_SECRET')
   if (jwtSecret.length < 32) fail('CONTROL_JWT_SECRET must be at least 32 characters')
   const base = need('BASE_DOMAIN')
+  if (!serverHost(base)) fail('BASE_DOMAIN must be a lowercase hostname such as example.com')
   // host=org_slug: the name may be added by that organization only; a bare host is the default organization's
   const legacyOrgs: Record<string, string> = {}
   for (const entry of (env.LEGACY_HOSTNAMES || '').split(',').map((h) => h.trim()).filter(Boolean)) {
@@ -63,6 +68,10 @@ export function loadConfig(input: Record<string, string | undefined> = process.e
     legacyOrgs[host.toLowerCase()] = slug
   }
   const legacyHostnames = Object.keys(legacyOrgs)
+  const testHost = env.TEST_HOST || `sb-test.${base}`
+  if (!serverHost(testHost)) fail('TEST_HOST must be a lowercase hostname')
+  // as install-check requires; it also keeps TEST_HOST=localhost to a localhost install
+  if (testHost !== base && !testHost.endsWith(`.${base}`)) fail('TEST_HOST must sit under BASE_DOMAIN')
   const publicUrl = env.PUBLIC_URL || `https://selfbase.${base}`
   if (!/^https?:$/.test(URL.parse(publicUrl)?.protocol ?? '') || !URL.parse(publicUrl)?.hostname) fail('PUBLIC_URL must be an http(s) URL with a hostname')
   const proxyMode = oneOf('PROXY_MODE', 'coolify', ['coolify', 'own'])
@@ -104,7 +113,7 @@ export function loadConfig(input: Record<string, string | undefined> = process.e
     projectSubnetPool: env.PROJECT_SUBNET_POOL || '10.207.0.0/16',
     maxNewHostsPerWeek: num('MAX_NEW_HOSTS_PER_WEEK', 3),
     branchHostSlots: num('BRANCH_HOST_SLOTS', 2),
-    testHost: env.TEST_HOST || `sb-test.${base}`,
+    testHost,
     // hostnames under BASE_DOMAIN that already hold a certificate (v1's host); the only legacy names allowed there
     legacyHostnames,
     // the organization slug each legacy name belongs to (hosts.ts)

@@ -7,10 +7,13 @@ import { useProject } from './context.ts'
 import { fmtDate, t } from '../i18n/index.ts'
 
 const SERVICES: LogService[] = ['core', 'db', 'rest', 'fn', 'pooler']
+// control answers these only with project.sql (their lines can hold statement text)
+const SQL_LOGS: LogService[] = ['db', 'fn', 'pooler']
 const LIMIT = 200
 
 export default function Logs() {
-  const { ref } = useProject()
+  const { ref, can } = useProject()
+  const services = SERVICES.filter((s) => can('project.sql') || !SQL_LOGS.includes(s))
   const [service, setService] = useState<LogService>('core')
   const { data, error, reload } = useLoad(() => platform.logs(ref, service, LIMIT), [ref, service])
   return (
@@ -21,7 +24,7 @@ export default function Logs() {
         <label className="field inline">
           <span>{t('logs.service')}</span>
           <select value={service} onChange={(e) => setService(e.target.value as LogService)}>
-            {SERVICES.map((s) => <option key={s}>{s}</option>)}
+            {services.map((s) => <option key={s}>{s}</option>)}
           </select>
         </label>
         <button className="icon-btn" onClick={reload} aria-label={t('common.refresh')} title={t('common.refresh')}><Icon name="refresh" /></button>

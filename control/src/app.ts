@@ -2,9 +2,10 @@
 import './core-env.ts'
 import { Hono } from 'hono'
 import { serveStatic } from '@hono/node-server/serve-static'
+import { secureHeaders } from 'hono/secure-headers'
 import { config } from './config.ts'
 import { notFound, onError } from './errors.ts'
-import { audit, bodyCap, publicLimit } from './audit.ts'
+import { audit, bodyCap, publicLimit, wholeBody } from './audit.ts'
 import { authenticate } from './session.ts'
 import { paused } from './paused.ts'
 import { platformAuth } from './routes/platform-auth.ts'
@@ -17,12 +18,19 @@ export const app = new Hono()
 app.onError(onError)
 app.notFound(notFound)
 
+// Studio's actions are single clicks: no page may frame it (cookies are SameSite=Strict, but sslip.io is not on the
+// PSL, so its sibling hosts are same-site). overwrite: false keeps a header the answer already has: core's sandbox CSP
+// on a file forwarded through the admin API (forward.ts).
+// HSTS without includeSubDomains: a paused custom domain answers here too, and its other hosts are not ours to force
+app.use('*', secureHeaders({ xFrameOptions: 'DENY', contentSecurityPolicy: { frameAncestors: ["'none'"] },
+  strictTransportSecurity: 'max-age=15552000', overwrite: false }))
 app.use('*', paused) // before any route: only PUBLIC_URL's host is served
 app.get('/health', (c) => c.json({ ok: true }))
 
-// size cap before anything parses a JSON body; the public per-IP limit; then audit, so refused writes are recorded too
-app.use('/platform/*', bodyCap, publicLimit, audit, authenticate('platform'))
-app.use('/v1/*', bodyCap, audit, authenticate('v1'))
+// size cap before anything reads a body; the public per-IP limit; the whole body before the caller is authenticated;
+// then audit, so refused writes are recorded too
+app.use('/platform/*', bodyCap, publicLimit, wholeBody, audit, authenticate('platform'))
+app.use('/v1/*', bodyCap, wholeBody, audit, authenticate('v1'))
 
 app.route('/platform', platformAuth)
 app.route('/platform', platformOrgs)

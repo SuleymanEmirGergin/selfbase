@@ -135,6 +135,8 @@ export function startReconcile(deps: ReconcileDeps): { stop(): Promise<void> } {
       } catch (e) {
         console.error(`reconcile: ${(e as Error).message}`)
       }
+      // a stop during the pass woke no one: checked here, before the sleep is installed, it ends the loop now
+      if (stopping) break
       await new Promise<void>((r) => {
         const t = setTimeout(r, INTERVAL_MS)
         wake = () => { clearTimeout(t); r() }

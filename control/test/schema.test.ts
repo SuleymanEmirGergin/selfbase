@@ -101,7 +101,7 @@ describe('control schema', () => {
     await migrate()
     await migrate()
     expect((await pool.query(`select count(*)::int as n from control.nodes`)).rows[0].n).toBe(1)
-    expect((await pool.query(`select version from control.migrations order by version`)).rows).toEqual([{ version: '0001' }, { version: '0002' }, { version: '0003' }, { version: '0004' }, { version: '0005' }])
+    expect((await pool.query(`select version from control.migrations order by version`)).rows).toEqual([{ version: '0001' }, { version: '0002' }, { version: '0003' }, { version: '0004' }, { version: '0005' }, { version: '0006' }, { version: '0007' }])
   })
 
   test('0002 and later are safe to run again by hand', async () => {

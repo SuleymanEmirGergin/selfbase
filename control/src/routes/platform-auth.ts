@@ -1,6 +1,7 @@
 // Studio sign-in on core's auth module (AC-12). Only /recover, GET /verify and PUT /user of core's router are reachable,
-// under /platform/auth/v1; everything else of it (signup, otp, oauth, token, ...) is not mounted, because
-// AUTH_DISABLE_SIGNUP only closes POST /signup and the others would create dashboard accounts.
+// under /platform/auth/v1; everything else of it (signup, otp, oauth, token, ...) is not mounted. AUTH_DISABLE_SIGNUP
+// closes POST /signup, user creation through /otp and a first Google login; the routes stay unmounted anyway, so a
+// dashboard account is never made through core's public auth surface.
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
@@ -10,7 +11,7 @@ import { randomUUID } from 'node:crypto'
 import { pool } from '../db.ts'
 import type { Db } from '../db.ts'
 import { resetPasswordUrl } from '../core-env.ts'
-import { coreAuth, hashPassword, revokeSession, verify } from '../core.ts'
+import { coreAuth, hashPassword, lockUser, revokeSession, verify } from '../core.ts'
 import { ApiError } from '../errors.ts'
 import { newAccessToken } from '../ids.ts'
 import { ACCESS_COOKIE, REFRESH_COOKIE, checkOrigin, clearSessionCookies, endIfExpired, sessionLive, sessionOfRefresh, setSessionCookies } from '../session.ts'
@@ -57,10 +58,20 @@ export async function tx<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<
 }
 
 /**
+ * Refuses an address with anything but printable ASCII: it travels as a header (x-selfbase-actor, forward.ts) on every
+ * admin call, and a header cannot hold ş, ğ or ı. Every place that creates a user or an invitation calls this.
+ */
+export function asciiEmail(email: string): void {
+  if (!/^[\x21-\x7e]+$/.test(email))
+    throw new ApiError(400, 'email_not_ascii', 'the email address must use ASCII characters only (letters such as ş, ğ or ı are not supported)')
+}
+
+/**
  * A dashboard user whose address is taken as proven (the CLI, an accepted invitation), written on `db` so it can be
  * part of the caller's transaction. The same rows core's createUser writes, with email_confirmed_at set.
  */
 export async function createConfirmedUser(email: string, password: string, db: Db = pool): Promise<{ id: string; email: string }> {
+  asciiEmail(email)
   const id = randomUUID()
   const lower = email.toLowerCase()
   await db.query(
@@ -109,17 +120,29 @@ platformAuth.post('/refresh', async (c) => {
 // Ends the session through the access cookie and through the refresh cookie: once the access cookie has expired (1 h)
 // only the refresh token names the session. A failed revoke is an error, and the cookies stay: the user must not
 // believe they are signed out while the refresh token still works.
+const logoutFailed = () => new ApiError(502, 'logout_failed', 'The session could not be ended. Try again.')
 platformAuth.post('/logout', async (c) => {
   checkOrigin(c)
   const jwt = getCookie(c, ACCESS_COOKIE)
+  // the audit row is written only for a logout that named a real session (audit.ts): forged cookie values write none
+  const realSession = () => c.set('audit', {})
   if (jwt) {
     const res = await callCore(c, 'POST', '/logout?scope=local', { bearer: `Bearer ${jwt}` })
     // a 4xx is an expired or forged access cookie, which ends nothing by itself; the refresh cookie below still does
-    if (res.status >= 500) throw new ApiError(502, 'logout_failed', 'The session could not be ended. Try again.')
+    if (res.status >= 500) throw logoutFailed()
+    if (res.ok) realSession()
   }
   const refresh = getCookie(c, REFRESH_COOKIE)
-  const sid = refresh ? await sessionOfRefresh(refresh) : null
-  if (sid) await revokeSession(sid)
+  try {
+    const sid = refresh ? await sessionOfRefresh(refresh) : null
+    if (sid) {
+      realSession()
+      await revokeSession(sid)
+    }
+  } catch (e) {
+    console.error(`logout: ${(e as Error).message}`)
+    throw logoutFailed()
+  }
   clearSessionCookies(c)
   return c.json({})
 })
@@ -132,7 +155,8 @@ platformAuth.get('/auth/v1/verify', async (c) => passOn(await callCore(c, 'GET',
 // Studio's reset screen sends the recovery access token as the bearer. Any other Studio access token (a stolen cookie)
 // also needs the current password. Only the password is passed on (no email, phone or metadata changes from here).
 // Core's new password ends every other session of the user and its one-time tokens, in the same transaction under
-// its per-user lock (S4): a stolen cookie or refresh token stops working with the reset.
+// its per-user lock (S4): a stolen cookie or refresh token stops working with the reset. The same write ends the
+// user's access tokens (migration 0006's trigger), so a token minted from a stolen cookie ends with it too.
 platformAuth.put('/auth/v1/user', async (c) => {
   const b = await c.req.json().catch(() => null)
   if (typeof b?.password !== 'string') throw new ApiError(400, 'validation_failed', 'password is required')
@@ -184,10 +208,18 @@ platformAuth.post('/access-tokens', async (c) => {
       throw new ApiError(400, 'validation_failed', 'expires_at must be a future ISO date')
   }
   const { token, hash } = newAccessToken()
-  const { id } = (await pool.query(
-    `insert into control.access_tokens (user_id, name, token_hash, expires_at) values ($1, $2, $3, $4) returning id`,
-    [c.get('user').id, name.trim(), hash, expiresAt],
-  )).rows[0]
+  // One transaction, in core's lock order: core's per-user lock (logout and session revokes take it), then the user's
+  // row FOR SHARE (a password write, whose trigger ends the tokens, cannot commit in between), then the cookie's
+  // session still live under both, then the insert. A logout or reset either sees this token, or this mint sees it.
+  const id = await tx(async (client) => {
+    await lockUser(client, c.get('user').id)
+    await client.query('select 1 from auth.users where id = $1 for share', [c.get('user').id])
+    if (!(await sessionLive(c.get('user').sessionId, client))) throw new ApiError(401, 'unauthorized', 'Unauthorized')
+    return (await client.query(
+      `insert into control.access_tokens (user_id, name, token_hash, expires_at) values ($1, $2, $3, $4) returning id`,
+      [c.get('user').id, name.trim(), hash, expiresAt],
+    )).rows[0].id as string
+  })
   // the only time the token is shown
   return c.json({ id, name: name.trim(), token }, 201)
 })

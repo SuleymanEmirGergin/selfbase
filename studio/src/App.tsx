@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ComponentType } from 'react'
-import { onSignedOut, platform } from './api.ts'
+import { errMsg, onSignedOut, platform } from './api.ts'
 import type { Me, OrgRef } from './api.ts'
 import { Link, navigate, usePath } from './router.tsx'
 import { Dots, Icon } from './ui.tsx'
-import { ConfirmHost, Loading, ToastHost, flushUndo } from './ui.tsx'
+import { ConfirmHost, Loading, ToastHost, flushUndo, toast } from './ui.tsx'
 import { Shell } from './shell.tsx'
 import { useLoad } from './org/common.tsx'
 import { nf, t, upper, useLocale } from './i18n/index.ts'
@@ -144,7 +144,14 @@ export default function App() {
     leaving.current = true
     // a delete still in its undo window, or already sent, must be answered before logout ends its session
     await Promise.race([flushUndo(), new Promise((r) => setTimeout(r, 3000))])
-    await platform.logout().catch(() => {})
+    // a refused logout leaves the session working: the user must not believe they are signed out
+    try {
+      await platform.logout()
+    } catch (e) {
+      toast(errMsg(e), 'error')
+      leaving.current = false
+      return
+    }
     // An explicit sign-out keeps no `next`: the next account must not land on this one's page. Replacing the URL
     // without emitting keeps the redirect effect from adding it back; the render below reads the new path.
     history.replaceState(null, '', '/sign-in')

@@ -3,6 +3,7 @@ import { createServer } from 'node:http'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { pool } from '../src/db.ts'
+import { config } from '../src/config.ts'
 import { startNetQueue, stopNetQueue } from '../src/netqueue/index.ts'
 import { rewriteUrl } from '../src/netqueue/worker.ts'
 
@@ -121,6 +122,23 @@ describe('netqueue', () => {
       // the allow-listed address is reached
       expect(await settled(await post(`${local.url}/ok`))).toMatchObject({ status: 'done' })
       expect(local.hits.map((h) => h.url)).toEqual(['/ok'])
+    } finally {
+      await new Promise((r) => local.srv.close(r))
+    }
+  })
+
+  it('a kept-alive connection does not outlive the allow-list: a host taken off it is blocked on the next request', async () => {
+    const local = await fake(200)
+    const url = `http://localhost:${new URL(local.url).port}`
+    try {
+      config.netAllowHosts.add('localhost')
+      try {
+        expect(await settled(await post(`${url}/allowed`))).toMatchObject({ status: 'done' })
+      } finally {
+        config.netAllowHosts.delete('localhost')
+      }
+      expect(await settled(await post(`${url}/again`))).toMatchObject({ status: 'blocked', attempts: 0 })
+      expect(local.hits.map((h) => h.url)).toEqual(['/allowed'])
     } finally {
       await new Promise((r) => local.srv.close(r))
     }

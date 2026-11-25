@@ -9,15 +9,20 @@ import { request as httpsRequest } from 'node:https'
 import { BlockList, isIP, type LookupFunction } from 'node:net'
 import { networkInterfaces } from 'node:os'
 
-export class Blocked extends Error {}
+// the code is what a failure log line shows (auth/mail.ts logs only err.code)
+export class Blocked extends Error {
+  code = 'EBLOCKED'
+}
 
 // loopback, RFC 1918, CGNAT, link-local (cloud metadata), benchmarking, multicast and reserved
 const BLOCKED = new BlockList()
 for (const [a, p] of [['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16],
   ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15], ['224.0.0.0', 3]] as const) BLOCKED.addSubnet(a, p, 'ipv4')
-// ::/96 holds :: and ::1; NAT64 and 6to4 can carry any IPv4 address; ULA, link-local, multicast. No ::ffff:0:0/96:
-// BlockList checks an IPv4-mapped address against the IPv4 rules itself, and that rule would match every IPv4 address
-for (const [a, p] of [['::', 96], ['64:ff9b::', 96], ['2002::', 16], ['fc00::', 7], ['fe80::', 10], ['ff00::', 8]] as const) {
+// ::/96 holds :: and ::1; NAT64 (well-known and local-use), 6to4 and Teredo can carry any IPv4 address; ULA, site-local,
+// link-local, multicast. No ::ffff:0:0/96: BlockList checks an IPv4-mapped address against the IPv4 rules itself, and
+// that rule would match every IPv4 address
+for (const [a, p] of [['::', 96], ['64:ff9b::', 96], ['64:ff9b:1::', 48], ['2001::', 32], ['2002::', 16], ['fc00::', 7],
+  ['fec0::', 10], ['fe80::', 10], ['ff00::', 8]] as const) {
   BLOCKED.addSubnet(a, p, 'ipv6')
 }
 // the container's own networks (the project's /27 and the proxy network, so their gateways too), whatever range
@@ -63,8 +68,9 @@ export function guardedRequest(target: string, init: { method?: string; headers?
   // a literal address is never looked up: check it here
   if (isIP(host) && !allow.has(host) && isBlocked(host)) return Promise.reject(new Blocked(`blocked: ${host} is a private address`))
   return new Promise((resolve_, reject) => {
+    // agent: false: a pooled keep-alive socket is keyed by host:port, so reusing one would skip the lookup and with it the guard
     const req = (u.protocol === 'https:' ? httpsRequest : httpRequest)(u, { method: init.method ?? 'GET', headers: init.headers,
-      signal: AbortSignal.timeout(init.timeoutMs ?? 5000), lookup: guardedLookup(allow, resolve) }, (res) => {
+      signal: AbortSignal.timeout(init.timeoutMs ?? 5000), lookup: guardedLookup(allow, resolve), agent: false }, (res) => {
       const chunks: Buffer[] = []
       let size = 0
       res.on('data', (c: Buffer) => {
