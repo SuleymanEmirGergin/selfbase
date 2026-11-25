@@ -23,9 +23,11 @@ router.post('/otp', async (c) => {
   const body = await readBody(c)
   const email = checkEmail(body.email)
   let user = await findByEmail(email)
+  // GoTrue sends a new address (create_user) and an unconfirmed user (always) through signup, which closed signups refuse
+  if (config.authDisableSignup && (user ? !user.email_confirmed_at : body.create_user !== false))
+    throw authError(422, 'signup_disabled', 'Signups not allowed for this instance')
   // supabase-js defaults create_user to true; the new user is confirmed by the magic link
   if (!user && body.create_user !== false) {
-    if (config.authDisableSignup) throw authError(422, 'signup_disabled', 'Signups not allowed for this instance')
     const data = body.data && typeof body.data === 'object' ? body.data : {}
     user = await createUser({ email, user_metadata: data, provider: 'email' }).catch((err) => {
       if (err.code === '23505') return findByEmail(email)

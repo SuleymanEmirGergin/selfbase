@@ -320,6 +320,31 @@ describe('limits and health', () => {
     expect((await pool.query('select 1 from auth.users where email = $1', [email])).rowCount).toBe(0)
   })
 
+  it('AUTH_DISABLE_SIGNUP refuses /otp for an unconfirmed user whatever create_user says, and sends no mail (GoTrue)', async () => {
+    const saved = config.authDisableSignup
+    config.authDisableSignup = true
+    const otp = (body: object) => app.request('/auth/v1/otp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    const mailsTo = async (to: string) => (await pool.query('select count(*)::int as n from selfbase.mail_log where to_email = $1', [to])).rows[0].n
+    const unconfirmed = `unconf-${randomUUID()}@example.test`
+    const confirmed = `conf-${randomUUID()}@example.test`
+    await pool.query(`insert into auth.users (id, email) values (gen_random_uuid(), $1)`, [unconfirmed])
+    await pool.query(`insert into auth.users (id, email, email_confirmed_at) values (gen_random_uuid(), $1, now())`, [confirmed])
+    try {
+      for (const body of [{ email: unconfirmed }, { email: unconfirmed, create_user: true }, { email: unconfirmed, create_user: false }]) {
+        const res = await otp(body)
+        expect(res.status, JSON.stringify(body)).toBe(422)
+        expect(await res.json()).toEqual({ code: 422, error_code: 'signup_disabled', msg: 'Signups not allowed for this instance' })
+      }
+      expect((await otp({ email: confirmed, create_user: false })).status).toBe(200)
+      for (let i = 0; i < 100 && !(await mailsTo(confirmed)); i++) await sleep(20) // sent in the background
+      expect(await mailsTo(confirmed)).toBe(1)
+      expect(await mailsTo(unconfirmed)).toBe(0)
+      expect((await pool.query('select email_confirmed_at from auth.users where email = $1', [unconfirmed])).rows[0].email_confirmed_at).toBeNull()
+    } finally {
+      config.authDisableSignup = saved
+    }
+  })
+
   it('/health is 503 when the database does not answer', async () => {
     expect((await app.request('/health')).status).toBe(200)
     const spy = vi.spyOn(pool, 'query').mockRejectedValueOnce(new Error('down') as never)
