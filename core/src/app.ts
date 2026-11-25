@@ -34,7 +34,8 @@ app.get('/health', async (c) => {
 })
 
 // core's own JSON routes read whole bodies; uploads (storage, admin files) have their own STORAGE_MAX_UPLOAD_BYTES limit
-const jsonLimit = bodyLimit({ maxSize: 1024 * 1024, onError: (c) => c.json({ error: 'request body too large' }, 413) })
+const tooLarge = (c: Context) => c.json({ error: 'request body too large' }, 413)
+const jsonLimit = bodyLimit({ maxSize: 1024 * 1024, onError: tooLarge })
 app.use('/auth/v1/*', jsonLimit)
 
 app.route('/auth/v1', authRouter)
@@ -46,13 +47,27 @@ app.route('/realtime/v1', realtimeRouter)
 const SPOOFABLE = ['x-forwarded-for', 'x-real-ip', 'cf-connecting-ip', 'true-client-ip', 'forwarded']
 const IP_HEADERS = ['x-forwarded-for', 'x-real-ip', 'cf-connecting-ip']
 
+// shortcut: one fixed cap for every project's REST and function bodies; make it a per-project setting if one needs more
+const FORWARD_MAX = 20 * 1024 * 1024
+
 /** Forwards the request to target with the mount prefix stripped from the path. */
 const forward = (target: () => string, prefix: string) => async (c: Context) => {
   const url = new URL(c.req.url)
   const ip = clientIp(c)
+  if (Number(c.req.header('content-length')) > FORWARD_MAX) return tooLarge(c)
+  // a body without a declared length (chunked) is counted as it streams through, never buffered
+  let size = 0
+  const body = c.req.raw.body?.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, ctl) {
+      size += chunk.length
+      if (size > FORWARD_MAX) ctl.error(new Error('request body too large'))
+      else ctl.enqueue(chunk)
+    },
+  }))
   try {
     return await proxy(target() + (url.pathname.slice(prefix.length) || '/') + url.search, {
       raw: c.req.raw,
+      ...(body ? { body, duplex: 'half' } : {}),
       customFetch: (req) => {
         for (const h of SPOOFABLE) req.headers.delete(h)
         for (const h of IP_HEADERS) req.headers.set(h, ip)
@@ -62,7 +77,7 @@ const forward = (target: () => string, prefix: string) => async (c: Context) => 
       },
     })
   } catch {
-    return c.json({ error: 'upstream_unavailable' }, 502)
+    return size > FORWARD_MAX ? tooLarge(c) : c.json({ error: 'upstream_unavailable' }, 502)
   }
 }
 app.all('/rest/v1/*', forward(() => config.pgrstUrl, '/rest/v1'))
@@ -77,7 +92,7 @@ app.all('/functions/v1/*', async (c, next) => {
 
 // Admin API on its own listener (server.ts, ADMIN_PORT): the project network only, never the proxy (AC-5).
 export const adminApp = new Hono()
-// 403 is only admin_forbidden: a peer outside the /27; a line each would let a neighbour fill the log store
+// 403 is only admin_forbidden: a peer outside PROJECT_SUBNET (the ctl /29); a line each would let a neighbour fill the log store
 adminApp.use('*', requestLog('core-admin', [403]))
 adminApp.use('/admin/*', async (c, next) => (/^\/admin\/files\//.test(c.req.path) ? next() : jsonLimit(c, next)))
 adminApp.route('/admin', adminRouter)

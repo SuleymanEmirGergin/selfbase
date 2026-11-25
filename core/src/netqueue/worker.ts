@@ -24,7 +24,8 @@ function sendOnce(target: string, method: string, headers: OutgoingHttpHeaders, 
   // fetch refused these too; http.request would send them as Basic credentials
   if (u.username || u.password) return Promise.reject(new Blocked('blocked: credentials in the URL are not sent'))
   return new Promise((resolve, reject) => {
-    const req = (u.protocol === 'https:' ? httpsRequest : httpRequest)(u, { method, headers, signal: AbortSignal.timeout(5000),
+    // agent: false: a pooled keep-alive socket is keyed by host:port, so reusing one would skip the lookup and with it the guard
+    const req = (u.protocol === 'https:' ? httpsRequest : httpRequest)(u, { method, headers, signal: AbortSignal.timeout(5000), agent: false,
       ...(checked ? { lookup: guardedLookup(config.netAllowHosts) } : {}) }, (res) => {
       res.resume()
       resolve(res.statusCode ?? 0)

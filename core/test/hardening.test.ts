@@ -238,6 +238,53 @@ describe('limits and health', () => {
     expect(upload.status).toBeLessThan(500)
   })
 
+  it('the storage JSON routes refuse bodies over 1 MiB with the storage 413', async () => {
+    const big = JSON.stringify({ expiresIn: 60, prefixes: ['x'], prefix: 'x'.repeat(1024 * 1024) })
+    const headers = { apikey: anonKey, authorization: `Bearer ${serviceKey}`, 'content-type': 'application/json' }
+    for (const [method, path] of [['POST', '/storage/v1/object/sign/no-bucket/x.txt'], ['POST', '/storage/v1/object/list/no-bucket'],
+      ['DELETE', '/storage/v1/object/no-bucket']]) {
+      const res = await app.request(path, { method, headers, body: big })
+      expect(res.status, `${method} ${path}`).toBe(413)
+      expect(await res.json()).toEqual({ statusCode: '413', error: 'Payload too large', message: 'The object exceeded the maximum allowed size' })
+    }
+  })
+
+  it('the /rest/v1 and /functions/v1 forwards refuse bodies over 20 MiB, declared or chunked', async () => {
+    const cap = 20 * 1024 * 1024
+    // an upstream that reads the whole body before it answers, as PostgREST and the functions do
+    const up = createServer((req, res) => {
+      req.on('error', () => {}) // core aborts an over-cap chunked body mid-stream
+      req.resume().on('end', () => res.end('ok'))
+    })
+    await new Promise<void>((r) => up.listen(0, '127.0.0.1', r))
+    const saved = { rest: config.pgrstUrl, fn: config.fnUrl }
+    config.pgrstUrl = config.fnUrl = `http://127.0.0.1:${(up.address() as { port: number }).port}`
+    const chunked = (n: number) => new ReadableStream<Uint8Array>({
+      pull(ctl) {
+        const k = Math.min(n, 1024 * 1024)
+        if (!k) return ctl.close()
+        n -= k
+        ctl.enqueue(new Uint8Array(k))
+      },
+    })
+    const send = (path: string, body: BodyInit, headers: Record<string, string> = {}) =>
+      app.request(path, { method: 'POST', headers, body, duplex: 'half' } as RequestInit)
+    try {
+      for (const path of ['/rest/v1/items', '/functions/v1/hello']) {
+        const declared = await send(path, new Uint8Array(cap + 1), { 'content-length': String(cap + 1) })
+        expect(declared.status, `${path} declared`).toBe(413)
+        expect(await declared.json()).toEqual({ error: 'request body too large' })
+        const streamed = await send(path, chunked(cap + 1))
+        expect(streamed.status, `${path} chunked`).toBe(413)
+        expect(await streamed.json()).toEqual({ error: 'request body too large' })
+        expect((await send(path, chunked(cap))).status, `${path} at the cap`).toBe(200)
+      }
+    } finally {
+      Object.assign(config, { pgrstUrl: saved.rest, fnUrl: saved.fn })
+      await new Promise((r) => up.close(r))
+    }
+  })
+
   it('AUTH_DISABLE_SIGNUP answers 422 signup_disabled and creates no user', async () => {
     const saved = config.authDisableSignup
     config.authDisableSignup = true
@@ -252,6 +299,50 @@ describe('limits and health', () => {
       config.authDisableSignup = saved
     }
     expect((await pool.query('select 1 from auth.users where email = $1', [email])).rowCount).toBe(0)
+  })
+
+  it('AUTH_DISABLE_SIGNUP also refuses /otp creating a new user; a known address still gets its link', async () => {
+    const saved = config.authDisableSignup
+    config.authDisableSignup = true
+    const otp = (body: object) => app.request('/auth/v1/otp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    const email = `nootp-${randomUUID()}@example.test`
+    const known = `known-${randomUUID()}@example.test`
+    await pool.query(`insert into auth.users (id, email, email_confirmed_at) values (gen_random_uuid(), $1, now())`, [known])
+    try {
+      const res = await otp({ email })
+      expect(res.status).toBe(422)
+      expect(await res.json()).toEqual({ code: 422, error_code: 'signup_disabled', msg: 'Signups not allowed for this instance' })
+      expect((await otp({ email, create_user: false })).status).toBe(200)
+      expect((await otp({ email: known })).status).toBe(200)
+    } finally {
+      config.authDisableSignup = saved
+    }
+    expect((await pool.query('select 1 from auth.users where email = $1', [email])).rowCount).toBe(0)
+  })
+
+  it('AUTH_DISABLE_SIGNUP refuses /otp for an unconfirmed user whatever create_user says, and sends no mail (GoTrue)', async () => {
+    const saved = config.authDisableSignup
+    config.authDisableSignup = true
+    const otp = (body: object) => app.request('/auth/v1/otp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    const mailsTo = async (to: string) => (await pool.query('select count(*)::int as n from selfbase.mail_log where to_email = $1', [to])).rows[0].n
+    const unconfirmed = `unconf-${randomUUID()}@example.test`
+    const confirmed = `conf-${randomUUID()}@example.test`
+    await pool.query(`insert into auth.users (id, email) values (gen_random_uuid(), $1)`, [unconfirmed])
+    await pool.query(`insert into auth.users (id, email, email_confirmed_at) values (gen_random_uuid(), $1, now())`, [confirmed])
+    try {
+      for (const body of [{ email: unconfirmed }, { email: unconfirmed, create_user: true }, { email: unconfirmed, create_user: false }]) {
+        const res = await otp(body)
+        expect(res.status, JSON.stringify(body)).toBe(422)
+        expect(await res.json()).toEqual({ code: 422, error_code: 'signup_disabled', msg: 'Signups not allowed for this instance' })
+      }
+      expect((await otp({ email: confirmed, create_user: false })).status).toBe(200)
+      for (let i = 0; i < 100 && !(await mailsTo(confirmed)); i++) await sleep(20) // sent in the background
+      expect(await mailsTo(confirmed)).toBe(1)
+      expect(await mailsTo(unconfirmed)).toBe(0)
+      expect((await pool.query('select email_confirmed_at from auth.users where email = $1', [unconfirmed])).rows[0].email_confirmed_at).toBeNull()
+    } finally {
+      config.authDisableSignup = saved
+    }
   })
 
   it('/health is 503 when the database does not answer', async () => {
@@ -277,6 +368,41 @@ describe('config and mail', () => {
       process.env.AUTH_CONFIRM_EMAIL = saved
       vi.resetModules()
     }
+  })
+
+  // every numeric setting: [name, lowest accepted value, highest]; 0 only where it means something (a limit off, strict reuse)
+  const NUMERIC: [string, number, number][] = [
+    ['PORT', 1, 65535], ['ADMIN_PORT', 1, 65535], ['DB_PORT', 1, 65535], ['SMTP_PORT', 1, 65535],
+    ['AUTH_MIN_PASSWORD', 1, Number.MAX_SAFE_INTEGER], ['AUTH_OTP_EXPIRY', 1, Number.MAX_SAFE_INTEGER],
+    ['AUTH_EMAIL_INTERVAL', 1, Number.MAX_SAFE_INTEGER], ['AUTH_REFRESH_REUSE_INTERVAL', 0, Number.MAX_SAFE_INTEGER],
+    ['AUTH_RATE_LIMIT_SIGN_IN', 0, Number.MAX_SAFE_INTEGER], ['AUTH_RATE_LIMIT_VERIFY', 0, Number.MAX_SAFE_INTEGER],
+    ['AUTH_RATE_LIMIT_REFRESH', 0, Number.MAX_SAFE_INTEGER], ['AUTH_RATE_LIMIT_EMAIL', 0, Number.MAX_SAFE_INTEGER],
+    ['STORAGE_MAX_UPLOAD_BYTES', 1, Number.MAX_SAFE_INTEGER],
+  ]
+  /** Loads config.ts with name=value; restores the environment after. */
+  async function loadWith(name: string, value: string) {
+    const saved = process.env[name]
+    process.env[name] = value
+    vi.resetModules()
+    try {
+      return await import('../src/config.ts')
+    } finally {
+      if (saved === undefined) delete process.env[name]
+      else process.env[name] = saved
+      vi.resetModules()
+    }
+  }
+
+  it('a numeric setting must be a whole number within its range, or startup stops', async () => {
+    for (const [name, min, max] of NUMERIC) {
+      const bad = [' ', '\t', '1.5', '0x10', '1e3', '-1', 'Infinity', '+5', '5 ', String(min - 1),
+        max < Number.MAX_SAFE_INTEGER ? String(max + 1) : '9007199254740993']
+      for (const v of bad) await expect(loadWith(name, v), `${name}=${JSON.stringify(v)}`).rejects.toThrow(`${name} must be a whole number`)
+      for (const v of [String(min), String(Math.min(max, 4096))]) await expect(loadWith(name, v), `${name}=${v}`).resolves.toBeTruthy()
+    }
+    // empty means unset (compose passes an unset value as empty): the default
+    expect((await loadWith('SMTP_PORT', '')).config.smtp.port).toBe(587)
+    expect((await loadWith('STORAGE_MAX_UPLOAD_BYTES', '')).config.storageMaxUploadBytes).toBe(50 * 1024 * 1024)
   })
 
   it('SMTP requires STARTTLS except on the implicit-TLS port 465', () => {

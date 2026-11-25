@@ -1,6 +1,7 @@
 // R2 (wave 1 runtime I1): core's outbound calls (Google OAuth, SMTP, net.http_*) go through one guard. A stub resolver
 // stands in for DNS, so nothing here depends on the network.
-import { describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { createServer, type Server } from 'node:http'
 import { networkInterfaces } from 'node:os'
 import { Blocked, guardedRequest, isBlocked, resolveChecked, type Resolver } from '../src/netguard.ts'
 
@@ -29,6 +30,14 @@ describe('outbound guard', () => {
     for (const i of own) expect(isBlocked(i!.address), i!.address).toBe(true)
   })
 
+  it('refuses site-local, local-use NAT64 and Teredo IPv6, and a refusal carries the code EBLOCKED', async () => {
+    for (const host of ['[fec0::1]', '[64:ff9b:1::a00:5]', '[2001::1]', '[2001:0:4136:e378:8000:63bf:3fff:fdd2]']) {
+      await expect(resolveChecked(host, new Set(), dns), host).rejects.toMatchObject({ code: 'EBLOCKED' })
+    }
+    // public IPv6 outside those ranges still passes
+    for (const a of ['2001:4860:4860::8888', '2001:db8::1', '2a00:1450::1']) expect(isBlocked(a), a).toBe(false)
+  })
+
   it('passes the default Google endpoints and a public SMTP host', async () => {
     expect((await resolveChecked('oauth2.googleapis.com', new Set(), dns)).map((a) => a.address)).toEqual(['203.0.113.10'])
     expect((await resolveChecked('openidconnect.googleapis.com', new Set(), dns)).length).toBe(2)
@@ -49,5 +58,46 @@ describe('outbound guard', () => {
     await expect(guardedRequest('http://metadata.example/latest', {}, new Set(), counting)).rejects.toBeInstanceOf(Blocked)
     await expect(guardedRequest('ftp://oauth2.googleapis.com/x', {}, new Set(), dns)).rejects.toBeInstanceOf(Blocked)
     await expect(guardedRequest('https://u:p@oauth2.googleapis.com/x', {}, new Set(), dns)).rejects.toBeInstanceOf(Blocked)
+  })
+})
+
+describe('guarded sockets', () => {
+  let srv: Server
+  let port = 0
+  let hits = 0
+  beforeAll(async () => {
+    srv = createServer((req, res) => {
+      hits++
+      if (req.url === '/big') return void res.end(Buffer.alloc(1024 * 1024 + 1, 'a'))
+      if (req.url === '/slow') return // never answers
+      res.end('ok')
+    })
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r))
+    port = (srv.address() as { port: number }).port
+  })
+  afterAll(() => new Promise<void>((r) => {
+    srv.closeAllConnections()
+    srv.close(() => r())
+  }))
+
+  it('a name connects through guardedLookup to the address it checked (no system DNS knows svc.test)', async () => {
+    const reply = await guardedRequest(`http://svc.test:${port}/`, {}, new Set(['svc.test']), stub({ 'svc.test': ['127.0.0.1'] }))
+    expect(reply).toEqual({ status: 200, body: 'ok' })
+  })
+
+  it('a kept-alive socket is not reused past the guard: allowed once, then refused with an empty allow-list', async () => {
+    const r = stub({ 'again.test': ['127.0.0.1'] })
+    expect((await guardedRequest(`http://again.test:${port}/`, {}, new Set(['again.test']), r)).status).toBe(200)
+    const before = hits
+    await expect(guardedRequest(`http://again.test:${port}/`, {}, new Set(), r)).rejects.toBeInstanceOf(Blocked)
+    expect(hits).toBe(before)
+  })
+
+  it('reads a reply up to 1 MiB and gives up after timeoutMs', async () => {
+    const allow = new Set(['127.0.0.1'])
+    await expect(guardedRequest(`http://127.0.0.1:${port}/big`, {}, allow)).rejects.toThrow('response larger than 1 MiB')
+    const t0 = Date.now()
+    await expect(guardedRequest(`http://127.0.0.1:${port}/slow`, { timeoutMs: 200 }, allow)).rejects.toMatchObject({ name: 'AbortError' })
+    expect(Date.now() - t0).toBeLessThan(2000)
   })
 })

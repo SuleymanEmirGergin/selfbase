@@ -525,6 +525,23 @@ describe('google oauth', () => {
     expect(loc.href).not.toContain(GOOGLE_SECRET)
   })
 
+  it('authorize on another host goes to PUBLIC_URL first, and the flow completes there', async () => {
+    useFakeGoogle()
+    const qs = `provider=google&redirect_to=${encodeURIComponent('http://localhost:5173/after')}`
+    const hop = await app.request(`http://legacy.example.test/auth/v1/authorize?${qs}`)
+    expect(hop.status).toBe(302)
+    expect(hop.headers.get('location')).toBe(`${config.publicUrl}/auth/v1/authorize?${qs}`)
+    expect(hop.headers.get('set-cookie')).toBeNull() // no nonce on a host the callback never reaches
+    const e = email()
+    googleUser = { sub: String(randomInt(1e9, 9e9)), email: e, email_verified: true }
+    const start = await app.request(hop.headers.get('location')!)
+    expect(start.status).toBe(302)
+    const state = new URL(start.headers.get('location')!).searchParams.get('state')!
+    const res = await callback(`code=x&state=${encodeURIComponent(state)}`, start.headers.get('set-cookie')!.split(';')[0])
+    expect(res.status).toBe(302)
+    expect((await verify(fragment(res).get('access_token')!)).email).toBe(e)
+  })
+
   it('unsupported or unconfigured provider is 400', async () => {
     expect((await app.request('/auth/v1/authorize?provider=github')).status).toBe(400)
     config.google = { ...config.google, clientId: '' }
@@ -574,6 +591,27 @@ describe('google oauth', () => {
     expect(user.email_confirmed_at).toBeTruthy()
     expect(user.encrypted_password).toBeNull()
     expect(user.raw_app_meta_data.providers).toEqual(['email', 'google'])
+  })
+
+  it('AUTH_DISABLE_SIGNUP refuses a first Google login that would create a user; a known email user is still linked', async () => {
+    useFakeGoogle()
+    config.authDisableSignup = true
+    try {
+      const e = email()
+      googleUser = { sub: String(randomInt(1e9, 9e9)), email: e, email_verified: true }
+      const res = await googleLogin()
+      expect(res.status).toBe(302)
+      expect(Object.fromEntries(fragment(res))).toMatchObject({ error: 'access_denied', error_code: 'signup_disabled',
+        error_description: 'Signups not allowed for this instance' })
+      expect((await pool.query('select 1 from auth.users where email = $1', [e])).rowCount).toBe(0)
+      config.authDisableSignup = false
+      const s = await session()
+      config.authDisableSignup = true
+      googleUser = { sub: String(randomInt(1e9, 9e9)), email: s.user.email, email_verified: true }
+      expect((await verify(fragment(await googleLogin()).get('access_token')!)).sub).toBe(s.user.id)
+    } finally {
+      config.authDisableSignup = false
+    }
   })
 
   it('unverified Google email is refused', async () => {
