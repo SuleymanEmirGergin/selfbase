@@ -8,8 +8,9 @@ export type Config = ReturnType<typeof loadConfig>
 
 // organization slugs as platform-orgs.ts makes them
 const SLUG_RE = /^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$/
-// the last label is never all digits: no TLD is, so an IP literal (203.0.113.5) is refused
-export const HOSTNAME_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+(?![0-9]+$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
+// The last label is never a number, decimal or 0x hex: that is exactly when the WHATWG URL parser reads a name as
+// IPv4 (203.0.113.5, 0x7f.0x1) or refuses it (a.0x7f). No TLD looks like one.
+export const HOSTNAME_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+(?!([0-9]+|0x[0-9a-f]*)$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
 // BASE_DOMAIN and TEST_HOST: a hostname, or localhost itself for a local install (REHBER, test/e2e)
 const serverHost = (h: string) => h === 'localhost' || HOSTNAME_RE.test(h)
 const LABELS_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/

@@ -41,7 +41,10 @@ it('I3: the retention settings are whole numbers (a fraction would break make_in
 it('BASE_DOMAIN and TEST_HOST must be hostnames, and no IP literal is one', () => {
   for (const bad of ['example .test', 'https://example.test', 'example.test/', 'EXAMPLE.test', '203.0.113.5', 'single'])
     expect(() => loadConfig({ ...plain, BASE_DOMAIN: bad }), bad).toThrow(/BASE_DOMAIN/)
-  for (const bad of ['sb test.example.test', 'sb-test.example.test:443', '203.0.113.5'])
+  // the WHATWG URL parser reads a name whose last label is a number (decimal or 0x hex) as IPv4
+  for (const bad of ['0x7f.0x1', 'a.0x7f', 'a.0x', 'a.0x7F'])
+    expect(() => loadConfig({ ...plain, BASE_DOMAIN: bad }), bad).toThrow(/BASE_DOMAIN/)
+  for (const bad of ['sb test.example.test', 'sb-test.example.test:443', '203.0.113.5', '0x7f.0x1'])
     expect(() => loadConfig({ ...plain, TEST_HOST: bad }), bad).toThrow(/TEST_HOST/)
   expect(() => loadConfig({ ...plain, LEGACY_HOSTNAMES: '203.0.113.5' })).toThrow(/LEGACY_HOSTNAMES/)
   expect(loadConfig({ ...plain, BASE_DOMAIN: '203.0.113.5.sslip.io' }).testHost).toBe('sb-test.203.0.113.5.sslip.io')
@@ -51,4 +54,15 @@ it('BASE_DOMAIN and TEST_HOST must be hostnames, and no IP literal is one', () =
   expect(loadConfig({ ...plain, BASE_DOMAIN: 'localhost', TEST_HOST: 'localhost' }).testHost).toBe('localhost')
   for (const bare of ['single', 'local', 'localhost.'])
     expect(() => loadConfig({ ...plain, BASE_DOMAIN: bare }), bare).toThrow(/BASE_DOMAIN/)
+})
+
+// the self-check behind HOSTNAME_RE's last-label rule: it refuses every name the URL parser takes for IPv4 or refuses
+it('HOSTNAME_RE agrees with the WHATWG URL parser on numeric last labels', async () => {
+  const { HOSTNAME_RE } = await import('../src/config.ts')
+  const names = ['0x7f.0x1', 'a.0x7f', 'a.0x', 'a.0x7f.com', 'a.b.123', '1.2.3.4', 'a.0x7g', 'x0.a1', 'a.123x', 'a.08', 'a.0', 'api.example.com']
+  for (const h of names) {
+    let ip = true
+    try { ip = /^[0-9.]+$/.test(new URL(`http://${h}/`).hostname) } catch { /* refused by URL: not a hostname either */ }
+    expect(HOSTNAME_RE.test(h), h).toBe(!ip)
+  }
 })
