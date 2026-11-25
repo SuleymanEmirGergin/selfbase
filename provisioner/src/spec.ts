@@ -249,9 +249,11 @@ export function buildProject(input: EnsureInput, tpl: Template, sizes: Sizes, no
     return seal(name, service, body, service === 'core' ? [net, ctl, node.proxyNetwork] : EGRESS.has(service) ? [net, egress] : [net])
   })
 
-  // each gateway is pinned to its range's first address (with IPRange set Docker would take the range's first)
+  // each gateway is pinned to its range's first address (with IPRange set Docker would take the range's first).
+  // IPv6 off whatever the daemon's default network options say: ISOLATED covers IPv4 only, and an IPv6 gateway would
+  // reach the host's services
   const network = (name: string, at: number, prefix: number, range: string | null, internal: boolean) => ({ name, body: {
-    Name: name, Driver: 'bridge', ...(internal ? ISOLATED : {}),
+    Name: name, Driver: 'bridge', EnableIPv6: false, ...(internal ? ISOLATED : {}),
     IPAM: { Driver: 'default', Config: [{ Subnet: `${dotted(sub.base + at)}/${prefix}`, ...(range ? { IPRange: range } : {}), Gateway: dotted(sub.base + at + 1) }] },
     Labels: { 'selfbase.managed': 'true', 'selfbase.project': ref } } })
   return {

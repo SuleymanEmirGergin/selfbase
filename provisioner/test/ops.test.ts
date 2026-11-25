@@ -424,6 +424,31 @@ test('F: labelled networks without the isolation this engine has are made again 
     assert.deepEqual(ids(), made)
   })
 
+test('M-2: labelled networks with IPv6 on are made again with it off, once; volumes and data stay', async () => {
+  assert.equal((await api('DELETE', `/projects/${REF}?volumes=true`)).status, 200)
+  const net = `sb-${REF}`
+  const labels = ['--label', 'selfbase.managed=true', '--label', `selfbase.project=${REF}`]
+  // right in every other way (subnets, labels, the isolation this engine has): only IPv6 is on, as daemon defaults can make it
+  const iso = ISOLATES ? ['--internal', '-o', 'com.docker.network.bridge.gateway_mode_ipv4=isolated'] : []
+  docker('network', 'create', '--ipv6', '--subnet', '10.207.250.0/28', '--ip-range', '10.207.250.8/29', '--gateway', '10.207.250.1',
+    '--subnet', 'fdb0:fb0b:250::/64', ...iso, ...labels, net)
+  docker('network', 'create', '--ipv6', '--subnet', '10.207.250.16/29', '--ip-range', '10.207.250.20/30', '--gateway', '10.207.250.17',
+    '--subnet', 'fdb0:fb0b:251::/64', ...iso, ...labels, `${net}-ctl`)
+  docker('volume', 'create', `sb-${REF}-pgdata`)
+  docker('run', '--rm', '-v', `sb-${REF}-pgdata:/d`, IMAGE, 'sh', '-c', 'echo kept > /d/data-marker')
+  docker('run', '-d', '--init', '--name', `sb-${REF}-db`, '--network', net, '--ip', '10.207.250.2', '-v', `sb-${REF}-pgdata:/data`, IMAGE)
+  const r = await api('POST', `/projects/${REF}/ensure`, input())
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+  const v6 = (n: string) => docker('network', 'inspect', '-f', '{{.EnableIPv6}}', n)
+  assert.deepEqual([v6(net), v6(`${net}-ctl`)], ['false', 'false'])
+  assert.equal(ipam(net), `10.207.250.0/28 10.207.250.8/29 10.207.250.1 ${ISOLATES}`)
+  assert.equal(r.body.controlAttached, true)
+  assert.equal(tryDocker('run', '--rm', '-v', `sb-${REF}-pgdata:/d`, IMAGE, 'cat', '/d/data-marker'), 'kept')
+  const made = ids()
+  assert.equal((await api('POST', `/projects/${REF}/ensure`, input())).status, 200)
+  assert.deepEqual(ids(), made)
+})
+
 test('F: a network ensure adopts as it is (labels, subnet, isolation right) is refused while a foreign container is on it; a job is not foreign', async () => {
   assert.equal((await api('POST', `/projects/${REF}/ensure`, input())).status, 200)
   const net = `sb-${REF}`
