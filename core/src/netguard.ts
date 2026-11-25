@@ -63,8 +63,9 @@ export function guardedRequest(target: string, init: { method?: string; headers?
   // a literal address is never looked up: check it here
   if (isIP(host) && !allow.has(host) && isBlocked(host)) return Promise.reject(new Blocked(`blocked: ${host} is a private address`))
   return new Promise((resolve_, reject) => {
+    // agent: false: a pooled keep-alive socket is keyed by host:port and would skip the lookup, so the guard
     const req = (u.protocol === 'https:' ? httpsRequest : httpRequest)(u, { method: init.method ?? 'GET', headers: init.headers,
-      signal: AbortSignal.timeout(init.timeoutMs ?? 5000), lookup: guardedLookup(allow, resolve) }, (res) => {
+      signal: AbortSignal.timeout(init.timeoutMs ?? 5000), lookup: guardedLookup(allow, resolve), agent: false }, (res) => {
       const chunks: Buffer[] = []
       let size = 0
       res.on('data', (c: Buffer) => {
