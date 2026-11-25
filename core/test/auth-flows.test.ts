@@ -525,6 +525,23 @@ describe('google oauth', () => {
     expect(loc.href).not.toContain(GOOGLE_SECRET)
   })
 
+  it('authorize on another host goes to PUBLIC_URL first, and the flow completes there', async () => {
+    useFakeGoogle()
+    const qs = `provider=google&redirect_to=${encodeURIComponent('http://localhost:5173/after')}`
+    const hop = await app.request(`http://legacy.example.test/auth/v1/authorize?${qs}`)
+    expect(hop.status).toBe(302)
+    expect(hop.headers.get('location')).toBe(`${config.publicUrl}/auth/v1/authorize?${qs}`)
+    expect(hop.headers.get('set-cookie')).toBeNull() // no nonce on a host the callback never reaches
+    const e = email()
+    googleUser = { sub: String(randomInt(1e9, 9e9)), email: e, email_verified: true }
+    const start = await app.request(hop.headers.get('location')!)
+    expect(start.status).toBe(302)
+    const state = new URL(start.headers.get('location')!).searchParams.get('state')!
+    const res = await callback(`code=x&state=${encodeURIComponent(state)}`, start.headers.get('set-cookie')!.split(';')[0])
+    expect(res.status).toBe(302)
+    expect((await verify(fragment(res).get('access_token')!)).email).toBe(e)
+  })
+
   it('unsupported or unconfigured provider is 400', async () => {
     expect((await app.request('/auth/v1/authorize?provider=github')).status).toBe(400)
     config.google = { ...config.google, clientId: '' }

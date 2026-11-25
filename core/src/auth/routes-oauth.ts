@@ -25,6 +25,10 @@ const nonceCookie = () => {
 }
 
 router.get('/authorize', async (c) => {
+  // the nonce cookie is host-only and the callback is PUBLIC_URL's: a flow started on another host (legacy, custom)
+  // moves there first. Hostnames only: cookies do not separate ports.
+  const here = new URL(c.req.url)
+  if (here.hostname !== new URL(config.publicUrl).hostname) return c.redirect(`${config.publicUrl}/auth/v1/authorize${here.search}`, 302)
   if (c.req.query('provider') !== 'google' || !config.google.clientId)
     throw authError(400, 'validation_failed', 'Unsupported provider: provider is not enabled')
   const nonce = randomBytes(16).toString('base64url')
