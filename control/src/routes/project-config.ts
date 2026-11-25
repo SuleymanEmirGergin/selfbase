@@ -180,6 +180,12 @@ both('patch', PATH, 'v1-update-auth-service-config', async (c) => {
   if (google === true && givenId && !patch.GOOGLE_CLIENT_ID) throw noGoogleId()
   if (Object.keys(b).length) {
     await applyCore(c, p, async (tx) => {
+      // a delete purges secrets and config step by step: nothing may be written back behind it. Under the enqueue lock,
+      // so no delete is enqueued between this check and the commit
+      const busy = (await tx.query(`select status = 'REMOVED' or exists (select 1 from control.jobs where project_id = p.id
+          and type = 'project.delete' and status in ('pending', 'running')) as busy
+        from control.projects p where id = $1 for update`, [p.id])).rows[0]?.busy ?? true
+      if (busy) throw new ApiError(409, 'project_busy', 'this project is being deleted')
       const stored: Record<string, unknown> = (await tx.query(`select data from control.project_config
         where project_id = $1 and section = 'auth' for update`, [p.id])).rows[0]?.data ?? {}
       if (google === true && !givenId && !stored.GOOGLE_CLIENT_ID) throw noGoogleId()

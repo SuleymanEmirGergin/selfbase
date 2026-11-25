@@ -212,6 +212,24 @@ describe.each(MOUNTS)('%s/projects/:ref/config/auth', (mount) => {
     expect(await getSecrets(pool, q)).not.toHaveProperty('SMTP_PASS')
   })
 
+  test('I-3: during a delete a PATCH is 409 project_busy and leaves no secret or config on the removed project', async () => {
+    for (const status of ['pending', 'running']) {
+      const q = await project(acme.id)
+      await pool.query(`insert into control.jobs (type, project_id, lane, step, payload, status) values ('project.delete', $1, 'light', '2', '{}', $2)`,
+        [q.id, status])
+      // the delete's secrets step has run
+      await pool.query(`delete from control.project_secrets where project_id = $1`, [q.id])
+      const res = await patch(owner.token, mount, q.ref, { smtp_host: 'smtp.example.test', smtp_pass: 'test-pass-delete' })
+      expect(res.status, status).toBe(409)
+      expect((await res.json()).error).toBe('project_busy')
+      await pool.query(`update control.projects set status = 'REMOVED' where id = $1`, [q.id])
+      await pool.query(`update control.jobs set status = 'succeeded' where project_id = $1`, [q.id])
+      expect((await pool.query(`select name from control.project_secrets where project_id = $1`, [q.id])).rows).toEqual([])
+      expect((await pool.query(`select section from control.project_config where project_id = $1`, [q.id])).rows).toEqual([])
+      expect(await applies(q.id)).toEqual([])
+    }
+  })
+
   test('a field we do not store: 400 not_supported naming it, nothing stored', async () => {
     for (const extra of [{ mfa_max_enrolled_factors: 3 }, { external_github_enabled: true }, { refresh_token_rotation_enabled: false }]) {
       const res = await patch(owner.token, mount, p.ref, { smtp_user: 'not-stored', ...extra })
