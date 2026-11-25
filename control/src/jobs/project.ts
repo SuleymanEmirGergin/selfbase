@@ -302,7 +302,13 @@ defineJob('project.delete', 'light', [
     // legacy and custom names too: free for the org's other projects at once, for other orgs after the hold
     await releaseDomains(ctx.db, need(ctx).id)
   }),
-  step('secrets', (ctx) => ctx.db.query('delete from control.project_secrets where project_id = $1', [need(ctx).id])),
+  step('secrets', async (ctx) => {
+    await ctx.db.query('delete from control.project_secrets where project_id = $1', [need(ctx).id])
+    // the REMOVED row stays, so the cascade never fires: a project-scoped member would keep reaching the org (its
+    // member list), and an open invitation would still let someone in
+    await ctx.db.query('delete from control.memberships where project_id = $1', [need(ctx).id])
+    await ctx.db.query('delete from control.invitations where project_id = $1', [need(ctx).id])
+  }),
   step('removed', (ctx) => setStatus(ctx, 'REMOVED')),
 ], failTo('REMOVE_FAILED'))
 
