@@ -3,6 +3,7 @@
 // answers once both are stored (the job runs after). Secrets are write-only: never answered, logged or audited (the
 // audit row names body keys only).
 import { isIP } from 'node:net'
+import { isBlocked } from 'selfbase-core/src/netguard.ts'
 import { isJson } from '../audit.ts'
 import { HOSTNAME_RE } from '../config.ts'
 import { pool } from '../db.ts'
@@ -35,7 +36,10 @@ const FIELDS: Record<string, Field> = {
   mailer_otp_exp: int('AUTH_OTP_EXPIRY', 1, 2147483647),
   smtp_max_frequency: int('AUTH_EMAIL_INTERVAL', 1, 32767),
   security_refresh_token_reuse_interval: int('AUTH_REFRESH_REUSE_INTERVAL', 0, 2147483647),
-  smtp_host: { env: 'SMTP_HOST', type: 'string', check: (v) => HOSTNAME_RE.test(v) || isIP(v) !== 0, what: 'a lowercase hostname or an IP address' },
+  // an address core's outbound guard would refuse is refused here too, so the error shows at write time (a name is
+  // checked by core when it resolves it)
+  smtp_host: { env: 'SMTP_HOST', type: 'string', check: (v) => HOSTNAME_RE.test(v) || (isIP(v) !== 0 && !isBlocked(v)),
+    what: 'a lowercase hostname or a public IP address' },
   smtp_port: { env: 'SMTP_PORT', type: 'string', check: (v) => /^\d{1,5}$/.test(v) && +v >= 1 && +v <= 65535, what: 'a port from 1 to 65535, as a string' },
   smtp_user: { env: 'SMTP_USER', type: 'string' },
   smtp_admin_email: { env: 'SMTP_FROM', type: 'string', check: (v) => EMAIL_RE.test(v), what: 'an email address' },

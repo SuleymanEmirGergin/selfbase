@@ -231,6 +231,21 @@ describe.each(MOUNTS)('%s/projects/:ref/config/auth', (mount) => {
     }
   })
 
+  test('m-3: smtp_host as a loopback, private, link-local or metadata address is refused; a public one is not', async () => {
+    const q = await project(acme.id)
+    for (const ip of ['127.0.0.1', '::1', '169.254.169.254', '10.0.0.5', '172.16.0.1', '192.168.1.10', '100.64.0.1', '0.0.0.0',
+      '::ffff:127.0.0.1', 'fe80::1', 'fc00::1']) {
+      const res = await patch(owner.token, mount, q.ref, { smtp_host: ip })
+      const text = await res.text()
+      expect(res.status, ip).toBe(400)
+      expect(JSON.parse(text).error).toBe('validation_failed')
+      expect(text).toContain('smtp_host')
+      expect(text).not.toContain(ip)
+    }
+    expect((await pool.query(`select 1 from control.project_config where project_id = $1`, [q.id])).rowCount).toBe(0)
+    expect((await patch(owner.token, mount, q.ref, { smtp_host: '203.0.113.10' })).status).toBe(200)
+  })
+
   test('m-2: a PATCH body that is not application/json is 415 and changes nothing', async () => {
     const q = await project(acme.id)
     for (const type of ['text/plain', 'application/x-www-form-urlencoded', undefined]) {
