@@ -77,6 +77,8 @@ set -euo pipefail
 rel=${RESTORE_DIR:?RESTORE_DIR is required}
 [[ $rel =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)?$ || $rel =~ ^import/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] && [[ ! /$rel/ =~ /\.\.?/ ]] ||
   { echo "restore: RESTORE_DIR must be one or two plain path segments, or import/<a>/<b>" >&2; exit 2; }
+# a name with a leading dot is backup.sh's own (.tmp-<ts> being written, .deleting-<ts> being deleted): never a backup
+[[ ! /$rel =~ /\. ]] || { echo "restore: $rel is not a backup (a temp or deleted directory of backup.sh)" >&2; exit 2; }
 dir=/backups/$rel
 rotate=${ROTATE_KEYS:-0}
 [[ $rotate =~ ^[01]$ ]] || { echo "restore: ROTATE_KEYS must be 0 or 1" >&2; exit 2; }

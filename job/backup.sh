@@ -55,19 +55,28 @@ min_free=${BACKUP_MIN_FREE_MIB:-}
 
 # Retention by the name's timestamp, then by count (newest first); the backup just written always stays. Exports
 # (export-<ref>) too, by EXPORT_RETENTION_DAYS: an export is taken to be moved or imported within days (R3).
+# A backup to delete is first renamed to .deleting-<ts> (no listing, count or restore takes that name) and reported
+# deleted right then, so control drops its row even when the delete then fails half way; the next run removes what
+# is left.
 retain() {
-  local days cutoff n=0 d why bad=0
+  local days cutoff n=0 d why bad=0 q
   [[ $sub == export-* ]] && days=$export_keep || days=$keep
   cutoff=$(date -u -d "-$days days" +%Y%m%d-%H%M%S)
+  for q in "$backups"/.deleting-*; do
+    [ -e "$q" ] || continue
+    rm -rf "$q" || { echo "backup: WARNING: could not remove the leftover $sub/${q##*/}" >&2; bad=1; }
+  done
   for d in $(ls "$backups" | grep -E '^[0-9]{8}-[0-9]{6}$' | sort -r || true); do
     n=$((n + 1))
     [ "$d" != "$ts" ] || continue
     if [[ $d < $cutoff ]]; then why="older than $days days"
     elif [ "$n" -gt "$max" ]; then why="beyond the newest $max"
     else continue; fi
-    # control drops the rows of the deleted lines: one that could not be deleted is not one of them
-    if rm -rf "${backups:?}/$d"; then echo "backup: deleted $sub/$d ($why)"
-    else echo "backup: WARNING: could not delete $sub/$d ($why)" >&2; bad=1; fi
+    # control drops the rows of the deleted lines: a backup no longer under its name is gone for it
+    # -T: never into a .deleting-<ts> left over (the next run removes it first)
+    if ! mv -T "${backups:?}/$d" "$backups/.deleting-$d"; then echo "backup: WARNING: could not delete $sub/$d ($why)" >&2; bad=1; continue; fi
+    echo "backup: deleted $sub/$d ($why)"
+    rm -rf "$backups/.deleting-$d" || { echo "backup: WARNING: $sub/.deleting-$d is left for the next run" >&2; bad=1; }
   done
   return "$bad"
 }

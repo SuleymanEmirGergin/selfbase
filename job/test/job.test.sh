@@ -312,13 +312,16 @@ rc=0; out=$(job db "$P-storage" bash -c 'du() { return 1; }; export -f du; bash 
 check 'R3: a du that prints no size fails the backup (exit 1)' [ "$rc" = 1 ]
 check 'R3: and says the storage size could not be read' grep -q 'backup: the storage size could not be read' <<< "$out"
 check 'R3: and writes nothing' in_backups '[ ! -d /backups/dunone ] || [ -z "$(ls -A /backups/dunone)" ]'
-# M-3: once the backup is renamed into place it exists: a retention that fails (a stand-in rm refuses the old backup)
-# or a size that cannot be read (a stand-in du) is a warning, and the wrote line control records it by still comes
+# M-3: once the backup is renamed into place it exists: a retention that fails (a stand-in mv refuses to move the old
+# backup aside) or a size that cannot be read (a stand-in du) is a warning, and the wrote line control records it by
+# still comes
 in_backups 'mkdir -p /backups/postmv/20200101-000000'
 JOB_ENV=(-e BACKUP_SUBDIR=postmv)
-rc=0; out=$(job db "$P-storage" bash -c 'rm() { case "$*" in *20200101-000000*) echo "rm: refused by the test" >&2; return 1 ;; esac
-  command rm "$@"; }; export -f rm; bash /scripts/backup.sh' 2>&1) || rc=$?
-pts=$(tail -n1 <<< "$out"); pts=${pts#backup: wrote postmv/}
+# the last stdout line (control reads stdout): docker run gives no order between a run's stdout and stderr lines
+lastout() { grep -v -e '^backup: WARNING' -e '^mv: ' -e '^rm: ' <<< "$1" | tail -n1; }
+rc=0; out=$(job db "$P-storage" bash -c 'mv() { case "$*" in *.deleting-*) echo "mv: refused by the test" >&2; return 1 ;; esac
+  command mv "$@"; }; export -f mv; bash /scripts/backup.sh' 2>&1) || rc=$?
+pts=$(lastout "$out"); pts=${pts#backup: wrote postmv/}
 check 'M-3: a retention that fails after the rename keeps exit 0' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
 check 'M-3: its last line is still the wrote line, of a whole backup' in_backups "[[ $pts =~ ^[0-9]{8}-[0-9]{6}\$ ]] && [ -f /backups/postmv/$pts/MANIFEST ]"
 check 'M-3: it warns, never says no backup was written or that the old one was deleted' bash -c \
@@ -326,7 +329,8 @@ check 'M-3: it warns, never says no backup was written or that the old one was d
 rc=0; out=$(job db "$P-storage" bash -c 'du() { case "$1" in -sb) return 1 ;; esac; command du "$@"; }; export -f du
   bash /scripts/backup.sh' 2>&1) || rc=$?
 check 'M-3: a size that cannot be read after the rename keeps exit 0 and the wrote line' \
-  bash -c '[ "$2" = 0 ] && grep -qE "^backup: wrote postmv/[0-9]{8}-[0-9]{6}$" <<< "$(tail -n1 <<< "$1")"' _ "$out" "$rc"
+  bash -c '[ "$2" = 0 ] && grep -qE "^backup: wrote postmv/[0-9]{8}-[0-9]{6}$" <<< "$1"' _ "$(lastout "$out")" "$rc"
+[ "$rc" = 0 ] || echo "$out" >&2
 check 'M-3: it warns instead of printing a size line without a number' \
   bash -c 'grep -q "backup: WARNING: the size of postmv/" <<< "$1" && ! grep -E "^backup: size" <<< "$1" | grep -qvE "^backup: size [0-9]+ bytes$"' _ "$out"
 # M-7: a size or sum the MANIFEST cannot get (a stand-in stat or sha256sum fails) fails the backup: nothing renamed
@@ -340,7 +344,25 @@ for tool in stat sha256sum; do
   check "M-7: nothing is renamed and no temp dir is left ($tool)" in_backups "[ -z \"\$(ls -A /backups/mf-$tool)\" ]"
 done
 
-
+# M-6: retention moves an old backup aside (.deleting-<ts>) before it deletes it, and says deleted right after the move,
+# so control drops its row even when the delete fails half way (a stand-in rm removes one file, then fails); the next
+# run removes what is left; neither the listing nor a restore takes the quarantine name
+in_backups 'mkdir -p /backups/quar/20200101-000000 && cd /backups/quar/20200101-000000 && touch a b c'
+JOB_ENV=(-e BACKUP_SUBDIR=quar)
+rc=0; out=$(job db "$P-storage" bash -c 'rm() { case "$*" in *.deleting-*) command rm -f "${@: -1}/a"; echo "rm: refused by the test" >&2; return 1 ;; esac
+  command rm "$@"; }; export -f rm; bash /scripts/backup.sh' 2>&1) || rc=$?
+check 'M-6: a delete that fails half way keeps exit 0' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
+check 'M-6: the old backup is reported deleted (control drops its row)' grep -qx 'backup: deleted quar/20200101-000000 (older than 7 days)' <<< "$out"
+check 'M-6: it warns that what is left stays for the next run' grep -q 'backup: WARNING: .*quar/.deleting-20200101-000000' <<< "$out"
+check 'M-6: no backup is left under the old name, the rest is in quarantine' in_backups \
+  '[ ! -e /backups/quar/20200101-000000 ] && [ -f /backups/quar/.deleting-20200101-000000/b ] && [ ! -e /backups/quar/.deleting-20200101-000000/a ]'
+JOB_ENV=(-e RESTORE_DIR=quar/.deleting-20200101-000000)
+rc=0; out=$(job db "$P-storage" bash /scripts/restore.sh 2>&1) || rc=$?
+check 'M-6: a restore of the quarantine name is refused (exit 2)' [ "$rc" = 2 ]; [ "$rc" = 2 ] || echo "$out" >&2
+JOB_ENV=(-e BACKUP_SUBDIR=quar)
+rc=0; out=$(job db "$P-storage" bash /scripts/backup.sh 2>&1) || rc=$?
+check 'M-6: the next run removes the leftover' bash -c '[ "$1" = 0 ]' _ "$rc"
+check 'M-6: (it is gone, and only timestamp dirs are left)' in_backups '! ls -A /backups/quar | grep -qvE "^[0-9]{8}-[0-9]{6}$"'
 # ---- I1: ROTATE_KEYS=1 (an import with rotate_keys) deletes the restored sessions, before control starts core ----
 JOB_ENV=(-e RESTORE_DIR=t/$ts -e ROTATE_KEYS=yes)
 rc=0; out=$(job db "$P-storage" bash /scripts/restore.sh 2>&1) || rc=$?
