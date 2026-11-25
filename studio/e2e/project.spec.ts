@@ -170,6 +170,16 @@ test('logs render, and the fallback notice appears only with the container sourc
   await expect.poll(() => api.count(`GET ${P}/logs`)).toBe(3)
 })
 
+test('a read_only member is offered the core and rest logs only (db, fn and pooler need SQL rights)', async ({ page }) => {
+  const r = routes()
+  r['GET /me'] = { body: withRole('read_only') }
+  const api = await mockApi(page, r)
+  await page.goto(`/project/${REF}/logs`)
+  await expect(page.getByText('POST /admin/sql 200 12ms')).toBeVisible()
+  await expect(page.getByLabel('Servis').locator('option')).toHaveText(['core', 'rest'])
+  expect(api.calls.filter((c) => c.key === `GET ${P}/logs`).map((c) => c.url.searchParams.get('service'))).toEqual(['core'])
+})
+
 test('settings: delete stays disabled until the project name is typed', async ({ page }) => {
   const api = await mockApi(page, routes())
   await page.goto(`/project/${REF}/settings`)

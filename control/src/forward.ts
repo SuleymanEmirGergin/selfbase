@@ -122,8 +122,8 @@ export async function forwardAdmin(c: Context<Env>, p: Target): Promise<Response
   let body: BodyInit | null = null
   let over = false
   if (method !== 'GET' && method !== 'HEAD' && c.req.raw.body) {
-    if (c.req.header('content-type')?.toLowerCase().startsWith('application/json') && !isUpload(c)) {
-      body = await c.req.arrayBuffer() // capped at 256 KiB by bodyCap and already parsed by audit (Hono caches it)
+    if (!isUpload(c)) {
+      body = await c.req.arrayBuffer() // capped at 256 KiB by bodyCap and already read by wholeBody (Hono caches it)
     } else {
       // uploads: streamed, under the project's own upload limit (core enforces it too)
       const max = Number((await projectConfig(pool, p.id)).STORAGE_MAX_UPLOAD_BYTES) || DEFAULT_UPLOAD

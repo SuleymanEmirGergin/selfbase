@@ -143,6 +143,19 @@ test('a read_only member sees no create, import or member actions', async ({ pag
   await expect(page.getByRole('button', { name: /^Çıkar:/ })).toHaveCount(0)
 })
 
+test('an invitation refused for a non-ASCII address shows the reason', async ({ page }) => {
+  const api = await mockApi(page, {
+    ...signedIn(),
+    'POST /organizations/acme/invitations': { status: 400, body: {
+      error: 'email_not_ascii', message: 'the email address must use ASCII characters only (letters such as ş, ğ or ı are not supported)' } },
+  })
+  await page.goto('/org/acme/members')
+  await page.getByLabel('E-posta').fill('dev@örnek.test')
+  await page.getByRole('button', { name: 'Davet et' }).click()
+  await expect(page.getByText('E-posta adresinde yalnızca ASCII karakterler olabilir. ş, ğ, ı gibi harfler desteklenmiyor.')).toBeVisible()
+  expect(api.count('POST /organizations/acme/invitations')).toBe(1)
+})
+
 test('an owner can invite, change a role and remove a member', async ({ page }) => {
   const api = await mockApi(page, {
     ...signedIn(),
@@ -389,6 +402,24 @@ test('an explicit sign-out drops next', async ({ page }) => {
   await expect(page).toHaveURL(/\/sign-in$/)
   expect(api.count('POST /logout')).toBe(1)
 })
+
+for (const [status, body, text] of [
+  [502, { error: 'logout_failed', message: 'The session could not be ended. Try again.' }, 'Çıkış doğrulanamadı. Yeniden dene.'],
+  [429, { error: 'over_request_rate_limit', message: 'Too many requests from this address. Try again in a few minutes.' }, 'Too many requests from this address.'],
+] as const) {
+  test(`a sign-out the server refuses (${status}) keeps the user signed in and says so`, async ({ page }) => {
+    const api = await mockApi(page, { ...signedIn(), 'POST /logout': { status, body } })
+    await page.goto('/org/acme/members')
+    await page.getByRole('button', { name: 'Çıkış' }).click()
+    await expect(page.getByText(text)).toBeVisible()
+    expect(api.count('POST /logout')).toBe(1)
+    await expect(page).toHaveURL(/\/org\/acme\/members$/)
+    await expect(page.getByRole('button', { name: 'Giriş yap' })).toHaveCount(0)
+    // a second try is possible
+    await page.getByRole('button', { name: 'Çıkış' }).click()
+    await expect.poll(() => api.count('POST /logout')).toBe(2)
+  })
+}
 
 test('the reset screen strips the fragment and never shows its error text', async ({ page }) => {
   await mockApi(page, { 'GET /me': { status: 401, body: fx('unauthorized') }, 'POST /refresh': { status: 401, body: fx('unauthorized') } })

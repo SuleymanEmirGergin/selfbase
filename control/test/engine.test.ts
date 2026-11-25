@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test } from 'vitest'
 import { randomBytes } from 'node:crypto'
 import { pool } from '../src/db.ts'
-import { defineJob, enqueue, enqueueIfIdle, startWorkers, type Step } from '../src/jobs/engine.ts'
+import { defineJob, enqueue, enqueueCoalesced, enqueueIfIdle, startWorkers, type Step } from '../src/jobs/engine.ts'
 import { newRef } from '../src/ids.ts'
 import { FakeProvisioner } from './fake-provisioner.ts'
 
@@ -177,6 +177,15 @@ test('S5: 20 concurrent enqueueIfIdle calls for one project give exactly one act
     expect(ids.filter(Boolean), `round ${round}`).toHaveLength(1)
     expect((await pool.query(`select count(*)::int as n from control.jobs where project_id = $1 and status in ('pending', 'running')`, [projectId])).rows[0].n).toBe(1)
   }
+})
+
+test('enqueueCoalesced finds the pending job of a versioned type (its stored payload carries job_version)', async () => {
+  const type = uniq('coalesce')
+  defineJob(type, 'light', [], { version: 2 })
+  const projectId = await projectRow()
+  const first = await enqueueCoalesced(pool, { type, projectId, payload: { recreate: ['core'] }, createdBy: null })
+  expect(await enqueueCoalesced(pool, { type, projectId, payload: { recreate: ['core'] }, createdBy: null })).toBe(first)
+  expect((await pool.query(`select count(*)::int as n from control.jobs where project_id = $1`, [projectId])).rows[0].n).toBe(1)
 })
 
 test('S5: the light and heavy lanes never run two jobs of one project at once; other projects are not held up', async () => {

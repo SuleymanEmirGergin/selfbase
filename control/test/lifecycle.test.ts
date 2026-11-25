@@ -218,6 +218,27 @@ test('delete frees the host slot, removes the secrets, removes with volumes; the
   expect((await pool.query('select count(*)::int as n from control.host_slots')).rows[0].n).toBe(1)
 })
 
+// a REMOVED row never cascades: a project-scoped member would otherwise keep listing the org's member emails
+test("delete removes the project's own memberships and invitations; org-wide ones stay", async () => {
+  const { createConfirmedUser } = await import('../src/routes/platform-auth.ts')
+  const { project: p, jobId } = await create('scoped')
+  workers()
+  await finished(jobId)
+  const tag = newRef()
+  const scoped = await createConfirmedUser(`scoped-${tag}@example.test`, 'correct-horse-battery')
+  const wide = await createConfirmedUser(`wide-${tag}@example.test`, 'correct-horse-battery')
+  await pool.query(`insert into control.memberships (org_id, user_id, role, project_id) values ($1, $2, 'developer', $3), ($1, $4, 'read_only', null)`,
+    [orgId, scoped.id, p.id, wide.id])
+  await pool.query(`insert into control.invitations (org_id, email, role, project_id, token_hash, expires_at)
+    values ($1, $2, 'developer', $3, $4, now() + interval '1 day'), ($1, $5, 'developer', null, $6, now() + interval '1 day')`,
+    [orgId, `inv-scoped-${tag}@example.test`, p.id, `h1-${tag}`, `inv-wide-${tag}@example.test`, `h2-${tag}`])
+  expect((await finished(await enqueue(pool, { type: 'project.delete', projectId: p.id, payload: {}, createdBy: null }))).status).toBe('succeeded')
+  expect((await pool.query('select user_id from control.memberships where project_id = $1', [p.id])).rows).toEqual([])
+  expect((await pool.query('select count(*)::int as n from control.invitations where project_id = $1', [p.id])).rows[0].n).toBe(0)
+  expect((await pool.query('select count(*)::int as n from control.memberships where user_id = $1', [wide.id])).rows[0].n).toBe(1)
+  expect((await pool.query('select count(*)::int as n from control.invitations where email = $1', [`inv-wide-${tag}@example.test`])).rows[0].n).toBe(1)
+})
+
 test('a certificate stuck on pending keeps the project COMING_UP', async () => {
   cert = 'pending'
   const { project: p, jobId } = await create()

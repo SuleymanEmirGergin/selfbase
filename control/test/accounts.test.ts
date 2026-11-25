@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { app } from '../src/app.ts'
 import { pool } from '../src/db.ts'
-import { coreAuth, resetRateLimits, verify as coreVerify } from '../src/core.ts'
+import { coreAuth, lockUser, resetRateLimits, verify as coreVerify } from '../src/core.ts'
 import { config, loadConfig } from '../src/config.ts'
 import { hashToken } from '../src/ids.ts'
 import { cookieNames } from '../src/session.ts'
@@ -332,6 +332,24 @@ describe('invitations', () => {
     return { ...body, token: body.link.split('/invite/')[1] as string }
   }
 
+  // the address travels in a header (x-selfbase-actor) on every admin call, which takes ASCII only
+  test('a non-ASCII address is refused at invite (400 email_not_ascii) and when an account is created', async () => {
+    const cookie = await login(OWNER, PASSWORD)
+    for (const email of ['şule@example.test', 'dev@örnek.test', 'ığdır@example.test']) {
+      const res = await as(cookie, 'POST', '/platform/organizations/default/invitations', { email, role: 'developer' })
+      expect(res.status, email).toBe(400)
+      expect(await res.json(), email).toEqual({ error: 'email_not_ascii', message: expect.any(String) })
+    }
+    expect((await pool.query(`select count(*)::int as n from control.invitations where email !~ '^[ -~]*$'`)).rows[0].n).toBe(0)
+    const { createConfirmedUser } = await import('../src/routes/platform-auth.ts')
+    await expect(createConfirmedUser('şule@example.test', PASSWORD)).rejects.toMatchObject({ status: 400, code: 'email_not_ascii' })
+    const r = cli(['create-owner', 'şule@example.test'], `${PASSWORD}
+`)
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toMatch(/ASCII/)
+    expect((await pool.query(`select count(*)::int as n from auth.users where email !~ '^[ -~]*$'`)).rows[0].n).toBe(0)
+  })
+
   test('accept creates the account and membership; the same token twice fails; the hash is stored', async () => {
     const cookie = await login(OWNER, PASSWORD)
     const inv = await invite(cookie, 'dev@example.test')
@@ -500,6 +518,71 @@ describe('the password route', () => {
       where u.email = $1 and not t.revoked`, [OWNER])
     expect(live.rows.map((r) => r.session_id)).toEqual([await sessionOfJwt(jwt)])
     expect((await put(jwt, { password: PASSWORD, current_password: 'a-brand-new-password' })).status).toBe(200)
+  })
+
+  // a stolen cookie can mint a token: the reset that ends the stolen session must end that token too
+  test("a password change ends the user's access tokens; a refused change keeps them", async () => {
+    const cookie = await login(OWNER, PASSWORD)
+    const { token } = await (await as(cookie, 'POST', '/platform/access-tokens', { name: 'minted' })).json()
+    expect((await withToken(token, 'GET', '/v1/organizations')).status).toBe(200)
+    const jwt = accessOf(cookie)
+    expect((await put(jwt, { password: 'a-brand-new-password', current_password: 'not-the-password' })).status).toBe(400)
+    expect((await withToken(token, 'GET', '/v1/organizations')).status).toBe(200)
+    expect((await put(jwt, { password: 'a-brand-new-password', current_password: PASSWORD })).status).toBe(200)
+    expect((await withToken(token, 'GET', '/v1/organizations')).status).toBe(401)
+    expect((await put(jwt, { password: PASSWORD, current_password: 'a-brand-new-password' })).status).toBe(200)
+  })
+
+  // reviewer's PoC: a mint authorized before the reset, whose body arrives after it, must not leave a working token
+  test('a token mint whose body is held back across a password change leaves no working token', async () => {
+    const stolen = await login(OWNER, PASSWORD)
+    const jwt = accessOf(await login(OWNER, PASSWORD)) // the owner's own session, elsewhere
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    const body = new ReadableStream<Uint8Array>({
+      async pull(ctl) {
+        await gate
+        ctl.enqueue(new TextEncoder().encode('{"name":"late"}'))
+        ctl.close()
+      },
+    })
+    const mint = app.request('/platform/access-tokens', {
+      method: 'POST', body, duplex: 'half', headers: { cookie: stolen, origin: ORIGIN, 'content-type': 'text/plain', 'content-length': '15' },
+    } as RequestInit)
+    await new Promise((r) => setTimeout(r, 300))
+    expect((await put(jwt, { password: 'a-brand-new-password', current_password: PASSWORD })).status).toBe(200)
+    expect((await as(stolen, 'GET', '/platform/me')).status).toBe(401)
+    release()
+    const res = await mint
+    const minted = await res.json()
+    if (minted.token) expect((await withToken(minted.token, 'GET', '/platform/me')).status).toBe(401)
+    expect((await pool.query(`select count(*)::int as n from control.access_tokens a join auth.users u on u.id = a.user_id
+      where u.email = $1 and a.name = 'late'`, [OWNER])).rows[0].n).toBe(0)
+    expect((await put(jwt, { password: PASSWORD, current_password: 'a-brand-new-password' })).status).toBe(200)
+  })
+
+  test('a token mint racing a logout of the same session leaves no working token', async () => {
+    const stolen = await login(OWNER, PASSWORD)
+    const sid = await sessionOfJwt(accessOf(stolen))
+    const userId = (await pool.query('select id from auth.users where email = $1', [OWNER])).rows[0].id
+    // a logout in progress: core's per-user lock is held while the session's refresh tokens are revoked
+    const out = await pool.connect()
+    try {
+      await out.query('begin')
+      await lockUser(out, userId)
+      let done = false
+      const mint = app.request('/platform/access-tokens', { method: 'POST', body: JSON.stringify({ name: 'raced' }),
+        headers: { cookie: stolen, origin: ORIGIN, 'content-type': 'application/json' } }).then((r) => { done = true; return r })
+      await new Promise((r) => setTimeout(r, 300))
+      expect(done).toBe(false) // the mint waits on the user's lock
+      await out.query('update auth.refresh_tokens set revoked = true, updated_at = now() where session_id = $1', [sid])
+      await out.query('commit')
+      expect((await mint).status).toBe(401)
+    } finally {
+      await out.query('rollback').catch(() => {})
+      out.release()
+    }
+    expect((await pool.query(`select count(*)::int as n from control.access_tokens where name = 'raced'`)).rows[0].n).toBe(0)
   })
 
   test('a recovery token works without the current password', async () => {

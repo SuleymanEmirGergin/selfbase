@@ -131,6 +131,30 @@ describe('api keys', () => {
   })
 })
 
+// the route reads the project first; a job finishing before the enqueue must not let a stale status through
+describe('lifecycle checks the status at enqueue', () => {
+  const ctx = () => ({ get: (k: string) => (k === 'user' ? { id: owner.id } : undefined) }) as any
+  const jobsOf = async (id: string) => (await pool.query(`select type from control.jobs where project_id = $1`, [id])).rows
+
+  test('a pause that reaches the queue after a finished delete is refused (409 invalid_status), no job queued', async () => {
+    const { canPause, lifecycle } = await import('../src/routes/platform-projects.ts')
+    const gone = await project(acme.id, { name: 'gone' })
+    const read = (await pool.query(`select * from control.projects where id = $1`, [gone.id])).rows[0]
+    await pool.query(`update control.projects set status = 'REMOVED' where id = $1`, [gone.id])
+    await expect(lifecycle(ctx(), read, 'project.pause', canPause)).rejects.toMatchObject({ status: 409, code: 'invalid_status' })
+    expect(await jobsOf(gone.id)).toEqual([])
+  })
+
+  test('an upgrade that reaches the queue after a pause is refused the same way', async () => {
+    const { canUpgrade, lifecycle } = await import('../src/routes/platform-projects.ts')
+    const paused = await project(acme.id, { name: 'paused' })
+    const read = (await pool.query(`select * from control.projects where id = $1`, [paused.id])).rows[0]
+    await pool.query(`update control.projects set status = 'INACTIVE' where id = $1`, [paused.id])
+    await expect(lifecycle(ctx(), read, 'project.upgrade', canUpgrade)).rejects.toMatchObject({ status: 409, code: 'invalid_status' })
+    expect(await jobsOf(paused.id)).toEqual([])
+  })
+})
+
 describe('logs', () => {
   test('a service outside the enum is refused', async () => {
     for (const q of ['service=core;x', 'service=core&limit=1001', 'service=core&start=yesterday'])
@@ -159,6 +183,22 @@ describe('logs', () => {
     } finally {
       config.logsUrl = before
       store.close()
+    }
+  })
+
+  // db logs carry statement text (cron job commands, failed statements in full): as much as running SQL
+  test('read_only reads core and rest logs; db, fn and pooler need project.sql (403)', async () => {
+    const ro = await user('logs-ro@example.test')
+    await join(acme.id, ro.id, 'read_only')
+    const before = config.logsUrl
+    config.logsUrl = 'http://127.0.0.1:1'
+    fake.logs = async () => 'line\n'
+    try {
+      for (const s of ['db', 'fn', 'pooler']) expect((await withToken(ro.token, 'GET', `${P()}/logs?service=${s}`)).status, s).toBe(403)
+      for (const s of ['core', 'rest']) expect((await withToken(ro.token, 'GET', `${P()}/logs?service=${s}`)).status, s).toBe(200)
+      for (const s of ['db', 'fn', 'pooler']) expect((await withToken(dev.token, 'GET', `${P()}/logs?service=${s}`)).status, s).toBe(200)
+    } finally {
+      config.logsUrl = before
     }
   })
 
