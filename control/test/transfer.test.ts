@@ -464,6 +464,15 @@ describe('backup_dir belongs to the caller', () => {
     for (const d of [`${mine.ref}/20261121-031500`, `export-${mine.ref}/20261121-031500`, `${gone.ref}/20261121-031500`, 'import/acme/v1-dump']) {
       expect((await status(d)).status, d).toBe(202)
     }
+    // round 2: a name with a leading dot is backup.sh's own (.tmp-, .deleting-) or hidden, never a dump; refused here,
+    // before any project exists, not by restore.sh after the import made one
+    const before = (await pool.query('select count(*)::int as n from control.projects')).rows[0].n
+    for (const d of ['import/acme/.snapshot', 'import/acme/.deleting-20200101-000000', 'import/.acme/v1-dump']) {
+      const r = await status(d)
+      expect(r.status, d).toBe(400)
+      expect(r.body.error).toBe('invalid_backup_dir')
+    }
+    expect((await pool.query('select count(*)::int as n from control.projects')).rows[0].n).toBe(before)
   })
 
   test('the import job checks backup_dir again: a foreign one fails before any restore', async () => {

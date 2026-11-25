@@ -110,7 +110,9 @@ export async function backupDirOf(db: Db, org: { id: string; slug: string }, dir
     return (await db.query('select 1 from control.projects where ref = $1 and org_id = $2', [own[1], org.id])).rowCount ? 'ok' : 'foreign'
   }
   const drop = DROP_AREA.exec(dir)
-  if (drop && drop[2] !== '.' && drop[2] !== '..') return drop[1] === org.slug ? 'ok' : 'foreign'
+  // a part with a leading dot (., .., backup.sh's .tmp- and .deleting-, a hidden dir) is never a dump: restore.sh
+  // refuses it too, but only after the import made the project
+  if (drop && !drop[1].startsWith('.') && !drop[2].startsWith('.')) return drop[1] === org.slug ? 'ok' : 'foreign'
   return 'invalid'
 }
 
