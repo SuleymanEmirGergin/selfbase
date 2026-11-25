@@ -46,6 +46,14 @@ test('the proxy refuses everything outside the allow-list with 403', () => {
     ['GET', `/v1.45/containers/${SB}/jsonx`],
     ['GET', `/xx/v1.45/containers/${SB}/json`],
     ['POST', `/v1.45/networks/sb-x/connect/../../${PROXY_NET}/disconnect`],
+    // M-6: verbs the provisioner never sends (on a container that does not exist: were they allowed, Docker's 404)
+    ['GET', '/v1.45/_ping'],
+    ['GET', '/_ping'],
+    ['GET', '/v1.45/info'],
+    ['GET', '/v1.45/containers/sb-proxytest-none/wait'],
+    ['POST', '/v1.45/containers/sb-proxytest-none/kill'],
+    ['POST', '/v1.45/containers/sb-proxytest-none/restart'],
+    ['POST', '/v1.45/containers/sb-proxytest-none/wait'],
   ]
   assert.deepEqual(statuses('provisioner', refused), refused.map(() => 403))
   assert.notEqual(tryDocker('volume', 'inspect', 'selfbase-test-keep'), null)
@@ -53,7 +61,7 @@ test('the proxy refuses everything outside the allow-list with 403', () => {
 
 test('allowed calls pass, with or without the version prefix', () => {
   assert.deepEqual(statuses('provisioner', [['GET', `/v1.45/containers/${SB}/json`], ['GET', `/containers/${SB}/json`],
-    ['GET', '/_ping'], ['GET', `/v1.45/images/${IMAGE}/json`]]), [200, 200, 200, 200])
+    ['GET', '/version'], ['GET', `/v1.45/images/${IMAGE}/json`]]), [200, 200, 200, 200])
 })
 
 test('a bind mount from anywhere but the backup dir is 403; the backup dir passes', () => {
@@ -84,5 +92,5 @@ test("the proxy container's inspect is allowed by its exact name only", () => {
 })
 
 test('any other client address gets 403', () => {
-  assert.deepEqual(statuses('control', [['GET', '/_ping'], ['GET', `/containers/${SB}/json`]]), [403, 403])
+  assert.deepEqual(statuses('control', [['GET', '/version'], ['GET', `/containers/${SB}/json`]]), [403, 403])
 })
