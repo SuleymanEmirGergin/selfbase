@@ -502,6 +502,19 @@ describe('the password route', () => {
     expect((await put(jwt, { password: PASSWORD, current_password: 'a-brand-new-password' })).status).toBe(200)
   })
 
+  // a stolen cookie can mint a token: the reset that ends the stolen session must end that token too
+  test("a password change ends the user's access tokens; a refused change keeps them", async () => {
+    const cookie = await login(OWNER, PASSWORD)
+    const { token } = await (await as(cookie, 'POST', '/platform/access-tokens', { name: 'minted' })).json()
+    expect((await withToken(token, 'GET', '/v1/organizations')).status).toBe(200)
+    const jwt = accessOf(cookie)
+    expect((await put(jwt, { password: 'a-brand-new-password', current_password: 'not-the-password' })).status).toBe(400)
+    expect((await withToken(token, 'GET', '/v1/organizations')).status).toBe(200)
+    expect((await put(jwt, { password: 'a-brand-new-password', current_password: PASSWORD })).status).toBe(200)
+    expect((await withToken(token, 'GET', '/v1/organizations')).status).toBe(401)
+    expect((await put(jwt, { password: PASSWORD, current_password: 'a-brand-new-password' })).status).toBe(200)
+  })
+
   test('a recovery token works without the current password', async () => {
     expect((await put(await recoveryAccess(), { password: PASSWORD })).status).toBe(200)
   })

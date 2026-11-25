@@ -132,7 +132,8 @@ platformAuth.get('/auth/v1/verify', async (c) => passOn(await callCore(c, 'GET',
 // Studio's reset screen sends the recovery access token as the bearer. Any other Studio access token (a stolen cookie)
 // also needs the current password. Only the password is passed on (no email, phone or metadata changes from here).
 // Core's new password ends every other session of the user and its one-time tokens, in the same transaction under
-// its per-user lock (S4): a stolen cookie or refresh token stops working with the reset.
+// its per-user lock (S4): a stolen cookie or refresh token stops working with the reset. The same write ends the
+// user's access tokens (migration 0006's trigger), so a token minted from a stolen cookie ends with it too.
 platformAuth.put('/auth/v1/user', async (c) => {
   const b = await c.req.json().catch(() => null)
   if (typeof b?.password !== 'string') throw new ApiError(400, 'validation_failed', 'password is required')
