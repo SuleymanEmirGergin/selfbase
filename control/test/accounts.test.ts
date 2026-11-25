@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { app } from '../src/app.ts'
 import { pool } from '../src/db.ts'
-import { coreAuth, resetRateLimits, verify as coreVerify } from '../src/core.ts'
+import { coreAuth, lockUser, resetRateLimits, verify as coreVerify } from '../src/core.ts'
 import { config, loadConfig } from '../src/config.ts'
 import { hashToken } from '../src/ids.ts'
 import { cookieNames } from '../src/session.ts'
@@ -559,6 +559,30 @@ describe('the password route', () => {
     expect((await pool.query(`select count(*)::int as n from control.access_tokens a join auth.users u on u.id = a.user_id
       where u.email = $1 and a.name = 'late'`, [OWNER])).rows[0].n).toBe(0)
     expect((await put(jwt, { password: PASSWORD, current_password: 'a-brand-new-password' })).status).toBe(200)
+  })
+
+  test('a token mint racing a logout of the same session leaves no working token', async () => {
+    const stolen = await login(OWNER, PASSWORD)
+    const sid = await sessionOfJwt(accessOf(stolen))
+    const userId = (await pool.query('select id from auth.users where email = $1', [OWNER])).rows[0].id
+    // a logout in progress: core's per-user lock is held while the session's refresh tokens are revoked
+    const out = await pool.connect()
+    try {
+      await out.query('begin')
+      await lockUser(out, userId)
+      let done = false
+      const mint = app.request('/platform/access-tokens', { method: 'POST', body: JSON.stringify({ name: 'raced' }),
+        headers: { cookie: stolen, origin: ORIGIN, 'content-type': 'application/json' } }).then((r) => { done = true; return r })
+      await new Promise((r) => setTimeout(r, 300))
+      expect(done).toBe(false) // the mint waits on the user's lock
+      await out.query('update auth.refresh_tokens set revoked = true, updated_at = now() where session_id = $1', [sid])
+      await out.query('commit')
+      expect((await mint).status).toBe(401)
+    } finally {
+      await out.query('rollback').catch(() => {})
+      out.release()
+    }
+    expect((await pool.query(`select count(*)::int as n from control.access_tokens where name = 'raced'`)).rows[0].n).toBe(0)
   })
 
   test('a recovery token works without the current password', async () => {

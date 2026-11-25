@@ -11,7 +11,7 @@ import { randomUUID } from 'node:crypto'
 import { pool } from '../db.ts'
 import type { Db } from '../db.ts'
 import { resetPasswordUrl } from '../core-env.ts'
-import { coreAuth, hashPassword, revokeSession, verify } from '../core.ts'
+import { coreAuth, hashPassword, lockUser, revokeSession, verify } from '../core.ts'
 import { ApiError } from '../errors.ts'
 import { newAccessToken } from '../ids.ts'
 import { ACCESS_COOKIE, REFRESH_COOKIE, checkOrigin, clearSessionCookies, endIfExpired, sessionLive, sessionOfRefresh, setSessionCookies } from '../session.ts'
@@ -202,10 +202,11 @@ platformAuth.post('/access-tokens', async (c) => {
       throw new ApiError(400, 'validation_failed', 'expires_at must be a future ISO date')
   }
   const { token, hash } = newAccessToken()
-  // One transaction: the user's row FOR SHARE, so a password write (whose trigger ends the tokens) cannot commit in
-  // between; the cookie's session still live under it; then the insert. A reset either sees this token and ends it,
-  // or this mint sees the reset and is refused.
+  // One transaction, in core's lock order: core's per-user lock (logout and session revokes take it), then the user's
+  // row FOR SHARE (a password write, whose trigger ends the tokens, cannot commit in between), then the cookie's
+  // session still live under both, then the insert. A logout or reset either sees this token, or this mint sees it.
   const id = await tx(async (client) => {
+    await lockUser(client, c.get('user').id)
     await client.query('select 1 from auth.users where id = $1 for share', [c.get('user').id])
     if (!(await sessionLive(c.get('user').sessionId, client))) throw new ApiError(401, 'unauthorized', 'Unauthorized')
     return (await client.query(
