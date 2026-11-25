@@ -162,6 +162,22 @@ describe('logs', () => {
     }
   })
 
+  // db logs carry statement text (cron job commands, failed statements in full): as much as running SQL
+  test('read_only reads core and rest logs; db, fn and pooler need project.sql (403)', async () => {
+    const ro = await user('logs-ro@example.test')
+    await join(acme.id, ro.id, 'read_only')
+    const before = config.logsUrl
+    config.logsUrl = 'http://127.0.0.1:1'
+    fake.logs = async () => 'line\n'
+    try {
+      for (const s of ['db', 'fn', 'pooler']) expect((await withToken(ro.token, 'GET', `${P()}/logs?service=${s}`)).status, s).toBe(403)
+      for (const s of ['core', 'rest']) expect((await withToken(ro.token, 'GET', `${P()}/logs?service=${s}`)).status, s).toBe(200)
+      for (const s of ['db', 'fn', 'pooler']) expect((await withToken(dev.token, 'GET', `${P()}/logs?service=${s}`)).status, s).toBe(200)
+    } finally {
+      config.logsUrl = before
+    }
+  })
+
   test('with the store down the lines come from the container tail, with the header', async () => {
     const before = config.logsUrl
     config.logsUrl = 'http://127.0.0.1:1'

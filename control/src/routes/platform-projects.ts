@@ -272,9 +272,12 @@ platformProjects.get('/jobs/:id', async (c) => {
 
 // ---- logs ----
 
+// db logs hold statement text (cron job commands with keys, failed statements in full); fn and pooler are as close to
+// it: reading them is as much as running SQL (forward.ts draws the same line for the system schemas)
+const SQL_LOGS = ['db', 'fn', 'pooler']
 platformProjects.get('/projects/:ref/logs', async (c) => {
-  const p = await projectFor(c, 'project.read')
   const service = c.req.query('service') ?? ''
+  const p = await projectFor(c, SQL_LOGS.includes(service) ? 'project.sql' : 'project.read')
   if (!LOG_SERVICES.includes(service)) throw bad(`service must be one of ${LOG_SERVICES.join(', ')}`)
   const rawLimit = c.req.query('limit') ?? '200'
   const limit = /^\d{1,4}$/.test(rawLimit) ? Number(rawLimit) : 0
