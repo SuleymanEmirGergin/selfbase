@@ -22,7 +22,7 @@ export const v1 = new Hono<Env>()
 export const operations: Record<string, string> = {}
 
 /** Registers a /v1 route under the operationId it implements. */
-export function op(router: Hono<Env>, method: 'get' | 'post' | 'delete', path: string, operationId: string, handler: Handler<Env>) {
+export function op(router: Hono<Env>, method: 'get' | 'post' | 'put' | 'patch' | 'delete', path: string, operationId: string, handler: Handler<Env>) {
   operations[`${method.toUpperCase()} /v1${path}`] = operationId
   router[method](path, handler)
 }

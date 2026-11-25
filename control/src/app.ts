@@ -11,6 +11,8 @@ import { paused } from './paused.ts'
 import { platformAuth } from './routes/platform-auth.ts'
 import { platformOrgs, v1Orgs } from './routes/platform-orgs.ts'
 import { platformProjects } from './routes/platform-projects.ts'
+// registers on v1 and platformProjects (shared.ts), before app.route copies their routes below
+import './routes/project-config.ts'
 import { platformTransfer } from './routes/platform-transfer.ts'
 import { v1 } from './routes/v1.ts'
 

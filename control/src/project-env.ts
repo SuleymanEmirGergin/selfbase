@@ -5,7 +5,7 @@
 import { config as node } from './config.ts'
 import type { Db } from './db.ts'
 import { hostsOf } from './hosts.ts'
-import { getSecrets } from './secrets.ts'
+import { getSecrets, putSecret } from './secrets.ts'
 
 export const SECRET_ENV = ['POSTGRES_PASSWORD', 'AUTHENTICATOR_PASSWORD', 'JWT_SECRET', 'ANON_KEY', 'SERVICE_ROLE_KEY', 'ADMIN_TOKEN'] as const
 // third-party secrets, set by the operator; stored in project_secrets, empty when absent
@@ -70,6 +70,28 @@ export async function projectConfig(db: Db, projectId: string): Promise<Record<s
   const rows = (await db.query('select data from control.project_config where project_id = $1 order by section', [projectId])).rows
   // a null-prototype target: a stored "__proto__" key stays an own key here instead of becoming the prototype
   return Object.assign(Object.create(null), ...rows.map((r) => r.data))
+}
+
+/**
+ * One section's change, in the caller's transaction. `patch`: keys to set (null puts one back to its default), merged
+ * key by key in one upsert under the row's lock, so a concurrent change to other keys survives. `secrets`: third-party
+ * secrets only, encrypted; '' removes one.
+ */
+export async function setConfig(db: Db, project: { id: string; ref: string }, section: string, patch: Record<string, string | null>,
+  secrets: Record<string, string>, userId: string): Promise<void> {
+  const set = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== null))
+  const unset = Object.keys(patch).filter((k) => patch[k] === null)
+  await db.query(
+    `insert into control.project_config (project_id, section, data, updated_by) values ($1, $2, $3, $4)
+     on conflict (project_id, section) do update
+       set data = (control.project_config.data - $5::text[]) || excluded.data, version = control.project_config.version + 1,
+           updated_by = excluded.updated_by, updated_at = now()`,
+    [project.id, section, set, userId, unset])
+  for (const [name, value] of Object.entries(secrets)) {
+    if (!(THIRD_PARTY_SECRET_ENV as readonly string[]).includes(name)) throw new Error(`${name} is not a third-party secret`)
+    if (value) await putSecret(db, project, name, 'platform', value)
+    else await db.query('delete from control.project_secrets where project_id = $1 and name = $2', [project.id, name])
+  }
 }
 
 /** The env and hosts of a project as stored now. */

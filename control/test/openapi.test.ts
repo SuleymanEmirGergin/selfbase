@@ -72,6 +72,8 @@ beforeAll(async () => {
     'GET /v1/projects/:ref/health': t('GET', `/v1/projects/${p.ref}/health?services=db,rest,auth,realtime,storage,pooler`),
     'GET /v1/projects/:ref/api-keys': t('GET', `/v1/projects/${p.ref}/api-keys`),
     'POST /v1/projects/:ref/database/query': t('POST', `/v1/projects/${p.ref}/database/query`, { query: 'select 1 as a' }),
+    'GET /v1/projects/:ref/config/auth': t('GET', `/v1/projects/${p.ref}/config/auth`),
+    'PATCH /v1/projects/:ref/config/auth': t('PATCH', `/v1/projects/${p.ref}/config/auth`, { site_url: 'https://app.example.test' }),
   }
 })
 afterAll(() => core.close())

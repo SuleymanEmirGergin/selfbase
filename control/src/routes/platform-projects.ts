@@ -2,6 +2,7 @@
 // forwarding of a project's admin API. The project lookups and JSON shapes here are shared with /v1 (v1.ts).
 import { Hono } from 'hono'
 import type { Context } from 'hono'
+import type { PoolClient } from 'pg'
 import { admit, capacity, RUNNING_STATUSES, type Size } from '../admission.ts'
 import { authorize } from '../authz.ts'
 import type { Action } from '../authz.ts'
@@ -229,9 +230,10 @@ platformProjects.get('/projects/:ref/domains', async (c) => {
     `select hostname, kind from control.project_domains where project_id = $1 order by kind <> 'default', hostname`, [p.id])).rows)
 })
 
-// one pending apply per project, however many domain changes arrive while another job runs
-const applyCore = (c: Context<Env>, p: ProjectRow) =>
-  enqueueCoalesced(pool, { type: 'project.apply', projectId: p.id, payload: { recreate: ['core'] }, createdBy: c.get('user').id })
+// one pending apply per project, however many domain or config changes arrive while another job runs; `first` commits
+// with the job or not at all
+export const applyCore = (c: Context<Env>, p: ProjectRow, first?: (tx: PoolClient) => Promise<unknown>) =>
+  enqueueCoalesced(pool, { type: 'project.apply', projectId: p.id, payload: { recreate: ['core'] }, createdBy: c.get('user').id }, first)
 
 platformProjects.post('/projects/:ref/domains', async (c) => {
   const p = await projectFor(c, 'project.manage')
