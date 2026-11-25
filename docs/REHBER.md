@@ -1323,6 +1323,7 @@ Bu sorgular sadece okur. control-db'ye elle yazma, durumu control yönetir.
 | Proje oluşturma "new hostnames for this week" ile reddedildi | Haftalık adres hakkı bitti (bölüm 7) | Mesajdaki tarihi bekle ya da bir projeyi silip adresini boşalt. Deneme için test adresi. |
 | Bir iş başarısız (`INIT_FAILED`, `PAUSE_FAILED`, `RESTORE_FAILED`, `REMOVE_FAILED`) | İşin bir adımı tekrar denemelerden sonra da hata verdi | Yukarıdaki sorguyla adımı ve hatayı oku. `PAUSE_FAILED`: tekrar **Pause**. `RESTORE_FAILED`: tekrar **Resume**. `INIT_FAILED`: projeyi sil, yeniden oluştur. `REMOVE_FAILED`: tekrar sil. Aynı hata tekrar ederse `docker logs selfbase-provisioner`. |
 | `another operation is running on this project` | Projede bir iş zaten çalışıyor | Bitmesini bekle (Studio'da durum değişir). |
+| Bir iş `503` `network_ipv6` hatasıyla başarısız | Docker daemon'u projenin ağında IPv6'yı açtı. Açık IPv6 ile ağın IPv6 ağ geçidi sunucunun kendisine ulaşır, provisioner bu yüzden ağı reddeder. | Daemon'da IPv6'yı kapat (`/etc/docker/daemon.json`). Paylaşılan sunucuda bu dosya sunucu sahibinindir, değişikliği ondan iste. Sonra `docker restart selfbase-provisioner` ve işi tekrar başlat. |
 | Gece yedeği başarısız | Çoğunlukla `selfbase-job` imajı silinmiş (bölüm 12) | `docker image ls | grep selfbase-job`. Yoksa yeniden derle, sonra **Back up now**. |
 | Studio girişi "Too many failed attempts" | IP başına 5 dakikada 5 deneme | Bekle. |
 | Şifreyi unuttun | | Bölüm 5, "Şifremi unuttum". |
@@ -1648,7 +1649,7 @@ CorteQS'in CSP'si iki yerde sabit: `nginx.conf.template` (canlı) ve `server.mjs
 | Auth istek sınırları | IP başına 5 dakikada: giriş + kayıt 30, doğrulama 30, yenileme 150, e-posta 30. Aşılınca 429. | Şifre deneme ve e-posta bombardımanına karşı. |
 | PDF dosyaları | `application/pdf` tarayıcıda açılır. Diğer türler `sandbox` CSP ile gelir. | HTML ya da SVG içindeki script selfbase'in adresinde çalışmasın. |
 | Fonksiyon cevapları | `x-content-type-options: nosniff`, kendi CSP'si yoksa `content-security-policy: sandbox`. | Aynı sebep. |
-| İstek gövdesi sınırları | `/rest/v1` ve `/functions/v1`'e en fazla 20 MiB (chunked gövdeler dahil), fazlası `413` alır. core'un kendi JSON uçlarına 1 MiB. control'ün yazma isteklerine (Studio ve yönetim API'si) 256 KiB. | Tek bir istek sunucunun belleğini dolduramasın. |
+| İstek gövdesi sınırları | `/rest/v1` ve `/functions/v1`'e en fazla 20 MiB (chunked gövdeler dahil), fazlası `413` alır. core'un kendi JSON uçlarına 1 MiB. control'ün yazma isteklerine (Studio ve yönetim API'si) 256 KiB. Studio'dan yüklenen dosyalar bu sınıra girmez, onlarda projenin kendi yükleme sınırı geçerli. | Tek bir istek sunucunun belleğini dolduramasın. |
 | Token'sız dosya yükleme | Reddedilir (401). | supabase-js zaten her zaman gönderir. |
 | E-posta OTP kodu, PKCE, resim dönüştürme | Yok. | Uygulama kullanmıyor. |
 | Realtime | Sadece `postgres_changes`, sadece `eq` filtresi. Broadcast ve presence yok. | Uygulamanın kullanımı bu kadar. |
