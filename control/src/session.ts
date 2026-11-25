@@ -5,11 +5,13 @@ import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import { matchedRoutes } from 'hono/route'
 import { config } from './config.ts'
 import { pool } from './db.ts'
+import type { Db } from './db.ts'
 import { ApiError } from './errors.ts'
 import { hashToken } from './ids.ts'
 import { revokeSession, verify } from './core.ts'
 
-export type User = { id: string; email: string; via: 'cookie' | 'token' }
+/** sessionId: the Studio session behind a cookie caller (a write that must not outlive it checks it again) */
+export type User = { id: string; email: string; via: 'cookie' | 'token'; sessionId?: string }
 /** What authorize() learned, for the audit row. */
 export type AuditScope = { orgId?: string; projectId?: string; target?: string; path?: string }
 export type Env = { Variables: { user: User; audit: AuditScope } }
@@ -51,8 +53,8 @@ export function setSessionCookies(c: Context, s: { access_token: string; refresh
  * STUDIO_SESSION_MAX_AGE_DAYS since sign-in, or STUDIO_SESSION_IDLE_HOURS since its last refresh (each refresh adds
  * a token). Core gives its refresh tokens no lifetime, so control enforces both, at refresh and on every cookie request.
  */
-async function sessionState(sessionId: string): Promise<{ open: boolean; expired: boolean }> {
-  const r = (await pool.query(
+async function sessionState(sessionId: string, db: Db = pool): Promise<{ open: boolean; expired: boolean }> {
+  const r = (await db.query(
     `select coalesce(bool_or(not revoked), false) as open,
             coalesce(min(created_at) < now() - $2::float8 * interval '1 day' or max(created_at) < now() - $3::float8 * interval '1 hour', false) as expired
        from auth.refresh_tokens where session_id = $1`,
@@ -62,9 +64,9 @@ async function sessionState(sessionId: string): Promise<{ open: boolean; expired
 }
 
 /** Live: not revoked (logout, a password reset) and not past either lifetime. */
-export async function sessionLive(sessionId: string | undefined): Promise<boolean> {
+export async function sessionLive(sessionId: string | undefined, db: Db = pool): Promise<boolean> {
   if (!sessionId) return false
-  const s = await sessionState(sessionId)
+  const s = await sessionState(sessionId, db)
   return s.open && !s.expired
 }
 
@@ -104,7 +106,7 @@ async function cookieUser(jwt: string): Promise<User | null> {
   const claims = await verify(jwt).catch(() => null)
   if (!claims?.sub || claims.role !== 'authenticated' || !(await sessionLive(claims.session_id))) return null
   const { rows } = await pool.query(`select id, email from auth.users where id = $1 and (banned_until is null or banned_until <= now())`, [claims.sub])
-  return rows[0] ? { id: rows[0].id, email: rows[0].email, via: 'cookie' } : null
+  return rows[0] ? { id: rows[0].id, email: rows[0].email, via: 'cookie', sessionId: claims.session_id } : null
 }
 
 /** The Studio session behind the request's cookie (same-origin checked), or null; for PUBLIC routes that use one. */

@@ -533,6 +533,34 @@ describe('the password route', () => {
     expect((await put(jwt, { password: PASSWORD, current_password: 'a-brand-new-password' })).status).toBe(200)
   })
 
+  // reviewer's PoC: a mint authorized before the reset, whose body arrives after it, must not leave a working token
+  test('a token mint whose body is held back across a password change leaves no working token', async () => {
+    const stolen = await login(OWNER, PASSWORD)
+    const jwt = accessOf(await login(OWNER, PASSWORD)) // the owner's own session, elsewhere
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    const body = new ReadableStream<Uint8Array>({
+      async pull(ctl) {
+        await gate
+        ctl.enqueue(new TextEncoder().encode('{"name":"late"}'))
+        ctl.close()
+      },
+    })
+    const mint = app.request('/platform/access-tokens', {
+      method: 'POST', body, duplex: 'half', headers: { cookie: stolen, origin: ORIGIN, 'content-type': 'text/plain', 'content-length': '15' },
+    } as RequestInit)
+    await new Promise((r) => setTimeout(r, 300))
+    expect((await put(jwt, { password: 'a-brand-new-password', current_password: PASSWORD })).status).toBe(200)
+    expect((await as(stolen, 'GET', '/platform/me')).status).toBe(401)
+    release()
+    const res = await mint
+    const minted = await res.json()
+    if (minted.token) expect((await withToken(minted.token, 'GET', '/platform/me')).status).toBe(401)
+    expect((await pool.query(`select count(*)::int as n from control.access_tokens a join auth.users u on u.id = a.user_id
+      where u.email = $1 and a.name = 'late'`, [OWNER])).rows[0].n).toBe(0)
+    expect((await put(jwt, { password: PASSWORD, current_password: 'a-brand-new-password' })).status).toBe(200)
+  })
+
   test('a recovery token works without the current password', async () => {
     expect((await put(await recoveryAccess(), { password: PASSWORD })).status).toBe(200)
   })

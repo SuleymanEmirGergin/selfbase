@@ -19,13 +19,24 @@ const limit = bodyLimit({
   maxSize: BODY_LIMIT,
   onError: (c) => c.json({ error: 'payload_too_large', message: 'request body larger than 256 KiB' }, 413),
 })
+const isWrite = (c: Context) => c.req.method !== 'GET' && c.req.method !== 'HEAD' && c.req.method !== 'OPTIONS'
 /**
- * Caps every request body before audit or a handler parses it, except non-JSON bodies on the routes in
- * largeBodyRoutes (audit parses every JSON body, so JSON is always capped).
+ * Caps every request body before audit or a handler parses it, except uploads on the routes in largeBodyRoutes
+ * (wholeBody reads every other body, so it must be bounded).
  */
 export const bodyCap = createMiddleware((c, next) => {
   const route = apiRoute(c)
-  return route && largeBodyRoutes.has(route) && (!isJson(c) || isUpload(c)) ? next() : limit(c, next)
+  return route && largeBodyRoutes.has(route) && isUpload(c) ? next() : limit(c, next)
+})
+
+/**
+ * Reads every write's whole body (uploads aside, which stream) before authenticate: a request authorized while its
+ * body is still on the way could otherwise act after a password reset or logout ended its session. Hono caches it
+ * for the handler. After bodyCap, so at most 256 KiB.
+ */
+export const wholeBody = createMiddleware(async (c, next) => {
+  if (isWrite(c) && !isUpload(c)) await c.req.arrayBuffer()
+  return next()
 })
 
 const MAX_KEYS = 32

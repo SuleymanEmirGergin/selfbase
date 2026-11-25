@@ -185,6 +185,10 @@ describe('admin forwarding', () => {
   test('JSON bodies are still capped at 256 KiB', async () => {
     const res = await withToken(dev.token, 'POST', `${A()}/rows/public/notes`, { values: { note: 'x'.repeat(300 * 1024) } })
     expect(res.status).toBe(413)
+    // any other non-upload body too: it is read whole before the caller is authenticated, so it is bounded
+    const text = await app.request(`${A()}/rows/public/notes`, {
+      method: 'POST', headers: { authorization: `Bearer ${dev.token}`, 'content-type': 'text/plain' }, body: 'x'.repeat(300 * 1024) })
+    expect(text.status).toBe(413)
   })
 
   test('a JSON file larger than 256 KiB uploads like any other file; the path is in the audit row', async () => {

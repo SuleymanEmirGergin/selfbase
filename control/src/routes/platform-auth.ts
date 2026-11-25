@@ -202,10 +202,17 @@ platformAuth.post('/access-tokens', async (c) => {
       throw new ApiError(400, 'validation_failed', 'expires_at must be a future ISO date')
   }
   const { token, hash } = newAccessToken()
-  const { id } = (await pool.query(
-    `insert into control.access_tokens (user_id, name, token_hash, expires_at) values ($1, $2, $3, $4) returning id`,
-    [c.get('user').id, name.trim(), hash, expiresAt],
-  )).rows[0]
+  // One transaction: the user's row FOR SHARE, so a password write (whose trigger ends the tokens) cannot commit in
+  // between; the cookie's session still live under it; then the insert. A reset either sees this token and ends it,
+  // or this mint sees the reset and is refused.
+  const id = await tx(async (client) => {
+    await client.query('select 1 from auth.users where id = $1 for share', [c.get('user').id])
+    if (!(await sessionLive(c.get('user').sessionId, client))) throw new ApiError(401, 'unauthorized', 'Unauthorized')
+    return (await client.query(
+      `insert into control.access_tokens (user_id, name, token_hash, expires_at) values ($1, $2, $3, $4) returning id`,
+      [c.get('user').id, name.trim(), hash, expiresAt],
+    )).rows[0].id as string
+  })
   // the only time the token is shown
   return c.json({ id, name: name.trim(), token }, 201)
 })

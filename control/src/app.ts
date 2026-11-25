@@ -5,7 +5,7 @@ import { serveStatic } from '@hono/node-server/serve-static'
 import { secureHeaders } from 'hono/secure-headers'
 import { config } from './config.ts'
 import { notFound, onError } from './errors.ts'
-import { audit, bodyCap, publicLimit } from './audit.ts'
+import { audit, bodyCap, publicLimit, wholeBody } from './audit.ts'
 import { authenticate } from './session.ts'
 import { paused } from './paused.ts'
 import { platformAuth } from './routes/platform-auth.ts'
@@ -25,9 +25,10 @@ app.use('*', secureHeaders({ xFrameOptions: 'DENY', contentSecurityPolicy: { fra
 app.use('*', paused) // before any route: only PUBLIC_URL's host is served
 app.get('/health', (c) => c.json({ ok: true }))
 
-// size cap before anything parses a JSON body; the public per-IP limit; then audit, so refused writes are recorded too
-app.use('/platform/*', bodyCap, publicLimit, audit, authenticate('platform'))
-app.use('/v1/*', bodyCap, audit, authenticate('v1'))
+// size cap before anything reads a body; the public per-IP limit; the whole body before the caller is authenticated;
+// then audit, so refused writes are recorded too
+app.use('/platform/*', bodyCap, publicLimit, wholeBody, audit, authenticate('platform'))
+app.use('/v1/*', bodyCap, wholeBody, audit, authenticate('v1'))
 
 app.route('/platform', platformAuth)
 app.route('/platform', platformOrgs)
