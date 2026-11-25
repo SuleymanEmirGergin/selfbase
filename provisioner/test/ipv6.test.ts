@@ -83,7 +83,7 @@ test('a network that cannot be read back right after it was made is a clear refu
   forget = true
   try {
     await assert.rejects(ensure(ctx, 'cccccccccccccccccccc', body('cccccccccccccccccccc', '10.207.0.96/27')),
-      (e: any) => e?.code === 'docker_refused' && /cannot be read back/.test(e.message))
+      (e: any) => e?.status === 502 && e?.code === 'docker_refused' && /cannot be read back/.test(e.message))
   } finally {
     forget = false
   }
