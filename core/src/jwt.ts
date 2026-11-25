@@ -9,6 +9,7 @@ export type JwtClaims = {
   email?: string
   aud?: string
   session_id?: string
+  amr?: { method: string; timestamp: number }[]
   exp: number
   app_metadata?: object
   user_metadata?: object

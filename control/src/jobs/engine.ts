@@ -103,12 +103,17 @@ export const enqueueIfIdle = (db: pg.Pool, j: EnqueueInput & { projectId: string
 /**
  * At most one pending job of this type and payload per project: an existing one is returned (it reads the project's
  * state when it runs, so it covers this change too), else a new one queues behind whatever runs. For changes that
- * must not be refused while another job runs (domains), yet must not pile up.
+ * must not be refused while another job runs (domains), yet must not pile up. `first`: writes that must commit with
+ * the job or not at all, run in the same transaction.
  */
-export const enqueueCoalesced = (db: pg.Pool, j: EnqueueInput & { projectId: string }): Promise<string> =>
-  underEnqueueLock(db, j.projectId, async (c) => (await c.query(
-    `select id from control.jobs where project_id = $1 and type = $2 and payload = $3::jsonb and status = 'pending' limit 1`,
-    [j.projectId, j.type, j.payload])).rows[0]?.id ?? (await insertJob(c, j, false))!)
+export const enqueueCoalesced = (db: pg.Pool, j: EnqueueInput & { projectId: string },
+  first?: (c: pg.PoolClient) => Promise<unknown>): Promise<string> =>
+  underEnqueueLock(db, j.projectId, async (c) => {
+    await first?.(c)
+    return (await c.query(
+      `select id from control.jobs where project_id = $1 and type = $2 and payload = $3::jsonb and status = 'pending' limit 1`,
+      [j.projectId, j.type, j.payload])).rows[0]?.id ?? (await insertJob(c, j, false))!
+  })
 
 async function underEnqueueLock<T>(db: pg.Pool, projectId: string, fn: (c: pg.PoolClient) => Promise<T>): Promise<T> {
   const c = await db.connect()

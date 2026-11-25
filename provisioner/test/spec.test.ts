@@ -146,7 +146,7 @@ test('R6: core and control alone on sb-<ref>-ctl, whose /29 is all the admin por
   assert.ok(coreEnv.includes('PROJECT_SUBNET=10.207.0.48/29'), coreEnv.join(' '))
 })
 
-test('backup jobs get the node floor BACKUP_MIN_FREE_MIB; a request can never set it', () => {
+test('backup and restore jobs get the node floor BACKUP_MIN_FREE_MIB; a request can never set it', () => {
   const backup = (node: NodeSettings, env: Record<string, string> = {}) =>
     buildJob({ ref: REF, type: 'backup', args: { dir: REF }, env: { PGHOST: 'db', PGPASSWORD: 'x', ...env } }, node).body.Env as string[]
   assert.ok(!backup(NODE).some((e) => e.startsWith('BACKUP_MIN_FREE_MIB=')))
@@ -154,7 +154,8 @@ test('backup jobs get the node floor BACKUP_MIN_FREE_MIB; a request can never se
   assert.throws(() => backup(NODE, { BACKUP_MIN_FREE_MIB: '1' }), code('invalid_env'))
   const restore = buildJob({ ref: REF, type: 'restore', args: { dir: `${REF}/20260101-000000` }, env: { PGHOST: 'db', PGPASSWORD: 'x' } },
     { ...NODE, backupMinFreeMib: '100' }).body.Env as string[]
-  assert.ok(!restore.some((e) => e.startsWith('BACKUP_MIN_FREE_MIB=')))
+  // E: a restore keeps the same floor free on the volume it writes the project's data to
+  assert.ok(restore.includes('BACKUP_MIN_FREE_MIB=100'), restore.join(' '))
 })
 
 test('I1: a restore job takes ROTATE_KEYS (an import with new keys ends the restored sessions in the job)', () => {
@@ -300,6 +301,10 @@ test('backup job: one bind, its own backup directory only; storage volume; fixed
   assert.deepEqual(spec.body.Cmd, ['bash', '/scripts/backup.sh'])
   assert.equal(spec.body.Image, 'ghcr.io/acme/selfbase/selfbase-job:2.1.0')
   assert.deepEqual(hc.RestartPolicy, { Name: 'no' })
+  // a stopped job gets 60 s to stop its writer and undo its steps before SIGKILL (Docker's default is 10 s)
+  for (const type of ['backup', 'restore'] as const) {
+    assert.equal(buildJob(job({ type, args: { dir: type === 'backup' ? REF : `${REF}/${TS}` } }), NODE).body.StopTimeout, 60, type)
+  }
   assert.equal(hc.Memory, 512 * MiB)
   assert.equal(hc.MemorySwap, hc.Memory)
   assert.ok((spec.body.Env as string[]).includes(`BACKUP_SUBDIR=${REF}`))

@@ -3,7 +3,7 @@ import { config } from '../src/config.ts'
 import { pool } from '../src/db.ts'
 import { newRef } from '../src/ids.ts'
 import { addDomain, removeDomain } from '../src/hosts.ts'
-import { createProject, enqueue, startWorkers } from '../src/jobs/index.ts'
+import { createProject, enqueue, evictStaleLegacyNames, startWorkers } from '../src/jobs/index.ts'
 import { probeCertificate } from '../src/cert.ts'
 import { AdmissionError } from '../src/admission.ts'
 import { getSecrets } from '../src/secrets.ts'
@@ -237,6 +237,145 @@ test('project.apply after addDomain passes both hosts and the recreate list', as
   expect((await finished(apply)).status).toBe('succeeded')
   expect(fake.callsOf('ensure').at(-1)!.args[0]).toMatchObject({ hosts: [`${p.ref}.example.test`, 'api.example.com'], recreate: ['core'] })
 })
+
+test('H: at start a legacy name LEGACY_HOSTNAMES now gives another org is removed, applied, and free for that org', async () => {
+  const kept = { hostnames: config.legacyHostnames, orgs: config.legacyOrgs }
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+  try {
+    config.legacyHostnames = ['old.example.test', 'mine.example.test']
+    config.legacyOrgs = { 'old.example.test': orgSlug, 'mine.example.test': orgSlug }
+    const { project: p, jobId } = await create()
+    workers()
+    await finished(jobId)
+    await addDomain(pool, p.id, 'old.example.test', 'legacy')
+    await addDomain(pool, p.id, 'mine.example.test', 'legacy')
+    await finished(await enqueue(pool, { type: 'project.apply', projectId: p.id, payload: { recreate: ['core'] }, createdBy: null }))
+    expect(fake.callsOf('ensure').at(-1)!.args[0].hosts).toContain('old.example.test')
+    // the operator rebinds the name to another org and restarts control
+    const otherSlug = `o-${newRef()}`
+    const other = (await pool.query(`insert into control.organizations (slug, name) values ($1, 'o2') returning id`, [otherSlug])).rows[0].id
+    config.legacyOrgs = { 'old.example.test': otherSlug, 'mine.example.test': orgSlug }
+    const jobs = await evictStaleLegacyNames(pool)
+    expect(jobs).toHaveLength(1)
+    expect((await pool.query('select hostname from control.project_domains where project_id = $1', [p.id])).rows
+      .map((r) => r.hostname).sort()).toEqual(['mine.example.test', `${p.ref}.example.test`].sort())
+    expect(log.mock.calls.flat().join('\n')).toMatch(new RegExp(`old\\.example\\.test.*${p.ref}|${p.ref}.*old\\.example\\.test`))
+    expect((await finished(jobs[0])).status).toBe('succeeded')
+    expect(fake.callsOf('ensure').at(-1)!.args[0].hosts).toEqual([`${p.ref}.example.test`, 'mine.example.test'])
+    // a second start finds nothing to do
+    expect(await evictStaleLegacyNames(pool)).toEqual([])
+    // the rightful org can now claim it
+    const q = await createProject(pool, { orgId: other, name: 'q', size: 'micro', pool: 'project', createdBy: null })
+    await finished(q.jobId)
+    await addDomain(pool, q.project.id, 'old.example.test', 'legacy')
+  } finally {
+    config.legacyHostnames = kept.hostnames
+    config.legacyOrgs = kept.orgs
+    log.mockRestore()
+  }
+})
+
+// H, fix round 1: a project with old.example.test, added while LEGACY_HOSTNAMES gave it to the project's org
+const withLegacy = async (fn: (p: { id: string; ref: string }) => Promise<void>) => {
+  const kept = { hostnames: config.legacyHostnames, orgs: config.legacyOrgs }
+  const quiet = [vi.spyOn(console, 'log').mockImplementation(() => {}), vi.spyOn(console, 'warn').mockImplementation(() => {})]
+  try {
+    config.legacyHostnames = ['old.example.test']
+    config.legacyOrgs = { 'old.example.test': orgSlug }
+    const { project: p, jobId } = await create()
+    workers()
+    await finished(jobId)
+    await addDomain(pool, p.id, 'old.example.test', 'legacy')
+    await fn(p)
+  } finally {
+    config.legacyHostnames = kept.hostnames
+    config.legacyOrgs = kept.orgs
+    quiet.forEach((s) => s.mockRestore())
+  }
+}
+const domainsOf = async (id: string) =>
+  (await pool.query('select hostname from control.project_domains where project_id = $1 order by hostname', [id])).rows.map((r) => r.hostname)
+const newOrg = async () => {
+  const slug = `o-${newRef()}`
+  return { slug, id: (await pool.query(`insert into control.organizations (slug, name) values ($1, 'o2') returning id`, [slug])).rows[0].id }
+}
+
+test('H: an empty or misspelt LEGACY_HOSTNAMES deletes nothing: the name stays and a warning names it', () => withLegacy(async (p) => {
+  for (const listed of [[], ['old.exmple.test']]) {
+    config.legacyHostnames = listed
+    config.legacyOrgs = Object.fromEntries(listed.map((h) => [h, orgSlug]))
+    const warn = vi.mocked(console.warn)
+    warn.mockClear()
+    expect(await evictStaleLegacyNames(pool)).toEqual([])
+    expect(await domainsOf(p.id)).toContain('old.example.test')
+    expect(warn.mock.calls.flat().join('\n')).toMatch(/old\.example\.test.*LEGACY_HOSTNAMES/)
+  }
+}))
+
+test('H: a listed name bound to a slug no organization has is kept, with a warning naming the slug', () => withLegacy(async (p) => {
+  config.legacyOrgs = { 'old.example.test': 'defualt' }
+  const warn = vi.mocked(console.warn)
+  warn.mockClear()
+  expect(await evictStaleLegacyNames(pool)).toEqual([])
+  expect(await domainsOf(p.id)).toContain('old.example.test')
+  expect(warn.mock.calls.flat().join('\n')).toMatch(/old\.example\.test.*defualt/)
+}))
+
+test('H: a kept name of an unknown slug does not fail the project\'s applies; the counted check decides', () => withLegacy(async (p) => {
+  config.legacyOrgs = { 'old.example.test': 'defualt' }
+  expect(await evictStaleLegacyNames(pool)).toEqual([])
+  // as migrations 0003 and 0005 recorded a v1 name attached before them: issued to the project's own org
+  await pool.query(`insert into control.issued_hosts (hostname, org_id) values ('old.example.test', $1) on conflict (hostname) do update set org_id = $1`, [orgId])
+  const apply = await finished(await enqueue(pool, { type: 'project.apply', projectId: p.id, payload: { recreate: ['core'] }, createdBy: null }))
+  expect(apply.error ?? null).toBeNull()
+  expect(apply.status).toBe('succeeded')
+  // not counted either: the counted check refuses it, as for any name that is not a legacy name
+  await pool.query(`delete from control.issued_hosts where hostname = 'old.example.test'`)
+  const refused = await finished(await enqueue(pool, { type: 'project.apply', projectId: p.id, payload: { recreate: ['core'] }, createdBy: null }))
+  expect(refused.error).toMatch(/holds no host slot/)
+}))
+
+test('H: a listed name that an issued_hosts row gives the wrong org is evicted, and assertRoutable refuses it first', () => withLegacy(async (p) => {
+  // as migrations 0003 and 0005 recorded a v1 name attached before them: issued to the project's own org
+  await pool.query(`insert into control.issued_hosts (hostname, org_id) values ('old.example.test', $1) on conflict (hostname) do update set org_id = $1`, [orgId])
+  config.legacyOrgs = { 'old.example.test': (await newOrg()).slug }
+  const apply = await finished(await enqueue(pool, { type: 'project.apply', projectId: p.id, payload: { recreate: ['core'] }, createdBy: null }))
+  expect(apply.status).toBe('failed')
+  expect(apply.error).toMatch(/legacy hostname of another organization/)
+  expect(await evictStaleLegacyNames(pool)).toHaveLength(1)
+  expect(await domainsOf(p.id)).not.toContain('old.example.test')
+}))
+
+test('H: the delete and the apply commit together: a failing enqueue keeps the name', () => withLegacy(async (p) => {
+  config.legacyOrgs = { 'old.example.test': (await newOrg()).slug }
+  await pool.query(`create or replace function public.h_refuse() returns trigger language plpgsql as $$
+    begin if new.type = 'project.apply' then raise exception 'enqueue refused by the test'; end if; return new; end $$`)
+  await pool.query('create trigger h_refuse before insert on control.jobs for each row execute function public.h_refuse()')
+  try {
+    await expect(evictStaleLegacyNames(pool)).rejects.toThrow(/enqueue refused by the test/)
+  } finally {
+    await pool.query('drop trigger if exists h_refuse on control.jobs')
+    await pool.query('drop function if exists public.h_refuse()')
+  }
+  expect(await domainsOf(p.id)).toContain('old.example.test')
+  // the next start does it
+  expect(await evictStaleLegacyNames(pool)).toHaveLength(1)
+  expect(await domainsOf(p.id)).not.toContain('old.example.test')
+}))
+
+test('H: until the apply that drops the name succeeds, the rightful org gets hostname_taken (being released)', () => withLegacy(async (p) => {
+  const other = await newOrg()
+  config.legacyOrgs = { 'old.example.test': other.slug }
+  await Promise.all(running.splice(0).map((w) => w.stop()))
+  const [job] = await evictStaleLegacyNames(pool)
+  const theirs = await createProject(pool, { orgId: other.id, name: 'q', size: 'micro', pool: 'project', createdBy: null })
+  await expect(addDomain(pool, theirs.project.id, 'old.example.test', 'legacy'))
+    .rejects.toMatchObject({ code: 'hostname_taken', message: expect.stringMatching(/being released/) })
+  workers()
+  expect((await finished(job)).status).toBe('succeeded')
+  expect(fake.callsOf('ensure').some((c) => c.args[0].ref === p.ref && !c.args[0].hosts.includes('old.example.test'))).toBe(true)
+  await addDomain(pool, theirs.project.id, 'old.example.test', 'legacy')
+}))
 
 test('reused secrets and the db password are stored in the request and never enter the payload', async () => {
   const { project: p, jobId } = await createProject(pool, { orgId, name: 'r', size: 'micro', pool: 'project', createdBy: null,

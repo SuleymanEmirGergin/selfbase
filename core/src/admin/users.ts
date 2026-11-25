@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { pool } from '../db.ts'
 import { checkPassword, findById, hashPassword, SELECT_USER, toUserJson, withTx } from '../auth/users.ts'
 import type { UserRow } from '../auth/users.ts'
-import { revokeUserSessions } from '../auth/sessions.ts'
+import { endSessionsForNewPassword, lockUser, revokeUserSessions } from '../auth/sessions.ts'
 import { adminError, audit, readBody } from './ident.ts'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -40,6 +40,8 @@ router.patch('/users/:id', async (c) => {
   const hash = b.password === undefined ? null : await hashPassword(b.password)
 
   await withTx(async (db) => {
+    // S4 order: the per-user lock before the row lock, as a sign-in or rotation takes them (no deadlock with one)
+    await lockUser(db, id)
     if (!(await db.query('select 1 from auth.users where id = $1 for update', [id])).rowCount) throw adminError(404, 'user not found')
     if (ban !== undefined) {
       await db.query('update auth.users set banned_until = $2, updated_at = now() where id = $1', [id, ban])
@@ -48,7 +50,11 @@ router.patch('/users/:id', async (c) => {
     }
     if (b.email_confirmed)
       await db.query('update auth.users set email_confirmed_at = coalesce(email_confirmed_at, now()), updated_at = now() where id = $1', [id])
-    if (hash) await db.query('update auth.users set encrypted_password = $2, updated_at = now() where id = $1', [id, hash])
+    if (hash) {
+      await db.query('update auth.users set encrypted_password = $2, updated_at = now() where id = $1', [id, hash])
+      // an admin reset ends every session (GoTrue's UpdatePassword without a session)
+      await endSessionsForNewPassword(db, id, null)
+    }
     await audit(db, 'users.update', id, {
       ...(ban !== undefined ? { banned_until: ban } : {}),
       ...(b.email_confirmed ? { email_confirmed: true } : {}),
@@ -61,7 +67,8 @@ router.patch('/users/:id', async (c) => {
 router.delete('/users/:id', async (c) => {
   const id = userId(c.req.param('id'))
   await withTx(async (db) => {
-    // refresh tokens (sessions) and identities go with the user: on delete cascade
+    // refresh tokens (sessions) and identities go with the user: on delete cascade; the S4 lock first, as everywhere
+    await lockUser(db, id)
     if (!(await db.query('delete from auth.users where id = $1', [id])).rowCount) throw adminError(404, 'user not found')
     await audit(db, 'users.delete', id, {})
   })

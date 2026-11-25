@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
+import bcrypt from 'bcryptjs'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -13,6 +14,7 @@ const { pool, asUser } = await import('../src/db.ts')
 const { config } = await import('../src/config.ts')
 const { sign } = await import('../src/jwt.ts')
 const { sqlLimits } = await import('../src/admin/sql.ts')
+const { TOKEN_TYPES, sha256 } = await import('../src/auth/mail.ts')
 
 const S = 't6' // test schema
 const serviceKey = process.env.SERVICE_ROLE_KEY!
@@ -306,7 +308,7 @@ describe('users', () => {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, password: PW }),
       })
       const s = await res.json()
-      return { email, id: s.user.id as string, refresh: s.refresh_token as string }
+      return { email, id: s.user.id as string, refresh: s.refresh_token as string, access: s.access_token as string }
     } finally {
       config.authConfirmEmail = saved
     }
@@ -350,6 +352,203 @@ describe('users', () => {
     expect((await signIn(u.email, 'new-password-2')).status).toBe(200)
     expect((await call('PATCH', `/users/${u.id}`, { body: { banned_until: 'not a date' } })).status).toBe(400)
   })
+
+  it('a password reset ends every session of the user and clears the one-time tokens', async () => {
+    const u = await newUser()
+    const other = await (await signIn(u.email)).json()
+    await pool.query(`insert into auth.one_time_tokens (user_id, token_type, token_hash, relates_to)
+      values ($1, 'recovery_token', 'stolen-link-hash', $2)`, [u.id, u.email])
+    expect((await call('PATCH', `/users/${u.id}`, { body: { password: 'new-password-2' } })).status).toBe(200)
+    for (const refresh_token of [u.refresh, other.refresh_token]) {
+      const r = await app.request('/auth/v1/token?grant_type=refresh_token', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ refresh_token }),
+      })
+      expect(r.status).toBe(400)
+    }
+    expect((await pool.query('select 1 from auth.refresh_tokens where user_id = $1 and not revoked', [u.id])).rowCount).toBe(0)
+    expect((await pool.query('select 1 from auth.one_time_tokens where user_id = $1', [u.id])).rowCount).toBe(0)
+    expect((await signIn(u.email, 'new-password-2')).status).toBe(200)
+  })
+
+  // B, fix round 1: a reset must win over a sign-in or a password change already in flight
+  const live = async (userId: string) =>
+    (await pool.query('select session_id from auth.refresh_tokens where user_id = $1 and not revoked', [userId])).rows.map((r) => r.session_id)
+  const refreshOf = (refresh_token: string) => app.request('/auth/v1/token?grant_type=refresh_token', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ refresh_token }),
+  })
+  // holds the next bcrypt call of `fn` after it returned, until `release`
+  function holdNext(fn: 'compare' | 'hash') {
+    const real = bcrypt[fn] as (...a: unknown[]) => Promise<unknown>
+    let release!: () => void
+    let entered!: () => void
+    const gate = new Promise<void>((r) => { release = r })
+    const inside = new Promise<void>((r) => { entered = r })
+    const spy = vi.spyOn(bcrypt, fn).mockImplementationOnce((async (...a: unknown[]) => {
+      const out = await real(...a)
+      entered()
+      await gate
+      return out
+    }) as never)
+    return { inside, release, restore: () => spy.mockRestore() }
+  }
+
+  it('B: a sign-in that checked the old password before an admin reset gets no session', async () => {
+    const u = await newUser()
+    const hold = holdNext('compare')
+    try {
+      const signing = signIn(u.email)
+      await hold.inside
+      expect((await call('PATCH', `/users/${u.id}`, { body: { password: 'new-password-3' } })).status).toBe(200)
+      hold.release()
+      expect((await signing).status).toBe(400)
+      expect(await live(u.id)).toEqual([])
+    } finally {
+      hold.restore()
+    }
+  })
+
+  // (an admin reset waits on the user row the insert's foreign key locks; PUT /user's update does not)
+  it('B: a session the sign-in is inserting while the owner changes the password is revoked by it', async () => {
+    const u = await newUser()
+    const owner = (await pool.query('select session_id from auth.refresh_tokens where token = $1', [u.refresh])).rows[0].session_id
+    await pool.query(`create table if not exists public.b_hold (user_id uuid primary key)`)
+    await pool.query(`create or replace function public.b_hold() returns trigger language plpgsql as $$
+      begin if exists (select 1 from public.b_hold where user_id = new.user_id) then perform pg_sleep(1.5); end if; return new; end $$`)
+    await pool.query(`create or replace trigger b_hold after insert on auth.refresh_tokens for each row
+      when (new.parent is null) execute function public.b_hold()`)
+    try {
+      await pool.query('insert into public.b_hold values ($1)', [u.id])
+      const signing = signIn(u.email)
+      for (let i = 0; !(await pool.query(`select 1 from pg_stat_activity where wait_event = 'PgSleep'
+        and query like '%insert into auth.refresh_tokens%'`)).rowCount; i++) {
+        if (i > 100) throw new Error('the sign-in never reached the trigger')
+        await new Promise((r) => setTimeout(r, 20))
+      }
+      const reset = app.request('/auth/v1/user', { method: 'PUT',
+        headers: { authorization: `Bearer ${u.access}`, 'content-type': 'application/json' }, body: JSON.stringify({ password: 'new-password-4' }) })
+      const [s, r] = await Promise.all([signing, reset])
+      expect(r.status).toBe(200)
+      if (s.status === 200) expect((await refreshOf((await s.json()).refresh_token)).status).toBe(400)
+      expect(await live(u.id)).toEqual([owner])
+    } finally {
+      await pool.query('drop trigger if exists b_hold on auth.refresh_tokens')
+      await pool.query('drop function if exists public.b_hold()')
+      await pool.query('drop table if exists public.b_hold')
+    }
+  })
+
+  it('B: a password change from a session revoked while it was hashing writes nothing', async () => {
+    const u = await newUser()
+    const attacker = await (await signIn(u.email)).json()
+    const hold = holdNext('hash')
+    try {
+      const changing = app.request('/auth/v1/user', { method: 'PUT',
+        headers: { authorization: `Bearer ${attacker.access_token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ password: 'attacker-password-1' }) })
+      await hold.inside
+      expect((await call('PATCH', `/users/${u.id}`, { body: { password: 'owner-password-1' } })).status).toBe(200)
+      hold.release()
+      expect((await changing).status).toBe(403)
+      expect((await signIn(u.email, 'owner-password-1')).status).toBe(200)
+      expect((await signIn(u.email, 'attacker-password-1')).status).toBe(400)
+    } finally {
+      hold.restore()
+    }
+  })
+
+  it('B: a recovery link spent while an admin reset runs gets no session', async () => {
+    const u = await newUser()
+    const link = randomUUID()
+    await pool.query(`insert into auth.one_time_tokens (user_id, token_type, token_hash, relates_to) values ($1, $2, $3, $4)`,
+      [u.id, TOKEN_TYPES.recovery, sha256(link), u.email])
+    // the link's delete sleeps before it commits, so the reset lands between the spend and the session
+    await pool.query(`create table if not exists public.b_hold (user_id uuid primary key)`)
+    await pool.query(`create or replace function public.b_ott() returns trigger language plpgsql as $$
+      begin if exists (select 1 from public.b_hold where user_id = old.user_id) then perform pg_sleep(1.5); end if; return old; end $$`)
+    await pool.query(`create or replace trigger b_ott after delete on auth.one_time_tokens for each row execute function public.b_ott()`)
+    try {
+      await pool.query('insert into public.b_hold values ($1)', [u.id])
+      const verifying = app.request(`/auth/v1/verify?token=${link}&type=recovery`)
+      for (let i = 0; !(await pool.query(`select 1 from pg_stat_activity where wait_event = 'PgSleep'
+        and query like '%delete from auth.one_time_tokens%'`)).rowCount; i++) {
+        if (i > 100) throw new Error('the verify never reached the trigger')
+        await new Promise((r) => setTimeout(r, 20))
+      }
+      const reset = call('PATCH', `/users/${u.id}`, { body: { password: 'new-password-6' } })
+      const [v, r] = await Promise.all([verifying, reset])
+      expect(r.status).toBe(200)
+      expect(v.headers.get('location')).toContain('error_code=otp_expired')
+      expect(await live(u.id)).toEqual([])
+    } finally {
+      await pool.query('drop trigger if exists b_ott on auth.one_time_tokens')
+      await pool.query('drop function if exists public.b_ott()')
+      await pool.query('drop table if exists public.b_hold')
+    }
+  })
+
+  it('B: an admin reset during a refresh waits for it instead of deadlocking, and revokes the new token', async () => {
+    const u = await newUser()
+    const session = (await pool.query('select session_id from auth.refresh_tokens where token = $1', [u.refresh])).rows[0].session_id
+    // the rotation holds the S4 lock and sleeps before it inserts the child (which takes FOR KEY SHARE on the user row)
+    await pool.query(`create table if not exists public.b_hold (session_id uuid primary key)`)
+    await pool.query(`create or replace function public.b_rot() returns trigger language plpgsql as $$
+      begin if new.revoked and not old.revoked and exists (select 1 from public.b_hold where session_id = new.session_id)
+        then perform pg_sleep(1.5); end if; return new; end $$`)
+    await pool.query(`create or replace trigger b_rot before update on auth.refresh_tokens for each row execute function public.b_rot()`)
+    try {
+      await pool.query('insert into public.b_hold values ($1)', [session])
+      const rotating = refreshOf(u.refresh)
+      for (let i = 0; !(await pool.query(`select 1 from pg_stat_activity where wait_event = 'PgSleep'
+        and query like '%update auth.refresh_tokens%'`)).rowCount; i++) {
+        if (i > 100) throw new Error('the rotation never reached the trigger')
+        await new Promise((r) => setTimeout(r, 20))
+      }
+      // the rotation's own revoke trigger must not hold the reset's revoke too
+      await pool.query('delete from public.b_hold')
+      const [r, reset] = await Promise.all([rotating, call('PATCH', `/users/${u.id}`, { body: { password: 'new-password-5' } })])
+      expect([r.status, reset.status]).toEqual([200, 200])
+      expect((await refreshOf((await r.json()).refresh_token)).status).toBe(400)
+      expect(await live(u.id)).toEqual([])
+    } finally {
+      await pool.query('drop trigger if exists b_rot on auth.refresh_tokens')
+      await pool.query('drop function if exists public.b_rot()')
+      await pool.query('drop table if exists public.b_hold')
+    }
+  })
+
+  // B, round 2: a delete takes the S4 lock first too (its cascade waits on the rotating token, the rotation's child
+  // insert on the deleted row: a deadlock without it)
+  for (const [route, del] of [
+    ['the admin panel', (id: string) => call('DELETE', `/users/${id}`)],
+    ['GoTrue admin', (id: string) => app.request(`/auth/v1/admin/users/${id}`, { method: 'DELETE',
+      headers: { authorization: `Bearer ${serviceKey}`, apikey: serviceKey } })],
+  ] as const) {
+    it(`B: a delete through ${route} during a refresh waits for it instead of deadlocking`, async () => {
+      const u = await newUser()
+      const session = (await pool.query('select session_id from auth.refresh_tokens where token = $1', [u.refresh])).rows[0].session_id
+      await pool.query(`create table if not exists public.b_hold (session_id uuid primary key)`)
+      await pool.query(`create or replace function public.b_rot() returns trigger language plpgsql as $$
+        begin if new.revoked and not old.revoked and exists (select 1 from public.b_hold where session_id = new.session_id)
+          then perform pg_sleep(1.5); end if; return new; end $$`)
+      await pool.query(`create or replace trigger b_rot before update on auth.refresh_tokens for each row execute function public.b_rot()`)
+      try {
+        await pool.query('insert into public.b_hold values ($1)', [session])
+        const rotating = refreshOf(u.refresh)
+        for (let i = 0; !(await pool.query(`select 1 from pg_stat_activity where wait_event = 'PgSleep'
+          and query like '%update auth.refresh_tokens%'`)).rowCount; i++) {
+          if (i > 100) throw new Error('the rotation never reached the trigger')
+          await new Promise((r) => setTimeout(r, 20))
+        }
+        const [r, d] = await Promise.all([rotating, del(u.id)])
+        expect([r.status, d.status]).toEqual([200, 200])
+        expect((await pool.query('select 1 from auth.users where id = $1', [u.id])).rowCount).toBe(0)
+      } finally {
+        await pool.query('drop trigger if exists b_rot on auth.refresh_tokens')
+        await pool.query('drop function if exists public.b_rot()')
+        await pool.query('drop table if exists public.b_hold')
+      }
+    })
+  }
 
   it('deletes a user and their sessions', async () => {
     const u = await newUser()

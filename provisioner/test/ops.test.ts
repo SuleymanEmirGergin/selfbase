@@ -383,3 +383,66 @@ test('R6 probe: from the tenant network, neither control nor core on its control
     tryDocker('rm', '-f', HOST)
   }
 })
+
+test('F: an existing sb-<ref>-ctl without selfbase labels is refused as a conflict before anything is made', async () => {
+  assert.equal((await api('DELETE', `/projects/${REF}?volumes=true`)).status, 200)
+  const ctl = `sb-${REF}-ctl`
+  // another tool's network under the name, on the very subnet ensure would give it
+  docker('network', 'create', '--subnet', '10.207.250.16/29', ctl)
+  try {
+    const r = await api('POST', `/projects/${REF}/ensure`, input())
+    assert.deepEqual([r.status, r.body.error], [409, 'network_conflict'], JSON.stringify(r.body))
+    assert.equal(tryDocker('network', 'inspect', `sb-${REF}`), null)
+    assert.equal(tryDocker('inspect', `sb-${REF}-db`), null)
+    assert.ok(!docker('inspect', '-f', '{{json .NetworkSettings.Networks}}', 'selfbase-test-control').includes(`"${ctl}"`))
+  } finally {
+    tryDocker('network', 'rm', ctl)
+  }
+})
+
+test('F: labelled networks without the isolation this engine has are made again with it, once; volumes and data stay',
+  { skip: !ISOLATES && 'the engine has no gateway_mode_ipv4 (Docker 28+)' }, async () => {
+    assert.equal((await api('DELETE', `/projects/${REF}?volumes=true`)).status, 200)
+    const net = `sb-${REF}`
+    const labels = ['--label', 'selfbase.managed=true', '--label', `selfbase.project=${REF}`]
+    // as a provisioner on Docker below 28 left them: the split subnets, but neither Internal nor an isolated gateway
+    docker('network', 'create', '--subnet', '10.207.250.0/28', '--ip-range', '10.207.250.8/29', '--gateway', '10.207.250.1', ...labels, net)
+    docker('network', 'create', '--subnet', '10.207.250.16/29', '--ip-range', '10.207.250.20/30', '--gateway', '10.207.250.17', ...labels, `${net}-ctl`)
+    docker('volume', 'create', `sb-${REF}-pgdata`)
+    docker('run', '--rm', '-v', `sb-${REF}-pgdata:/d`, IMAGE, 'sh', '-c', 'echo kept > /d/data-marker')
+    docker('run', '-d', '--init', '--name', `sb-${REF}-db`, '--network', net, '--ip', '10.207.250.2', '-v', `sb-${REF}-pgdata:/data`, IMAGE)
+    const r = await api('POST', `/projects/${REF}/ensure`, input())
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    const mode = (n: string) => docker('network', 'inspect', '-f', '{{.Internal}} {{index .Options "com.docker.network.bridge.gateway_mode_ipv4"}}', n)
+    assert.equal(mode(net), 'true isolated')
+    assert.equal(mode(`${net}-ctl`), 'true isolated')
+    assert.equal(ipam(net), '10.207.250.0/28 10.207.250.8/29 10.207.250.1 true')
+    assert.equal(r.body.controlAttached, true)
+    assert.equal(tryDocker('run', '--rm', '-v', `sb-${REF}-pgdata:/d`, IMAGE, 'cat', '/d/data-marker'), 'kept')
+    const made = ids()
+    assert.equal((await api('POST', `/projects/${REF}/ensure`, input())).status, 200)
+    assert.deepEqual(ids(), made)
+  })
+
+test('F: a network ensure adopts as it is (labels, subnet, isolation right) is refused while a foreign container is on it; a job is not foreign', async () => {
+  assert.equal((await api('POST', `/projects/${REF}/ensure`, input())).status, 200)
+  const net = `sb-${REF}`
+  const INTRUDER = 'selfbase-test-intruder'
+  tryDocker('rm', '-f', INTRUDER)
+  try {
+    docker('run', '-d', '--init', '--name', INTRUDER, '--network', net, IMAGE)
+    const before = ids()
+    const busy = await api('POST', `/projects/${REF}/ensure`, input())
+    assert.deepEqual([busy.status, busy.body.error], [409, 'network_busy'], JSON.stringify(busy.body))
+    assert.deepEqual(ids(), before)
+    tryDocker('rm', '-f', INTRUDER)
+    // the project's own job container (a backup running) is part of the project
+    docker('run', '-d', '--init', '--name', `sb-${REF}-job-backup`, '--network', net, IMAGE)
+    const r = await api('POST', `/projects/${REF}/ensure`, input())
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.deepEqual(ids(), before)
+  } finally {
+    tryDocker('rm', '-f', INTRUDER)
+    tryDocker('rm', '-f', `sb-${REF}-job-backup`)
+  }
+})

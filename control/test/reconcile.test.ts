@@ -96,6 +96,33 @@ test("reconcile's finished applies older than a week are deleted; other jobs sta
     .toEqual([{ type: 'project.apply', auto: false }, { type: 'project.apply', auto: true }, { type: 'project.backup', auto: true }])
 })
 
+test('a release apply that failed is retried with core recreated, under the backoff, until one succeeds', async () => {
+  const p = await add('ACTIVE_HEALTHY')
+  fake.running(p.ref, 'test')
+  await pool.query(`insert into control.jobs (type, project_id, lane, status, payload) values
+    ('project.apply', $1, 'light', 'failed', '{"recreate":["core"],"released":"gone.example.test"}')`, [p.id])
+  const pending = async () => (await jobsOf(p.id)).filter((j) => j.status === 'pending')
+  // the failed one just ended: the first retry waits a minute like any of reconcile's applies
+  expect((await reconcileOnce(deps())).actions).toContainEqual({ ref: p.ref, action: 'backoff' })
+  expect(await pending()).toEqual([])
+  await pool.query(`update control.jobs set updated_at = now() - interval '2 minutes' where project_id = $1`, [p.id])
+  expect((await reconcileOnce(deps())).actions).toContainEqual({ ref: p.ref, action: 'apply release' })
+  expect(await pending()).toEqual([{ type: 'project.apply', status: 'pending', payload: { recreate: ['core'] } }])
+  // once a later apply succeeded the router no longer has the name: nothing more to do
+  await pool.query(`update control.jobs set status = 'succeeded', updated_at = now() - interval '2 hours' where project_id = $1 and status = 'pending'`, [p.id])
+  await reconcileOnce(deps())
+  expect(await pending()).toEqual([])
+})
+
+test("a failed release apply older than a week is kept while it still holds its name", async () => {
+  const p = await add('ACTIVE_HEALTHY')
+  fake.running(p.ref, 'test')
+  await pool.query(`insert into control.jobs (type, project_id, lane, status, payload, created_at) values
+    ('project.apply', $1, 'light', 'failed', '{"recreate":["core"],"released":"gone.example.test"}', now() - interval '8 days')`, [p.id])
+  await reconcileOnce(deps())
+  expect((await jobsOf(p.id)).filter((j) => j.status === 'failed')).toHaveLength(1)
+})
+
 test('a core detached from the proxy network is attached again', async () => {
   const p = await add('ACTIVE_HEALTHY')
   fake.running(p.ref, 'test')
@@ -116,7 +143,7 @@ test('a running container of a paused project is stopped', async () => {
   expect(fake.callsOf('stop')).toHaveLength(1)
 })
 
-test('FR2: a project gated by an unconfirmed rotating import gets core, rest, fn and pooler stopped once; later passes are quiet', async () => {
+test('FR2: a project gated by an unconfirmed rotating import gets core, rest, fn and pooler stopped by a contain job; a failed one backs off', async () => {
   const importJob = async (projectId: string) => (await pool.query(`insert into control.jobs (type, lane, project_id, step, status, payload)
     values ('project.import', 'heavy', $1, '9', 'failed', $2) returning id`, [projectId, { backup_dir: 'import/o/x', rotate_keys: true, job_version: 2 }])).rows[0].id
   // its onFail stop failed (the provisioner was down): the four still run
@@ -127,12 +154,25 @@ test('FR2: a project gated by an unconfirmed rotating import gets core, rest, fn
   const q = await add('INIT_FAILED')
   fake.running(q.ref, 'test')
   await pool.query(`insert into control.job_events (job_id, status, step) values ($1, 'succeeded', 'restored')`, [await importJob(q.id)])
-  const first = await reconcileOnce(deps())
-  expect(first.actions).toEqual([{ ref: p.ref, action: 'stop sessions_not_deleted' }])
-  expect(fake.callsOf('stop').map((c) => c.args)).toEqual([[p.ref, ['core', 'rest', 'fn', 'pooler']]])
-  const second = await reconcileOnce(deps())
-  expect(second.actions).toEqual([])
-  expect(fake.callsOf('stop')).toHaveLength(1)
+  const contains = async () => (await pool.query(`select status from control.jobs where project_id = $1 and type = 'project.contain'
+    order by created_at`, [p.id])).rows.map((r) => r.status)
+  // the stop fails (every try of it): one job, not a direct stop on every pass
+  fake.fail('stop', 3)
+  expect((await reconcileOnce(deps())).actions).toEqual([{ ref: p.ref, action: 'contain' }])
+  await drain()
+  expect(await contains()).toEqual(['failed'])
+  const tries = fake.callsOf('stop').length
+  expect((await reconcileOnce(deps())).actions).toEqual([{ ref: p.ref, action: 'backoff' }])
+  expect(fake.callsOf('stop')).toHaveLength(tries)
+  // after the backoff it is retried, and the four stop
+  await pool.query(`update control.jobs set updated_at = now() - interval '2 minutes' where project_id = $1 and type = 'project.contain'`, [p.id])
+  expect((await reconcileOnce(deps())).actions).toEqual([{ ref: p.ref, action: 'contain' }])
+  await drain()
+  expect(await contains()).toEqual(['failed', 'succeeded'])
+  expect(fake.callsOf('stop').at(-1)!.args).toEqual([p.ref, ['core', 'rest', 'fn', 'pooler']])
+  // stopped now (db is the restore's own and keeps running): later passes are quiet
+  expect((await reconcileOnce(deps())).actions).toEqual([])
+  expect(fake.state(q.ref).services.every((s) => s.state === 'running')).toBe(true)
 })
 
 test('an unknown sb- ref is reported and nothing is removed', async () => {

@@ -19,7 +19,7 @@ export type SessionJson = {
 
 const newToken = () => randomBytes(32).toString('base64url')
 
-async function sessionJson(user: UserRow, sessionId: string, refreshToken: string): Promise<SessionJson> {
+async function sessionJson(user: UserRow, sessionId: string, refreshToken: string, amr?: string): Promise<SessionJson> {
   const claims = {
     sub: user.id,
     role: 'authenticated' as const,
@@ -29,6 +29,9 @@ async function sessionJson(user: UserRow, sessionId: string, refreshToken: strin
     app_metadata: user.raw_app_meta_data ?? {},
     user_metadata: user.raw_user_meta_data ?? {},
     session_id: sessionId,
+    // GoTrue's authentication method claim. shortcut: only the first access token of an email-link session carries
+    // it (there is no sessions table to keep it across refreshes); upgrade with one if a client needs it later
+    ...(amr ? { amr: [{ method: amr, timestamp: Math.floor(Date.now() / 1000) }] } : {}),
   }
   return {
     access_token: await sign(claims, ACCESS_TTL),
@@ -42,13 +45,29 @@ async function sessionJson(user: UserRow, sessionId: string, refreshToken: strin
 
 export const isBanned = (user: UserRow) => user.banned_until && new Date(user.banned_until) > new Date()
 
-/** Starts a new session for a signed-in user: first refresh token, last_sign_in_at bumped. */
-export async function issueSession(user: UserRow): Promise<SessionJson> {
+/**
+ * Starts a new session for a signed-in user: first refresh token, last_sign_in_at bumped. `amr`: the method of an
+ * email-link session (GoTrue's names, `recovery` for a password reset link), put in its access token. `seen`: the
+ * password hash the caller checked the user against (the password, or a one-time token read before a reset could
+ * change it). Under the S4 lock it must still be the user's hash and the user not banned, so a reset or a ban that
+ * ran since then (and ended every session) also refuses this one. `live`: the session the request came from (phone
+ * verify), which must still be live under the lock too, so no new session outlives a logout or reset of it.
+ */
+export async function issueSession(user: UserRow, amr?: string, seen: string | null = user.encrypted_password ?? null,
+  live?: string): Promise<SessionJson> {
   const sessionId = randomUUID()
   const token = newToken()
-  await pool.query(`insert into auth.refresh_tokens (token, user_id, session_id) values ($1, $2, $3)`, [token, user.id, sessionId])
-  await pool.query(`update auth.users set last_sign_in_at = now() where id = $1`, [user.id])
-  return sessionJson((await findById(user.id))!, sessionId, token)
+  await withTx(async (c) => {
+    if (live !== undefined) await lockLiveSession(c, user.id, live)
+    else await lockUser(c, user.id)
+    const now = (await c.query(`select encrypted_password is not distinct from $2 as same, banned_until > now() as banned
+      from auth.users where id = $1`, [user.id, seen])).rows[0]
+    if (!now?.same) throw authError(400, 'invalid_credentials', 'Invalid login credentials')
+    if (now.banned) throw authError(400, 'user_banned', 'User is banned')
+    await c.query(`insert into auth.refresh_tokens (token, user_id, session_id) values ($1, $2, $3)`, [token, user.id, sessionId])
+    await c.query(`update auth.users set last_sign_in_at = now() where id = $1`, [user.id])
+  })
+  return sessionJson((await findById(user.id))!, sessionId, token, amr)
 }
 
 /**
@@ -104,15 +123,27 @@ export async function rotate(refreshToken: string): Promise<SessionJson> {
   return sessionJson(user, result.session_id, result.token)
 }
 
-// S4: rotation and every revocation of a user's tokens hold this per-user transaction lock. Without it a revocation's
-// UPDATE could run while a rotation had inserted its child token but not committed it: the UPDATE's snapshot misses
-// the child, which then outlives the logout. Under the lock the revocation's UPDATE starts after the rotation
-// committed, so it sees (and revokes) the child. Lock order is not uniform: the admin ban holds the auth.users row
-// (FOR UPDATE) and then asks for this lock, while a rotation holds this lock and then its child insert takes FOR KEY
-// SHARE on that row. Postgres detects that cycle and aborts one side with a 500; either side rolls back whole, so no
-// revocation is lost and no ban reports success with a live token.
+// S4: every insert of a refresh token (sign-in, rotation) and every revocation of a user's tokens hold this per-user
+// transaction lock. Without it a revocation's UPDATE could run while a rotation or sign-in had inserted a token but
+// not committed it: the UPDATE's snapshot misses the token, which then outlives the logout. Under the lock the
+// revocation's UPDATE starts after the insert committed, so it sees (and revokes) it; and a sign-in re-checks the
+// password hash and the ban under it (issueSession), so it cannot pass a check a reset or ban already undid.
+// Lock order: a token insert's foreign key takes FOR KEY SHARE on the auth.users row under this lock, so every path
+// whose row lock conflicts with that (the admin PATCH's FOR UPDATE, both user deletes) takes this lock first, and the
+// two never wait on each other in a cycle. Plain updates of other columns (PUT /user, a link's apply, sign-up) take a
+// lock KEY SHARE does not wait on; the ones that end or check sessions take this lock first as well.
 const LOCK_NS = 0x5e55 // the two-key advisory lock space of refresh tokens
-const lockUser = (c: PoolClient, userId: string) => c.query('select pg_advisory_xact_lock($1, hashtext($2::text))', [LOCK_NS, userId])
+export const lockUser = (c: PoolClient, userId: string) => c.query('select pg_advisory_xact_lock($1, hashtext($2::text))', [LOCK_NS, userId])
+
+/**
+ * Takes the S4 lock and checks, under it, that session `sessionId` is still live: a write made with a session's
+ * access token (PUT /user) must not land after a reset or logout revoked that session.
+ */
+export async function lockLiveSession(c: PoolClient, userId: string, sessionId: string | undefined): Promise<void> {
+  await lockUser(c, userId)
+  if (!sessionId || !(await c.query(`select 1 from auth.refresh_tokens where session_id = $1 and not revoked limit 1`, [sessionId])).rowCount)
+    throw authError(403, 'session_not_found', 'Session from session_id claim in JWT does not exist')
+}
 
 const revokeIn = (c: PoolClient, sessionId: string) =>
   c.query(`update auth.refresh_tokens set revoked = true, updated_at = now() where session_id = $1 and not revoked`, [sessionId])
@@ -140,6 +171,16 @@ export async function revokeUserSessions(userId: string, except: string | null =
     await c.query(`update auth.refresh_tokens set revoked = true, updated_at = now()
       where user_id = $1 and not revoked and ($2::uuid is null or session_id <> $2)`, [userId, except])
   })
+}
+
+/**
+ * GoTrue's UpdatePassword: a new password ends every session of the user except `keep` (the caller's own; null for an
+ * admin reset) and clears its one-time tokens, so a stolen refresh token or link dies with the old password. Runs in
+ * the caller's transaction, next to the password write.
+ */
+export async function endSessionsForNewPassword(client: PoolClient, userId: string, keep: string | null): Promise<void> {
+  await revokeUserSessions(userId, keep, client)
+  await client.query('delete from auth.one_time_tokens where user_id = $1', [userId])
 }
 
 /** A session is live while it has an unrevoked refresh token. */

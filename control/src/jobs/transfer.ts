@@ -8,10 +8,12 @@ import { ApiError } from '../errors.ts'
 import { ProvisionerError } from '../provisioner.ts'
 import { getSecrets } from '../secrets.ts'
 import { defineJob, type JobCtx } from './engine.ts'
-import { activate, certificate, createSteps, failTo, healthy, healthySteps, need, sessionsUnconfirmed, setStatus, step } from './project.ts'
+import { activate, certificate, createSteps, failTo, healthy, healthySteps, need, restoreUnresolved, sessionsUnconfirmed, setStatus, step } from './project.ts'
 
 // what an import stops for the restore; db keeps running (the restore job connects to it)
 export const RESTORE_STOPS = ['core', 'rest', 'fn', 'pooler']
+// the import's steps from the restore job's start to its confirmed end (restoreUnresolved reads their events)
+export const RESTORE_STEPS = ['restore', 'restored']
 // shortcut: a fixed budget for one backup or restore; make it a setting when a project's dump takes hours
 const JOB_MS = 6 * 3600_000
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -24,6 +26,18 @@ function volumeFull(tail: string): string {
   const numbers = m ? `the backup volume has ${m[1]} MiB free; this backup needs up to ${m[4]} MiB and ${m[2]} MiB (${m[3]}) must stay free`
     : 'the backup volume would keep less than its floor free after this backup'
   return `backup_volume_full: ${numbers}. Remove old backups or exports, or grow the volume, then try again.`
+}
+
+// restore.sh's exit 6: before anything changed, it found that the archive's files and the dump's estimated size would
+// leave less than the floor free on the volume of the project's data (or its inodes), or its watchdog stopped the
+// storage extraction at the floor, before the database changed (a floor stop once pg_restore started is exit 8).
+// Again only the numbers and the rule are taken (the other lines get the general text)
+const RESTORE_REFUSED = /^restore: REFUSED: (\d+) MiB free on the volume of the project's data, at least (\d+) MiB \((BACKUP_MIN_FREE_MIB|10% or 5 GiB, whichever is larger)\) needed after this restore of (about|more than) (\d+) MiB; free space first$/m
+function restoreVolumeFull(tail: string): string {
+  const m = RESTORE_REFUSED.exec(tail)
+  const numbers = m ? `the volume of the project's data has ${m[1]} MiB free; this import needs ${m[4]} ${m[5]} MiB and ${m[2]} MiB (${m[3]}) must stay free`
+    : "the volume of the project's data would keep less than its floor free after this import"
+  return `restore_volume_full: ${numbers}. Nothing was changed: free space or grow the volume, then import again.`
 }
 
 /** Waits for the provisioner job of `type` to end; its output tail when it succeeded, else an error saying what changed. */
@@ -56,12 +70,27 @@ async function waitFor(ctx: JobCtx, ref: string, type: 'backup' | 'restore'): Pr
     if (tail && s.status === 'succeeded') await ctx.log(`${type}_output`, { tail })
     if (s.status === 'succeeded') return s.tail
     if (type === 'backup' && s.exitCode === 4) throw new Error(volumeFull(s.tail))
-    if (type === 'restore' && s.exitCode === 10) throw new Error('the restore failed and rolled back: the database was not changed')
+    if (type === 'restore' && s.exitCode === 10) {
+      throw new Error('the dump of the backup could not be read, so nothing was restored (pg_restore never started): check the backup, then import again')
+    }
+    if (type === 'restore' && s.exitCode === 6) throw new Error(restoreVolumeFull(s.tail))
     if (type === 'restore' && s.exitCode === 5) {
       throw new Error('the database was restored but its sessions could not be deleted (rotate_keys): delete this project, then import again')
     }
     if (type === 'restore' && s.exitCode === 3) {
       throw new Error('the database was restored but the storage files were not (or only partly): delete this project, then import again')
+    }
+    if (type === 'restore' && s.exitCode === 7) {
+      throw new Error('the import is partial: the database was restored but the storage files were not replaced (the restore was stopped): '
+        + 'delete this project, then run the import again')
+    }
+    if (type === 'restore' && s.exitCode === 8) {
+      // the import's onFail stops the database with the four (as for every failure past the restore's start); that stop
+      // can fail too (reconcile then retries it), so the message says it is attempted, not done. Phase-neutral: a cleanup
+      // that ran out of time before pg_restore started is exit 8 as well
+      throw new Error('the restore or its cleanup could not finish safely, so the state of the database is unknown and needs inspection: it may '
+        + 'hold the whole backup, part of it, or none of it, and the storage files were not replaced; control tries to stop its database as well; '
+        + 'delete this project, then import again')
     }
     throw new Error(`the ${type} job failed (${s.exitCode === null ? 'it never started' : `exit ${s.exitCode}`})`)
   }
@@ -200,7 +229,22 @@ defineJob('project.import', 'heavy', [
 // version 2: the sessions moved into the restore job; an import an earlier control left past its restore fails (I1)
 ], { version: 2, onFail: async (ctx) => {
   await importFailed.onFail(ctx)
+  if (!ctx.project) return
+  // failed in the restore or its wait, whatever the outcome (exit 6, 7, 8, 10, a killed job, a lost result): the
+  // database may hold anything, so nothing of the project runs, the database neither; reconcile keeps it so
+  if (RESTORE_STEPS.includes(ctx.step)) await ctx.provisioner.stop(ctx.project.ref, [...RESTORE_STOPS, 'db'])
   // not past a confirmed 'restored' (an earlier control's job may have started core on its throwaway secret): the four
   // stop, and ensure refuses to start them again
-  if (ctx.project && rotating(ctx) && await sessionsUnconfirmed(ctx.db, ctx.project.id)) await ctx.provisioner.stop(ctx.project.ref, RESTORE_STOPS)
+  else if (rotating(ctx) && await sessionsUnconfirmed(ctx.db, ctx.project.id)) await ctx.provisioner.stop(ctx.project.ref, RESTORE_STOPS)
 } })
+
+// reconcile's stop of a failed import's services that still run (the onFail's stop failed, or someone started them):
+// all five of an INIT_FAILED import that failed in its restore (restoreUnresolved), else the four of a rotating import
+// whose sessions were never confirmed deleted (sessionsUnconfirmed). A job, so a failed stop backs off as reconcile's
+// applies do; each case is read again here, as the project may have changed since the pass
+defineJob('project.contain', 'light', [step('stop', async (ctx) => {
+  const p = ctx.project
+  if (p?.status === 'INIT_FAILED' && await restoreUnresolved(ctx.db, p.id)) return ctx.provisioner.stop(p.ref, [...RESTORE_STOPS, 'db'])
+  if (p && await sessionsUnconfirmed(ctx.db, p.id)) return ctx.provisioner.stop(p.ref, RESTORE_STOPS)
+  await ctx.log('skipped', { status: p?.status ?? null })
+})])

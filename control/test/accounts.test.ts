@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { app } from '../src/app.ts'
 import { pool } from '../src/db.ts'
-import { coreAuth, resetRateLimits } from '../src/core.ts'
+import { coreAuth, resetRateLimits, verify as coreVerify } from '../src/core.ts'
 import { config, loadConfig } from '../src/config.ts'
 import { hashToken } from '../src/ids.ts'
 import { cookieNames } from '../src/session.ts'
@@ -425,43 +425,126 @@ describe('password reset', () => {
     expect(frag.get('type')).toBe('recovery')
     const access = frag.get('access_token')!
 
-    const put = await app.request('/platform/auth/v1/user', {
+    const putWith = (body: unknown) => app.request('/platform/auth/v1/user', {
       method: 'PUT',
       headers: { authorization: `Bearer ${access}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ password: 'a-brand-new-password' }),
+      body: JSON.stringify(body),
     })
+    // refusals first: they leave the recovery session as it was
+    const short = await putWith({ password: 'short' })
+    expect(short.status).toBe(422)
+    expect(await short.json()).toEqual({ error: 'weak_password', message: expect.any(String) })
+    expect((await putWith({ email: 'hijack@example.test' })).status).toBe(400)
+    // only the password is passed on to core
+    const put = await putWith({ password: 'a-brand-new-password', email: 'hijack@example.test', data: { a: 1 } })
     expect(put.status).toBe(200)
+    expect((await pool.query(`select email, raw_user_meta_data from auth.users where email in ($1, 'hijack@example.test')`, [OWNER])).rows)
+      .toEqual([{ email: OWNER, raw_user_meta_data: {} }])
     // the reset ended the other sessions: the old access cookie and the old refresh cookie are dead
     expect((await as(old, 'GET', '/platform/me')).status).toBe(401)
     expect((await app.request('/platform/refresh', { method: 'POST', headers: { cookie: oldRefresh, origin: ORIGIN } })).status).toBe(401)
-    // only the password is passed on to core
-    const other = await app.request('/platform/auth/v1/user', {
-      method: 'PUT',
-      headers: { authorization: `Bearer ${access}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ email: 'hijack@example.test' }),
-    })
-    expect(other.status).toBe(400)
-    await app.request('/platform/auth/v1/user', {
-      method: 'PUT',
-      headers: { authorization: `Bearer ${access}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ password: 'a-brand-new-password', email: 'hijack@example.test', data: { a: 1 } }),
-    })
-    expect((await pool.query(`select email, raw_user_meta_data from auth.users where email in ($1, 'hijack@example.test')`, [OWNER])).rows)
-      .toEqual([{ email: OWNER, raw_user_meta_data: {} }])
+    // C: and the recovery session itself: the link's token sets one password, then the user signs in fresh
+    const recoverySession = (await coreVerify(access)).session_id
+    expect((await pool.query('select 1 from auth.refresh_tokens where session_id = $1 and not revoked', [recoverySession])).rowCount).toBe(0)
+    expect((await putWith({ password: 'a-second-new-password' })).status).toBe(401)
     resetRateLimits()
-    expect((await login(OWNER, 'a-brand-new-password')).length).toBeGreaterThan(0)
-    const short = await app.request('/platform/auth/v1/user', {
-      method: 'PUT',
-      headers: { authorization: `Bearer ${access}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ password: 'short' }),
-    })
-    expect(short.status).toBe(422)
-    expect(await short.json()).toEqual({ error: 'weak_password', message: expect.any(String) })
+    const fresh = await login(OWNER, 'a-brand-new-password')
+    expect(fresh.length).toBeGreaterThan(0)
     // back to the password the other tests use
-    await app.request('/platform/auth/v1/user', {
+    const freshAccess = decodeURIComponent(fresh.split('; ').find((c) => c.startsWith('__Host-sb_studio='))!.split('=')[1])
+    expect((await app.request('/platform/auth/v1/user', {
       method: 'PUT',
-      headers: { authorization: `Bearer ${access}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ password: PASSWORD }),
-    })
+      headers: { authorization: `Bearer ${freshAccess}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ password: PASSWORD, current_password: 'a-brand-new-password' }),
+    })).status).toBe(200)
+  })
+})
+
+// A Studio access token alone (a stolen cookie) must not set a new password: it needs a recovery session or the
+// current password, and control's own lifetimes apply here as on every other cookie request.
+describe('the password route', () => {
+  const put = (bearer: string, body: unknown) => app.request('/platform/auth/v1/user', {
+    method: 'PUT', headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' }, body: JSON.stringify(body),
+  })
+  const accessOf = (cookie: string) => decodeURIComponent(cookie.split('; ').find((c) => c.startsWith('__Host-sb_studio='))!.split('=')[1])
+  const sessionOfJwt = async (jwt: string) => (await coreVerify(jwt)).session_id as string
+  async function recoveryAccess(): Promise<string> {
+    await pool.query(`update auth.users set recovery_sent_at = null where email = $1`, [OWNER])
+    const before = (await pool.query(`select count(*)::int as n from selfbase.mail_log where to_email = $1`, [OWNER])).rows[0].n
+    expect((await app.request('/platform/auth/v1/recover', json({ email: OWNER }))).status).toBe(200)
+    let html = ''
+    for (let i = 0; i < 50 && !html; i++) {
+      html = (await pool.query(`select html from selfbase.mail_log where to_email = $1 order by id offset $2 limit 1`, [OWNER, before])).rows[0]?.html ?? ''
+      if (!html) await new Promise((r) => setTimeout(r, 50))
+    }
+    const url = new URL(html.match(/href="([^"]+)"/)![1].replaceAll('&amp;', '&'))
+    const location = (await app.request(url.pathname + url.search)).headers.get('location')!
+    return new URLSearchParams(location.split('#')[1]).get('access_token')!
+  }
+
+  test('a normal Studio access token without the current password is refused', async () => {
+    const jwt = accessOf(await login(OWNER, PASSWORD))
+    const res = await put(jwt, { password: 'a-brand-new-password' })
+    expect([401, 403]).toContain(res.status)
+    resetRateLimits()
+    expect((await login(OWNER, PASSWORD)).length).toBeGreaterThan(0)
+  })
+
+  test('with the current password it works, and the check leaves no session behind; a wrong one is refused', async () => {
+    const jwt = accessOf(await login(OWNER, PASSWORD))
+    const wrong = await put(jwt, { password: 'a-brand-new-password', current_password: 'not-the-password' })
+    expect(wrong.status).toBe(400)
+    const ok = await put(jwt, { password: 'a-brand-new-password', current_password: PASSWORD })
+    expect(ok.status).toBe(200)
+    const live = await pool.query(`select distinct t.session_id from auth.refresh_tokens t join auth.users u on u.id = t.user_id
+      where u.email = $1 and not t.revoked`, [OWNER])
+    expect(live.rows.map((r) => r.session_id)).toEqual([await sessionOfJwt(jwt)])
+    expect((await put(jwt, { password: PASSWORD, current_password: 'a-brand-new-password' })).status).toBe(200)
+  })
+
+  test('a recovery token works without the current password', async () => {
+    expect((await put(await recoveryAccess(), { password: PASSWORD })).status).toBe(200)
+  })
+
+  test('C: two PUTs racing with one recovery token: exactly one sets a password, and the session ends with it', async () => {
+    const access = await recoveryAccess()
+    const sid = await sessionOfJwt(access)
+    // the first password write sleeps before it commits, so the second PUT is already queued on the user's lock
+    await pool.query(`create table if not exists public.c_hold (user_id uuid primary key)`)
+    await pool.query(`create or replace function public.c_hold() returns trigger language plpgsql as $$
+      begin delete from public.c_hold where user_id = new.id; if found then perform pg_sleep(1); end if; return new; end $$`)
+    await pool.query(`create or replace trigger c_hold after update of encrypted_password on auth.users for each row execute function public.c_hold()`)
+    let statuses: number[]
+    try {
+      await pool.query(`insert into public.c_hold select id from auth.users where email = $1`, [OWNER])
+      statuses = (await Promise.all([put(access, { password: PASSWORD }), put(access, { password: 'a-racing-password-1' })]))
+        .map((r) => r.status)
+    } finally {
+      await pool.query('drop trigger if exists c_hold on auth.users')
+      await pool.query('drop function if exists public.c_hold()')
+      await pool.query('drop table if exists public.c_hold')
+    }
+    expect(statuses.filter((s) => s === 200)).toHaveLength(1)
+    expect((await pool.query('select 1 from auth.refresh_tokens where session_id = $1 and not revoked', [sid])).rowCount).toBe(0)
+    // back to the password the other tests use, whichever won
+    resetRateLimits()
+    if (statuses[1] === 200) {
+      const jwt = accessOf(await login(OWNER, 'a-racing-password-1'))
+      expect((await put(jwt, { password: PASSWORD, current_password: 'a-racing-password-1' })).status).toBe(200)
+    }
+    resetRateLimits()
+    expect((await login(OWNER, PASSWORD)).length).toBeGreaterThan(0)
+  })
+
+  test('a token minted before the absolute deadline is refused after it, and so is an idle session', async () => {
+    const access = await recoveryAccess()
+    const sid = await sessionOfJwt(access)
+    await pool.query(`update auth.refresh_tokens set created_at = now() - interval '8 days' where session_id = $1`, [sid])
+    expect((await put(access, { password: PASSWORD })).status).toBe(401)
+    expect((await pool.query('select 1 from auth.refresh_tokens where session_id = $1 and not revoked', [sid])).rowCount).toBe(0)
+
+    const idle = await recoveryAccess()
+    await pool.query(`update auth.refresh_tokens set created_at = now() - interval '25 hours' where session_id = $1`, [await sessionOfJwt(idle)])
+    expect((await put(idle, { password: PASSWORD })).status).toBe(401)
   })
 })

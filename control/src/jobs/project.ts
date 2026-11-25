@@ -5,13 +5,13 @@ import { admit, AdmissionError, type Size } from '../admission.ts'
 import { config } from '../config.ts'
 import { forgetCoreIp } from '../core-addr.ts'
 import { ApiError } from '../errors.ts'
-import { allocateHost, assertRoutable, hostsOf, precheckHost, releaseDomains, releaseHost } from '../hosts.ts'
+import { allocateHost, assertRoutable, hostsOf, legacyOrgOf, precheckHost, releaseDomains, releaseHost } from '../hosts.ts'
 import { newRef } from '../ids.ts'
 import { loadProjectEnv } from '../project-env.ts'
 import { generateProjectSecrets } from '../project-secrets.ts'
 import { getSecrets, jwtSecretInUse, putSecret } from '../secrets.ts'
 import { allocateSubnet } from '../subnets.ts'
-import { defineJob, enqueue, DESIRED_RUNNING, type JobCtx, type Project } from './engine.ts'
+import { defineJob, enqueue, enqueueCoalesced, DESIRED_RUNNING, type JobCtx, type Project } from './engine.ts'
 
 // admit reserves nothing: every admission and the status change that makes the project count run under this lock
 const ADMISSION_LOCK = 7213018
@@ -101,6 +101,43 @@ export const setStatus = (ctx: JobCtx, status: string) => ctx.db.query('update c
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 /**
+ * Run at control start: a name LEGACY_HOSTNAMES now gives another org (whatever issued_hosts says) is removed and
+ * logged, and its project gets a project.apply carrying the name (`released`), in one transaction, so the router stops
+ * serving it. Until that apply succeeds addDomain refuses the name to anyone (hosts.ts). A name the setting no longer
+ * lists at all is left in place with a warning: an empty or misspelt setting must not take a v1 name off the air.
+ * Returns the job ids.
+ */
+export async function evictStaleLegacyNames(db: pg.Pool): Promise<string[]> {
+  const rows = (await db.query(
+    `select d.project_id, d.hostname, p.ref, o.slug,
+            exists (select 1 from control.host_slots s where s.hostname = d.hostname and s.project_id = d.project_id)
+         or exists (select 1 from control.issued_hosts i where i.hostname = d.hostname and i.org_id = p.org_id) as counted
+       from control.project_domains d
+       join control.projects p on p.id = d.project_id join control.organizations o on o.id = p.org_id
+      where d.kind <> 'default'`)).rows
+  const jobs: string[] = []
+  for (const r of rows) {
+    if (!config.legacyHostnames.includes(r.hostname)) {
+      if (!r.counted) console.warn(`hosts: ${r.hostname} on project ${r.ref} is neither counted nor in LEGACY_HOSTNAMES; left in place, check the setting`)
+      continue
+    }
+    const owner = legacyOrgOf(r.hostname)
+    if (owner === r.slug) continue
+    // a slug no organization has (a typo, no `default` org) gives the name to nobody: evicting it buys nothing
+    if (!(await db.query('select 1 from control.organizations where slug = $1', [owner])).rowCount) {
+      console.warn(`hosts: ${r.hostname} on project ${r.ref} is bound by LEGACY_HOSTNAMES to ${owner}, which no organization has; left in place, check the setting`)
+      continue
+    }
+    jobs.push(await enqueueCoalesced(db,
+      { type: 'project.apply', projectId: r.project_id, payload: { recreate: ['core'], released: r.hostname }, createdBy: null },
+      (c) => c.query(`delete from control.project_domains where project_id = $1 and hostname = $2 and kind <> 'default'`,
+        [r.project_id, r.hostname])))
+    console.log(`hosts: removed ${r.hostname} from project ${r.ref}: LEGACY_HOSTNAMES no longer gives it to organization ${r.slug}`)
+  }
+  return jobs
+}
+
+/**
  * A rotating import (rotate_keys) that neither succeeded nor passed its 'restored' step under the current steps may
  * have left the restored sessions in the database (I1): its project must not start on the new keys. Read from the job
  * record (a 'succeeded' event of 'restored' means the restore job confirmed the deletes), never from a flag.
@@ -110,6 +147,17 @@ export async function sessionsUnconfirmed(db: pg.Pool, projectId: string, except
       and j.payload->>'rotate_keys' = 'true' and j.status <> 'succeeded' and j.id is distinct from $2
       and not (coalesce((j.payload->>'job_version')::int, 1) >= 2 and exists (select 1 from control.job_events e
         where e.job_id = j.id and e.status = 'succeeded' and e.step = 'restored'))`, [projectId, exceptJobId ?? null])).rowCount
+}
+
+/**
+ * An import that failed once its restore job started ('restore' or 'restored' has an event) and never confirmed it
+ * ('restored' not succeeded): its database may be in any state (job/restore.sh's exits 6 to 10, a lost result).
+ */
+export async function restoreUnresolved(db: pg.Pool, projectId: string): Promise<boolean> {
+  return !!(await db.query(`select 1 from control.jobs j where j.project_id = $1 and j.type = 'project.import' and j.status = 'failed'
+      and exists (select 1 from control.job_events e where e.job_id = j.id and e.step in ('restore', 'restored'))
+      and not exists (select 1 from control.job_events e where e.job_id = j.id and e.step = 'restored' and e.status = 'succeeded')`,
+    [projectId])).rowCount
 }
 
 export async function ensure(ctx: JobCtx, recreate: string[] = []) {

@@ -31,6 +31,8 @@ let cert: 'ok' | 'pending' = 'ok'
 const running: { stop(): Promise<void> }[] = []
 // core's API and admin listeners in one: records what the admin listener was sent
 const adminSeen: { url: string; body: string }[] = []
+// what the stub answers to the size query
+let sizeAnswer = '1000'
 // a hung core: the size query gets no answer until the test ends it
 const hung: { on: boolean; held: import('node:http').ServerResponse[] } = { on: false, held: [] }
 const stub = createServer(async (req, res) => {
@@ -39,7 +41,7 @@ const stub = createServer(async (req, res) => {
   if (req.url?.startsWith('/admin/')) adminSeen.push({ url: req.url, body })
   const sized = req.url === '/admin/sql' && body.includes('pg_database_size')
   if (sized && hung.on) return void hung.held.push(res)
-  res.writeHead(200, { 'content-type': 'application/json' }).end(sized ? '{"columns":["bytes"],"rows":[["1000"]]}' : '{}')
+  res.writeHead(200, { 'content-type': 'application/json' }).end(sized ? JSON.stringify({ columns: ['bytes'], rows: [[sizeAnswer]] }) : '{}')
 })
 const workers = (waits: Record<string, number> = {}) => {
   const port = (stub.address() as AddressInfo).port
@@ -195,6 +197,79 @@ describe('import', () => {
     expect((await finished(out.job_id)).error).toMatch(/delete this project, then import again/)
   })
 
+  test('a restore that exits 7 (database restored, storage not replaced) says the import is partial and to run it again', async () => {
+    fake.jobResult = () => ({ status: 'failed', exitCode: 7, tail: 'restore: STOPPED after the DATABASE WAS RESTORED' })
+    const out = await (await postForm(owner.token, form({ ...importFields({ name: 'partial' }), env_file: envBlob(v1Env().text) }))).json()
+    workers()
+    expect((await finished(out.job_id)).error).toMatch(/^the import is partial: .*storage files were not replaced.*run the import again/)
+  })
+
+  test('a restore that exits 8 (stopped, state unknown) stops the database too and says the state is unknown', async () => {
+    fake.jobResult = () => ({ status: 'failed', exitCode: 8, tail: 'restore: STOPPED, STATE UNKNOWN' })
+    const out = await (await postForm(owner.token, form({ ...importFields({ name: 'unknown' }), env_file: envBlob(v1Env().text) }))).json()
+    workers()
+    const error = (await finished(out.job_id)).error
+    // exit 8 comes from a cleanup that ran out of time before pg_restore started as well: no phase is claimed
+    expect(error).toMatch(/could not finish safely/)
+    expect(error).toMatch(/the whole backup, part of it, or none of it/)
+    // the stop is attempted (the onFail's stop can fail): the message never says it happened
+    expect(error).toMatch(/control tries to stop its database as well/)
+    expect(error).not.toMatch(/pg_restore started|is stopped as well|rolled back|was not changed/)
+    expect(fake.callsOf('stop').map((c) => c.args)).toContainEqual([out.project.ref, [...FOUR, 'db']])
+  })
+
+  // round 4, 3: control fails closed. Past the restore's start and short of a confirmed 'restored', whatever the
+  // outcome, the database may hold anything: it stops with the four
+  let lost = 0
+  test.each([
+    ['a lost job result (job_not_found)', () => { throw new ProvisionerError('job_not_found', 'no such job', 404) }],
+    ['an exit 137 (the job container killed)', () => ({ status: 'failed' as const, exitCode: 137, tail: '' })],
+    ['an exit 10 (a dump it cannot read)', () => ({ status: 'failed' as const, exitCode: 10, tail: '' })],
+  ])('%s after the restore began stops the database as well', async (_, result) => {
+    fake.jobResult = result
+    const out = await (await postForm(owner.token, form({ ...importFields({ name: `lost-${++lost}` }), env_file: envBlob(v1Env().text) }))).json()
+    workers()
+    expect((await finished(out.job_id)).status).toBe('failed')
+    expect(fake.callsOf('stop').map((c) => c.args)).toContainEqual([out.project.ref, [...FOUR, 'db']])
+    expect(fake.state(out.project.ref).services.filter((s) => s.state === 'running')).toEqual([])
+  })
+
+  test('a failure before the restore step leaves the database running', async () => {
+    fake.fail('stop', 3)
+    const out = await (await postForm(owner.token, form({ ...importFields({ name: 'early' }), env_file: envBlob(v1Env().text) }))).json()
+    workers()
+    expect((await finished(out.job_id)).status).toBe('failed')
+    expect(fake.callsOf('stop').map((c) => c.args).filter((a) => a[1]?.includes('db'))).toEqual([])
+  })
+
+  test('reconcile keeps a failed import stopped: a db still running is stopped, a failed stop retried after the backoff', async () => {
+    // the restore's result, then the onFail's stop fails (the provisioner was down then)
+    fake.jobResult = () => { fake.fail('stop', 1); return { status: 'failed', exitCode: 7, tail: '' } }
+    const out = await (await postForm(owner.token, form({ ...importFields({ name: 'contain' }), env_file: envBlob(v1Env().text) }))).json()
+    workers()
+    expect((await finished(out.job_id)).status).toBe('failed')
+    const ref = out.project.ref
+    const id = (await pool.query('select id from control.projects where ref = $1', [ref])).rows[0].id
+    expect(fake.state(ref).services.find((s) => s.service === 'db')!.state).toBe('running')
+    const pass = () => reconcileOnce({ db: pool, provisioner: fake, probe: async () => cert })
+    const contains = async () => (await pool.query(`select status from control.jobs where project_id = $1 and type = 'project.contain'
+      order by created_at`, [id])).rows.map((r) => r.status)
+    // a pass enqueues the stop (the workers run it); every try of it fails as well
+    fake.fail('stop', 3)
+    expect((await pass()).actions).toContainEqual({ ref, action: 'contain' })
+    await until(async () => ((await contains()).join() === 'failed' ? true : undefined))
+    // the next pass backs off (1 minute after a failure), then retries
+    expect((await pass()).actions).toContainEqual({ ref, action: 'backoff' })
+    expect(await contains()).toEqual(['failed'])
+    await pool.query(`update control.jobs set updated_at = now() - interval '2 minutes' where project_id = $1 and type = 'project.contain'`, [id])
+    expect((await pass()).actions).toContainEqual({ ref, action: 'contain' })
+    await until(async () => ((await contains()).join() === 'failed,succeeded' ? true : undefined))
+    expect(fake.state(ref).services.filter((s) => s.state === 'running')).toEqual([])
+    // once all five are stopped a pass is quiet; the project stays INIT_FAILED
+    expect((await pass()).actions.filter((a) => a.ref === ref)).toEqual([])
+    expect((await row(id)).status).toBe('INIT_FAILED')
+  })
+
   test('a certificate later than the wait leaves the import COMING_UP; a later reconcile pass activates it', async () => {
     cert = 'pending'
     const out = await (await postForm(owner.token, form({ ...importFields({ name: 'slow-cert' }), env_file: envBlob(v1Env().text) }))).json()
@@ -209,15 +284,29 @@ describe('import', () => {
     expect((await row(p.id)).status).toBe('ACTIVE_HEALTHY')
   })
 
-  test('a restore that exits 10 fails the job with "the database was not changed"', async () => {
-    fake.jobResult = () => ({ status: 'failed', exitCode: 10, tail: 'restore: FAILED: the database restore rolled back' })
+  test('a restore that exits 10 (its dump cannot be read, before pg_restore starts) says nothing was restored', async () => {
+    fake.jobResult = () => ({ status: 'failed', exitCode: 10, tail: 'restore: FAILED: the table of contents of the dump cannot be read' })
     const res = await postForm(owner.token, form({ ...importFields({ name: 'fails' }), env_file: envBlob(v1Env().text) }))
     const out = await res.json()
     workers()
     const job = await finished(out.job_id)
     expect(job.status).toBe('failed')
-    expect(job.error).toMatch(/the database was not changed/)
+    expect(job.error).toMatch(/the dump of the backup could not be read, so nothing was restored/)
+    expect(job.error).not.toMatch(/rolled back/)
     expect((await pool.query('select status from control.projects where ref = $1', [out.project.ref])).rows[0].status).toBe('INIT_FAILED')
+    expect(fake.callsOf('start')).toEqual([])
+  })
+
+  test('E: a restore refused for space (exit 6) fails as restore_volume_full with the numbers; nothing was changed', async () => {
+    fake.jobResult = () => ({ status: 'failed', exitCode: 6, tail: "restore: REFUSED: 900 MiB free on the volume of the project's data, "
+      + 'at least 100 MiB (BACKUP_MIN_FREE_MIB) needed after this restore of more than 850 MiB; free space first\n' })
+    const res = await postForm(owner.token, form({ ...importFields({ name: 'too-big' }), env_file: envBlob(v1Env().text) }))
+    const out = await res.json()
+    workers()
+    const job = await finished(out.job_id)
+    expect(job.status).toBe('failed')
+    expect(job.error).toBe("restore_volume_full: the volume of the project's data has 900 MiB free; this import needs more than 850 MiB "
+      + 'and 100 MiB (BACKUP_MIN_FREE_MIB) must stay free. Nothing was changed: free space or grow the volume, then import again.')
     expect(fake.callsOf('start')).toEqual([])
   })
 
@@ -946,6 +1035,41 @@ describe('I2: backups are sized in the job, from what the dump reads', () => {
     } finally {
       await c.query('rollback')
       c.release()
+    }
+  })
+
+  test('D: the size query pins search_path to pg_catalog: a shadowed pg_database_size cannot zero it', async () => {
+    const p = await project(acme.id, { name: 'd-shadow' })
+    adminSeen.length = 0
+    await disk.projectBytes(p)
+    const q = JSON.parse(adminSeen.at(-1)!.body).query as string
+    const c = await pool.connect()
+    try {
+      await c.query('begin')
+      await c.query(`create function public.pg_database_size(name) returns bigint language sql as 'select 0::bigint'`)
+      // as a role or database setting would: public first, pg_catalog named after it
+      await c.query(`set local search_path = public, pg_catalog`)
+      const res = await c.query(q)
+      const last = Array.isArray(res) ? res.at(-1)! : res
+      const real = Number((await c.query('select pg_catalog.pg_database_size(pg_catalog.current_database()) as n')).rows[0].n)
+      expect(Number(Object.values(last.rows[0])[0])).toBeGreaterThanOrEqual(real)
+    } finally {
+      await c.query('rollback')
+      c.release()
+    }
+  })
+
+  test('D: a size answer that is not 1 to 18 digits is an error, never a size', async () => {
+    const p = await project(acme.id, { name: 'd-digits' })
+    try {
+      for (const bad of ['1' + '0'.repeat(24), '-5000000000', '1e3', '']) {
+        sizeAnswer = bad
+        await expect(disk.projectBytes(p)).rejects.toThrow(/size could not be read/)
+      }
+      sizeAnswer = '999999999999999999'
+      expect(await disk.projectBytes(p)).toBe(999999999999999999)
+    } finally {
+      sizeAnswer = '1000'
     }
   })
 

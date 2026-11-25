@@ -14,9 +14,14 @@ const MIN_FREE_SHARE = 0.1
 const gib = (n: number) => (n / GiB).toFixed(1)
 
 // a backup writes at most the database (pg_dump is smaller than the live size) plus the stored objects. The rows are
-// the project's own to change, so an object whose size is not a plain non-negative number counts as 0, never less
-export const SIZE_SQL = `select (pg_database_size(current_database()) + coalesce((select sum(case when metadata->>'size' ~ '^[0-9]{1,18}$'
-  then (metadata->>'size')::bigint else 0 end) from storage.objects), 0))::text`
+// the project's own to change, so an object whose size is not a plain non-negative number counts as 0, never less.
+// The catalog functions are pg_catalog's, and projectBytes pins search_path too: a tenant's public.pg_database_size
+// (or operator) found first through a role or database search_path cannot answer for them. A superuser can still
+// replace pg_catalog's own, so this is an early refusal only: the job's writers are capped (job/backup.sh)
+export const SIZE_SQL = `select (pg_catalog.pg_database_size(pg_catalog.current_database()) + coalesce((select pg_catalog.sum(case
+  when metadata->>'size' ~ '^[0-9]{1,18}$' then (metadata->>'size')::bigint else 0 end) from storage.objects), 0))::text`
+// core runs the script in one transaction and answers with the last statement's rows
+const SIZE_SCRIPT = `set local search_path to pg_catalog; ${SIZE_SQL}`
 
 /** The volume's free and total bytes, and a project's backup size; an object, so tests can replace them. */
 export const disk = {
@@ -29,11 +34,12 @@ export const disk = {
   /** The project's database size plus its stored objects' size, as its core reports them. */
   async projectBytes(p: { id: string; ref: string; org_id: string }): Promise<number> {
     const res = await adminRequest(p, 'selfbase-control', '/admin/sql', {
-      method: 'POST', headers: new Headers({ 'content-type': 'application/json' }), body: JSON.stringify({ query: SIZE_SQL }) }, disk.sizeMs)
+      method: 'POST', headers: new Headers({ 'content-type': 'application/json' }), body: JSON.stringify({ query: SIZE_SCRIPT }) }, disk.sizeMs)
     const out = await res.json().catch(() => null)
-    const n = Number(out?.rows?.[0]?.[0])
-    if (!res.ok || out?.error || !Number.isFinite(n)) throw new Error(`the project's size could not be read (status ${res.status})`)
-    return n
+    const v = out?.rows?.[0]?.[0]
+    // 1 to 18 digits, as the job reads it: a negative, huge or odd answer is no size at all
+    if (!res.ok || out?.error || typeof v !== 'string' || !/^[0-9]{1,18}$/.test(v)) throw new Error(`the project's size could not be read (status ${res.status})`)
+    return Number(v)
   },
 }
 

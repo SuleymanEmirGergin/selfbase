@@ -6,7 +6,7 @@ export type NodeSettings = { registry: string; templateVersion: string; proxyNet
   subnetPool: string; controlContainer: string; controlNetwork: string
   /** the proxy's exact container name: control trusts X-Forwarded-For from its address only (GET /proxy) */
   proxyContainer: string
-  /** backup jobs' free-space floor in MiB (BACKUP_MIN_FREE_MIB); empty: backup.sh's own, 10% or 5 GiB */
+  /** backup and restore jobs' free-space floor in MiB (BACKUP_MIN_FREE_MIB); empty: the scripts' own, 10% or 5 GiB */
   backupMinFreeMib?: string }
 
 export const VERSION_RE = /^[0-9A-Za-z._-]{1,64}$/

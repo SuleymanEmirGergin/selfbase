@@ -269,6 +269,56 @@ describe('auth core', () => {
     })
   }
 
+  // GoTrue's UpdatePassword: a new password logs out every other session and clears the one-time tokens
+  it('a password change ends the other sessions and one-time tokens, and keeps the session that made it', async () => {
+    const s = await signUp()
+    const a = await (await signIn(s.user.email)).json()
+    const b = await (await signIn(s.user.email)).json()
+    await pool.query(`insert into auth.one_time_tokens (user_id, token_type, token_hash, relates_to)
+      values ($1, 'recovery_token', 'stolen-link-hash', $2)`, [s.user.id, s.user.email])
+    // a change without a password ends nothing
+    expect((await call('PUT', '/user', { data: { x: 1 } }, a.access_token)).status).toBe(200)
+    expect((await call('GET', '/user', undefined, b.access_token)).status).toBe(200)
+
+    expect((await call('PUT', '/user', { password: 'new-password-456' }, a.access_token)).status).toBe(200)
+    expect((await refresh(s.refresh_token)).status).toBe(400)
+    expect((await refresh(b.refresh_token)).status).toBe(400)
+    expect((await call('GET', '/user', undefined, b.access_token)).status).toBe(403)
+    expect((await pool.query('select 1 from auth.one_time_tokens where user_id = $1', [s.user.id])).rowCount).toBe(0)
+    expect((await call('GET', '/user', undefined, a.access_token)).status).toBe(200)
+    expect((await refresh(a.refresh_token)).status).toBe(200)
+  })
+
+  it('S4: a token rotated concurrently with a password change is revoked too, and the caller keeps its session', async () => {
+    const s = await signUp()
+    const a = await (await signIn(s.user.email)).json()
+    await pool.query(`create table if not exists public.s4_hold (session_id uuid primary key)`)
+    await pool.query(`create or replace function public.s4_hold() returns trigger language plpgsql as $$
+      begin if exists (select 1 from public.s4_hold where session_id = new.session_id) then perform pg_sleep(1.5); end if;
+      return new; end $$`)
+    await pool.query(`create or replace trigger s4_hold after insert on auth.refresh_tokens for each row
+      when (new.parent is not null) execute function public.s4_hold()`)
+    try {
+      await pool.query('insert into public.s4_hold values ($1)', [(await verify(s.access_token)).session_id])
+      const rotating = refresh(s.refresh_token)
+      for (let i = 0; !(await pool.query(`select 1 from pg_stat_activity where wait_event = 'PgSleep'
+        and query like '%insert into auth.refresh_tokens%'`)).rowCount; i++) {
+        if (i > 100) throw new Error('the rotation never reached the trigger')
+        await new Promise((r) => setTimeout(r, 20))
+      }
+      const change = call('PUT', '/user', { password: 'new-password-456' }, a.access_token)
+      const [r, ch] = await Promise.all([rotating, change])
+      expect(ch.status).toBe(200)
+      if (r.status === 200) expect((await refresh((await r.json()).refresh_token)).status).toBe(400)
+      const live = await pool.query('select session_id from auth.refresh_tokens where user_id = $1 and not revoked', [s.user.id])
+      expect(live.rows.map((x) => x.session_id)).toEqual([(await verify(a.access_token)).session_id])
+    } finally {
+      await pool.query('drop trigger if exists s4_hold on auth.refresh_tokens')
+      await pool.query('drop function if exists public.s4_hold()')
+      await pool.query('drop table if exists public.s4_hold')
+    }
+  })
+
   it('a banned user can still log out: 204 and the session is revoked', async () => {
     const s = await signUp()
     await pool.query(`update auth.users set banned_until = now() + interval '1 day' where id = $1`, [s.user.id])
