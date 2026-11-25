@@ -1648,7 +1648,7 @@ CorteQS'in CSP'si iki yerde sabit: `nginx.conf.template` (canlı) ve `server.mjs
 | E-posta OTP kodu, PKCE, resim dönüştürme | Yok. | Uygulama kullanmıyor. |
 | Realtime | Sadece `postgres_changes`, sadece `eq` filtresi. Broadcast ve presence yok. | Uygulamanın kullanımı bu kadar. |
 | Telefon girişi | Kapalı. | Dev'de de kapalı. |
-| Kayıt kapatma (`AUTH_DISABLE_SIGNUP=true`) | Kayıt, OTP ile yeni kullanıcı oluşturma ve bir Google hesabının ilk girişi reddedilir. Var olan kullanıcılar girebilir. Kayıt kapalıyken `/otp`, onaylı hesabı olmayan bir adrese `422`, olana `200` döner. Biri bununla hangi adreslerin kayıtlı olduğunu öğrenebilir. Supabase'de de böyle. E-posta hız sınırı bunu yavaşlatır. | GoTrue de böyle yapar. |
+| Kayıt kapatma (`AUTH_DISABLE_SIGNUP=true`) | Kayıt, OTP ile yeni kullanıcı oluşturma ve bir Google hesabının ilk girişi reddedilir. Var olan kullanıcılar girebilir. Önceden açılmış ama onaylanmamış bir hesap yine de onaylanabilir: yeniden gönderme (resend), şifre sıfırlama ya da Google girişiyle. Kayıt kapalıyken `/otp` onaylanmamış bir hesaba `422`, bilinmeyen ya da onaylı bir adrese `200` döner. Biri bununla onaylanmamış hesapları ayırt edebilir. E-posta hız sınırı bunu yavaşlatır. İkisi de Supabase'deki gibi. | GoTrue de böyle yapar. |
 
 ---
 
