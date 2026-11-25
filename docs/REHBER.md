@@ -109,6 +109,11 @@ Sunucuda iki tür yığın (stack) var:
 └─────────────────────────┘   └────────────────────────────────────┘
 ```
 
+core'un önündeki proxy, tarayıcının gönderdiği Host başlığını değiştirmeden geçirmeli. Traefik bunu
+kendiliğinden yapar. Araya nginx gibi başka bir proxy girerse orada da ayarlanmalı (nginx'te
+`proxy_set_header Host $host`). Core, başka bir adresten başlayan Google girişini `PUBLIC_URL`'in adresine
+gönderir. Host'u değiştiren bir proxy yüzünden giriş bu yönlendirmede döner durur.
+
 **Kontrol yığını**
 
 | Container | Ne yapar | Neden |
@@ -543,6 +548,8 @@ Sonra bölüm 3'ün 2-11. adımları (dizinler, etiket, imajlar, compose dosyala
 >    varsa iki yol var, ikisi de denenmedi: (a) selfbase'in Traefik'ini başka portlara al ve öbür proxy'den
 >    `selfbase.<BASE>` ile `*.<BASE>`'i, `/.well-known/acme-challenge/` dahil, o portlara yönlendir. (b) öbür
 >    proxy'yi kaldır, her şeyi selfbase'in Traefik'ine bırak.
+>    (a)'da öbür proxy Host başlığını değiştirmeden geçirmeli (nginx'te `proxy_set_header Host $host`),
+>    yoksa Google girişi döngüye girer (bölüm 1'deki şemanın altına bak).
 
 **Yerelde provası (doğrulandı).** Gerçek sunucudan önce aynı adımları Windows'ta Docker Desktop'ta
 deneyebilirsin. Bu rehberin 4, 5 ve 6. bölümleri böyle doğrulandı:
@@ -1641,7 +1648,7 @@ CorteQS'in CSP'si iki yerde sabit: `nginx.conf.template` (canlı) ve `server.mjs
 | E-posta OTP kodu, PKCE, resim dönüştürme | Yok. | Uygulama kullanmıyor. |
 | Realtime | Sadece `postgres_changes`, sadece `eq` filtresi. Broadcast ve presence yok. | Uygulamanın kullanımı bu kadar. |
 | Telefon girişi | Kapalı. | Dev'de de kapalı. |
-| Kayıt kapatma (`AUTH_DISABLE_SIGNUP=true`) | Kayıt, OTP ile yeni kullanıcı oluşturma ve bir Google hesabının ilk girişi reddedilir. Var olan kullanıcılar girebilir. | GoTrue de böyle yapar. |
+| Kayıt kapatma (`AUTH_DISABLE_SIGNUP=true`) | Kayıt, OTP ile yeni kullanıcı oluşturma ve bir Google hesabının ilk girişi reddedilir. Var olan kullanıcılar girebilir. Kayıt kapalıyken `/otp`, onaylı hesabı olmayan bir adrese `422`, olana `200` döner. Biri bununla hangi adreslerin kayıtlı olduğunu öğrenebilir. Supabase'de de böyle. E-posta hız sınırı bunu yavaşlatır. | GoTrue de böyle yapar. |
 
 ---
 

@@ -12,7 +12,7 @@ and 227 MiB with the CorteQS dev data.
 ```
 browser / app (selfbase-js)
         |  HTTPS + WSS
-reverse proxy (Coolify, Caddy, nginx)
+reverse proxy (Coolify, Caddy, nginx; must pass the browser's Host header)
         |
       core :8080  Node: /auth/v1 /storage/v1 /realtime/v1, gateway (/admin on :8081, never published)
         |-- /rest/v1 ------> rest   PostgREST 14
