@@ -207,3 +207,55 @@ The hosts this wave issued are exactly the three expected: **3 of 3**, none beyo
 - The provisioner sits at 46 % of its cap at idle; watch it in wave 2.
 - Project #1's first scheduled backup: 2026-11-25 03:15 UTC, to be checked then.
 - The v1 resource `<v1-resource>` stays stopped with its volumes until the owner deletes it.
+
+## Addendum: final review and fix wave (Tasks 29 and 30), 2026-11-25
+
+Local only: nothing below is deployed or pushed yet.
+
+**Final whole-branch review** over `5166e2c..4e3a8bb`, three read-only reviewers with the finecomb checklist:
+control and Studio NOT READY (4 Important), edge NOT READY (2 Important), runtime READY (1 Important, docs). No
+Critical; nothing crossed a tenant boundary. Each Important was confirmed in the code before the fix wave. Reports:
+`final-review-v2-{control,edge,runtime}.md` in the ledger folder.
+
+**Task 30 fix wave**, three parts on separate files, each reviewed by Codex and an opus reviewer with finecomb
+until both were clean:
+
+| Part | Files | Review rounds | Merge |
+|---|---|---|---|
+| 30C core: body limits, Google sign-in on any host, keep-alive past the outbound guard, signup switch, numeric settings, netguard ranges | `core/**` | 2 | `50a539f` |
+| 30A control and Studio: log access by role, security headers, a password change ends access tokens (and a mint cannot race it or a logout), logout bucket and errors, enqueue status, non-ASCII email, project-scoped members, shutdown, BASE_DOMAIN/TEST_HOST checks | `control/**`, `studio/**` | 3 | `c002be7` |
+| 30B runtime and docs: export retention in REHBER, db stop grace, IPv6 off on project networks, backup/restore exit paths, retention quarantine, socket-proxy trim, doc fixes | `job/**`, `provisioner/**`, `template/**`, `scripts/**`, `docs/**`, `README.md` | 4 | `82712a4` |
+
+**Suites on v2 at `74a7eef`** (local Docker, BASE_DOMAIN localhost):
+
+| Suite | Result |
+|---|---|
+| typecheck core, control, provisioner, studio | clean |
+| core vitest | 244/244 |
+| control vitest | 356/356 |
+| provisioner `npm test` / `test:docker` | 66/66, 30/30 |
+| `scripts/test` | 72 passed, 2 skipped (Linux-only file modes) |
+| `job/test/job.test.sh` | 243 ok, 0 not ok |
+| Studio e2e (Playwright) | 87 passed, 60 skipped (screenshot specs) |
+| stack e2e (`test/e2e`) | 12/12 |
+
+**Deploy notes for the next server deploy:**
+- control migrations `0006-password-ends-tokens` (deletes a user's access tokens when the password changes) and
+  `0007-removed-project-members` (removes memberships and invitations of removed projects).
+- db gets `stop_grace_period: 1m`: each project's db is recreated once.
+- project networks are pinned `EnableIPv6: false`: a network that has IPv6 on is rebuilt once. If the daemon turns
+  IPv6 on anyway, ensure answers 503 `network_ipv6` (REHBER section 14).
+- control now stops at start when `TEST_HOST` is not under `BASE_DOMAIN` (install-check already refused it).
+- a project's SMTP settings cannot come from an import; its auth mail stays in `selfbase.mail_log` until the wave 2
+  project settings screen.
+
+**Moved to wave 2:** job results kept until control acknowledges them (lost one-time result on shutdown, `deleted`
+lines from a failed or stopped backup, a retried restore); streamed restore listing; capacity cache; invitation list,
+revoke and limits; a pending heavy job making a project busy; connection caps; control validates numeric core settings
+on import; networks left by an ensure refused for IPv6; `pg_restore -l` and the v1 probe before storage extraction; the
+logout audit row from a once-real credential; `TEST_HOST` equal to the apex or the default pool host; `mv -T` empty
+destination test; and the hostile-dump class (ROTATE_KEYS quota, post-commit `DROP SCHEMA ... CASCADE`). Moved to
+wave 3: the Google error value and the admin user update (parity), upload size read outside config (storage backend).
+
+**Still open:** the items under "Open at the exit" above, project #1's first scheduled backup check, and Pause +
+Resume after a restore that exits 8 with the ledger on hold (wave 2 restore guard).
