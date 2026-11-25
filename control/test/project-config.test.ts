@@ -389,6 +389,25 @@ describe.each(MOUNTS)('%s/projects/:ref/config/auth', (mount) => {
   })
 })
 
+test('M6: the config and secrets commit with the apply job: when the job insert fails, neither is stored', async () => {
+  const q = await project(acme.id)
+  await pool.query(`create or replace function control.test_refuse_job() returns trigger language plpgsql
+    as $$ begin raise exception 'job refused by the test'; end $$`)
+  // q.id is a uuid this database made
+  await pool.query(`create trigger test_refuse_job before insert on control.jobs for each row
+    when (new.project_id = '${q.id}'::uuid) execute function control.test_refuse_job()`)
+  try {
+    const res = await patch(owner.token, '/v1', q.ref, { smtp_user: 'atomic', external_google_secret: 'test-secret-m6' })
+    expect(res.status).toBe(500)
+  } finally {
+    await pool.query('drop trigger test_refuse_job on control.jobs')
+    await pool.query('drop function control.test_refuse_job()')
+  }
+  expect((await pool.query(`select 1 from control.project_config where project_id = $1`, [q.id])).rowCount).toBe(0)
+  expect(await getSecrets(pool, q)).not.toHaveProperty('GOOGLE_CLIENT_SECRET')
+  expect(logged.join('\n')).not.toContain('test-secret-m6')
+})
+
 test('setConfig writes third-party secrets only: a platform secret name throws and changes nothing', async () => {
   const before = await getSecrets(pool, b)
   for (const name of ['JWT_SECRET', 'POSTGRES_PASSWORD', 'SERVICE_ROLE_KEY', 'ANYTHING']) {
