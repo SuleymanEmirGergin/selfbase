@@ -24,7 +24,9 @@
 # It is built in a .tmp-<ts> directory next to it and renamed when complete, so a directory with a timestamp name
 # is always a whole backup. Backups in that subdirectory older than BACKUP_RETENTION_DAYS (exports:
 # EXPORT_RETENTION_DAYS) or beyond the newest BACKUP_MAX_COUNT are deleted, never the one just written. The last stdout line is `backup: wrote <subdir>/<ts>` (control reads
-# it, and the size line before it). Any failure: non-zero exit and a "backup: FAILED" line. Never prints a value from the environment.
+# it, and the size line before it). Any failure before the rename: non-zero exit and a "backup: FAILED" line; after
+# it (the retention, the size) the backup exists: a "backup: WARNING" line, exit 0 and the wrote line still. Never
+# prints a value from the environment.
 # shortcut: backups live on the same server, add off-site copy before production
 set -euo pipefail
 umask 077 # the dump holds every row and the auth password hashes: owner-only files and directories
@@ -54,7 +56,7 @@ min_free=${BACKUP_MIN_FREE_MIB:-}
 # Retention by the name's timestamp, then by count (newest first); the backup just written always stays. Exports
 # (export-<ref>) too, by EXPORT_RETENTION_DAYS: an export is taken to be moved or imported within days (R3).
 retain() {
-  local days cutoff n=0 d why
+  local days cutoff n=0 d why bad=0
   [[ $sub == export-* ]] && days=$export_keep || days=$keep
   cutoff=$(date -u -d "-$days days" +%Y%m%d-%H%M%S)
   for d in $(ls "$backups" | grep -E '^[0-9]{8}-[0-9]{6}$' | sort -r || true); do
@@ -63,9 +65,11 @@ retain() {
     if [[ $d < $cutoff ]]; then why="older than $days days"
     elif [ "$n" -gt "$max" ]; then why="beyond the newest $max"
     else continue; fi
-    rm -rf "${backups:?}/$d"
-    echo "backup: deleted $sub/$d ($why)"
+    # control drops the rows of the deleted lines: one that could not be deleted is not one of them
+    if rm -rf "${backups:?}/$d"; then echo "backup: deleted $sub/$d ($why)"
+    else echo "backup: WARNING: could not delete $sub/$d ($why)" >&2; bad=1; fi
   done
+  return "$bad"
 }
 
 # BACKUP_PRUNE_ONLY=1: retention alone, for exports past their window (control's nightly run, a deleted project's
@@ -172,6 +176,10 @@ for f in $files; do
   echo "$f $(stat -c %s "$tmp/$f") $(sha256sum "$tmp/$f" | cut -d' ' -f1)"
 done > "$tmp/MANIFEST"
 mv "$tmp" "$backups/$ts"
-retain
-echo "backup: size $(du -sb "$backups/$ts" | cut -f1) bytes"
+# the backup is whole and in place: from here a failure is a warning (exit 0), never "no backup written", and the
+# wrote line control records the backup by still comes last
+retain || echo "backup: WARNING: the retention of $sub did not finish; older backups may be left" >&2
+size=$(du -sb "$backups/$ts" | cut -f1) || true
+if [[ $size =~ ^[0-9]+$ ]]; then echo "backup: size $size bytes"
+else echo "backup: WARNING: the size of $sub/$ts could not be read" >&2; fi
 echo "backup: wrote $sub/$ts"

@@ -312,6 +312,23 @@ check 'I1: a ROTATE_KEYS other than 0 or 1 is refused (exit 2)' [ "$rc" = 2 ]
 check 'I1: the sessions are unchanged after that refusal' [ "$(sessions)" = 1,1 ]
 JOB_ENV=(-e RESTORE_DIR=t/$ts -e ROTATE_KEYS=1)
 rc=0; out=$(job db "$P-storage" bash /scripts/restore.sh 2>&1) || rc=$?
+# M-3: once the backup is renamed into place it exists: a retention that fails (a stand-in rm refuses the old backup)
+# or a size that cannot be read (a stand-in du) is a warning, and the wrote line control records it by still comes
+in_backups 'mkdir -p /backups/postmv/20200101-000000'
+JOB_ENV=(-e BACKUP_SUBDIR=postmv)
+rc=0; out=$(job db "$P-storage" bash -c 'rm() { case "$*" in *20200101-000000*) echo "rm: refused by the test" >&2; return 1 ;; esac
+  command rm "$@"; }; export -f rm; bash /scripts/backup.sh' 2>&1) || rc=$?
+pts=$(tail -n1 <<< "$out"); pts=${pts#backup: wrote postmv/}
+check 'M-3: a retention that fails after the rename keeps exit 0' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
+check 'M-3: its last line is still the wrote line, of a whole backup' in_backups "[[ $pts =~ ^[0-9]{8}-[0-9]{6}\$ ]] && [ -f /backups/postmv/$pts/MANIFEST ]"
+check 'M-3: it warns, never says no backup was written or that the old one was deleted' bash -c \
+  'grep -q "backup: WARNING: .*20200101-000000" <<< "$1" && ! grep -qE "no backup written|backup: deleted postmv/20200101-000000" <<< "$1"' _ "$out"
+rc=0; out=$(job db "$P-storage" bash -c 'du() { case "$1" in -sb) return 1 ;; esac; command du "$@"; }; export -f du
+  bash /scripts/backup.sh' 2>&1) || rc=$?
+check 'M-3: a size that cannot be read after the rename keeps exit 0 and the wrote line' \
+  bash -c '[ "$2" = 0 ] && grep -qE "^backup: wrote postmv/[0-9]{8}-[0-9]{6}$" <<< "$(tail -n1 <<< "$1")"' _ "$out" "$rc"
+check 'M-3: it warns instead of printing a size line without a number' \
+  bash -c 'grep -q "backup: WARNING: the size of postmv/" <<< "$1" && ! grep -E "^backup: size" <<< "$1" | grep -qvE "^backup: size [0-9]+ bytes$"' _ "$out"
 check 'I1: a rotating restore succeeds' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
 check 'I1: a rotating restore leaves no refresh token and no session' [ "$(sessions)" = 0,0 ]
 check 'R1: a rotating restore leaves no one-time token, flow state, MFA challenge, AMR claim, relay state or OAuth code' [ "$(creds)" = 0,0,0,0,0,0 ]
