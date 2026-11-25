@@ -109,17 +109,23 @@ platformAuth.post('/refresh', async (c) => {
 // Ends the session through the access cookie and through the refresh cookie: once the access cookie has expired (1 h)
 // only the refresh token names the session. A failed revoke is an error, and the cookies stay: the user must not
 // believe they are signed out while the refresh token still works.
+const logoutFailed = () => new ApiError(502, 'logout_failed', 'The session could not be ended. Try again.')
 platformAuth.post('/logout', async (c) => {
   checkOrigin(c)
   const jwt = getCookie(c, ACCESS_COOKIE)
   if (jwt) {
     const res = await callCore(c, 'POST', '/logout?scope=local', { bearer: `Bearer ${jwt}` })
     // a 4xx is an expired or forged access cookie, which ends nothing by itself; the refresh cookie below still does
-    if (res.status >= 500) throw new ApiError(502, 'logout_failed', 'The session could not be ended. Try again.')
+    if (res.status >= 500) throw logoutFailed()
   }
   const refresh = getCookie(c, REFRESH_COOKIE)
-  const sid = refresh ? await sessionOfRefresh(refresh) : null
-  if (sid) await revokeSession(sid)
+  try {
+    const sid = refresh ? await sessionOfRefresh(refresh) : null
+    if (sid) await revokeSession(sid)
+  } catch (e) {
+    console.error(`logout: ${(e as Error).message}`)
+    throw logoutFailed()
+  }
   clearSessionCookies(c)
   return c.json({})
 })

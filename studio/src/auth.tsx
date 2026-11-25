@@ -3,7 +3,7 @@ import type { FormEvent, InputHTMLAttributes, ReactNode } from 'react'
 import { ApiError, errMsg, platform } from './api.ts'
 import type { Me } from './api.ts'
 import { Link, navigate } from './router.tsx'
-import { Icon, errText } from './ui.tsx'
+import { Icon, errText, toast } from './ui.tsx'
 import { Brand } from './glyphs.tsx'
 import { SignInPanel } from './SignInPanel.tsx'
 import { LangSelect } from './shell.tsx'
@@ -138,7 +138,12 @@ export function AcceptInvite({ token }: { token: string }) {
     location.assign('/') // a full reload, so the new organization is in the session's list
   })
   const signOutHere = async () => {
-    await platform.logout().catch(() => {})
+    // a refused logout leaves the session working: stay on the signed-in view and say so
+    try {
+      await platform.logout()
+    } catch (e) {
+      return toast(errMsg(e), 'error')
+    }
     setOtherAccount(false)
     setMe(null) // back on this invitation, signed out
   }

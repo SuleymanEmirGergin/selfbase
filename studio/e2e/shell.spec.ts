@@ -390,6 +390,24 @@ test('an explicit sign-out drops next', async ({ page }) => {
   expect(api.count('POST /logout')).toBe(1)
 })
 
+for (const [status, body, text] of [
+  [502, { error: 'logout_failed', message: 'The session could not be ended. Try again.' }, 'Çıkış yapılamadı, oturumun hâlâ açık. Yeniden dene.'],
+  [429, { error: 'over_request_rate_limit', message: 'Too many requests from this address. Try again in a few minutes.' }, 'Too many requests from this address.'],
+] as const) {
+  test(`a sign-out the server refuses (${status}) keeps the user signed in and says so`, async ({ page }) => {
+    const api = await mockApi(page, { ...signedIn(), 'POST /logout': { status, body } })
+    await page.goto('/org/acme/members')
+    await page.getByRole('button', { name: 'Çıkış' }).click()
+    await expect(page.getByText(text)).toBeVisible()
+    expect(api.count('POST /logout')).toBe(1)
+    await expect(page).toHaveURL(/\/org\/acme\/members$/)
+    await expect(page.getByRole('button', { name: 'Giriş yap' })).toHaveCount(0)
+    // a second try is possible
+    await page.getByRole('button', { name: 'Çıkış' }).click()
+    await expect.poll(() => api.count('POST /logout')).toBe(2)
+  })
+}
+
 test('the reset screen strips the fragment and never shows its error text', async ({ page }) => {
   await mockApi(page, { 'GET /me': { status: 401, body: fx('unauthorized') }, 'POST /refresh': { status: 401, body: fx('unauthorized') } })
   await page.goto('/reset-password#error=access_denied&error_description=Call+555+to+restore+your+account')

@@ -34,12 +34,14 @@ const MAX_KEY_LENGTH = 64
 const CORE_LIMITED = /^\/platform\/(login|refresh)$/
 /**
  * Per-IP limit on the other public writes (invitations/accept, logout, auth/v1/*), before audit: a refused request
- * writes no row. Reuses core's limiter with the signIn budget, in its own key space.
+ * writes no row. Reuses core's limiter, in its own key spaces: logout with the refresh budget (signing out must not
+ * compete with invitations for five tries, yet an anonymous flood stays bounded), the others with the signIn budget.
  */
 export const publicLimit = createMiddleware(async (c, next) => {
   const write = c.req.method !== 'GET' && c.req.method !== 'HEAD' && c.req.method !== 'OPTIONS'
-  if (write && PUBLIC.test(c.req.path) && !CORE_LIMITED.test(c.req.path) && !take('signIn', `public:${clientIp(c)}`))
-    throw new ApiError(429, 'over_request_rate_limit', 'Too many requests from this address. Try again in a few minutes.')
+  if (!write || !PUBLIC.test(c.req.path) || CORE_LIMITED.test(c.req.path)) return next()
+  const ok = c.req.path === '/platform/logout' ? take('refresh', `logout:${clientIp(c)}`) : take('signIn', `public:${clientIp(c)}`)
+  if (!ok) throw new ApiError(429, 'over_request_rate_limit', 'Too many requests from this address. Try again in a few minutes.')
   return next()
 })
 
