@@ -25,8 +25,9 @@
 # is always a whole backup. Backups in that subdirectory older than BACKUP_RETENTION_DAYS (exports:
 # EXPORT_RETENTION_DAYS) or beyond the newest BACKUP_MAX_COUNT are deleted, never the one just written. The last stdout line is `backup: wrote <subdir>/<ts>` (control reads
 # it, and the size line before it). Any failure before the rename: non-zero exit and a "backup: FAILED" line; after
-# it (the retention, the size) the backup exists: a "backup: WARNING" line, exit 0 and the wrote line still. Never
-# prints a value from the environment.
+# it (the retention, the size) the backup exists: a "backup: WARNING" line, exit 0 and the wrote line still; a signal
+# after it is a "backup: STOPPED" line that says the backup is whole but unrecorded. Never prints a value from the
+# environment.
 # shortcut: backups live on the same server, add off-site copy before production
 set -euo pipefail
 umask 077 # the dump holds every row and the auth password hashes: owner-only files and directories
@@ -41,9 +42,10 @@ ts=$(date -u +%Y%m%d-%H%M%S)
 tmp="$backups/.tmp-$ts"
 # the writer capped() runs (its process group), stopped and reaped before the temp dir goes; a signal is a failure the
 # trap sees (bash runs the EXIT trap on one with $? of the last command, often 0)
-w=''
+w='' moved=0
 trap 'rc=$?; [ -z "$w" ] || { kill -TERM -- "-$w" 2> /dev/null || true; wait "$w" 2> /dev/null || true; }
-  [ $rc = 0 ] || { rm -rf "$tmp"; echo "backup: FAILED (exit $rc); no backup written for $sub/$ts" >&2; }' EXIT
+  if [ $rc != 0 ] && [ $moved = 1 ]; then echo "backup: STOPPED (exit $rc) after $sub/$ts was written: it is whole, but control has not recorded it" >&2
+  elif [ $rc != 0 ]; then rm -rf "$tmp"; echo "backup: FAILED (exit $rc); no backup written for $sub/$ts" >&2; fi' EXIT
 trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 
 export_keep=${EXPORT_RETENTION_DAYS:-7}
@@ -88,7 +90,7 @@ prune_only=${BACKUP_PRUNE_ONLY:-0}
 if [ "$prune_only" = 1 ]; then
   [[ $sub == export-* ]] || { echo "backup: BACKUP_PRUNE_ONLY takes an export-<ref> directory only" >&2; exit 2; }
   [ -d "$backups" ] || { echo "backup: $sub is not mounted" >&2; exit 1; }
-  retain
+  retain || echo "backup: WARNING: the retention of $sub did not finish; what is left is pruned on the next run" >&2
   echo "backup: pruned $sub"
   exit 0
 fi
@@ -188,6 +190,7 @@ for f in $files; do
   echo "$f $size $sum"
 done > "$tmp/MANIFEST"
 mv "$tmp" "$backups/$ts"
+moved=1
 # the backup is whole and in place: from here a failure is a warning (exit 0), never "no backup written", and the
 # wrote line control records the backup by still comes last
 retain || echo "backup: WARNING: the retention of $sub did not finish; older backups may be left" >&2

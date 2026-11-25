@@ -333,6 +333,16 @@ check 'M-3: a size that cannot be read after the rename keeps exit 0 and the wro
 [ "$rc" = 0 ] || echo "$out" >&2
 check 'M-3: it warns instead of printing a size line without a number' \
   bash -c 'grep -q "backup: WARNING: the size of postmv/" <<< "$1" && ! grep -E "^backup: size" <<< "$1" | grep -qvE "^backup: size [0-9]+ bytes$"' _ "$out"
+# m-5: a stop after the rename (TERM while the size is read) leaves a whole backup that control has not recorded
+JOB_ENV=(-e BACKUP_SUBDIR=late)
+rc=0; out=$(job db "$P-storage" bash -c 'du() { case "$1" in -sb) kill -TERM $$ ;; esac; command du "$@"; }; export -f du
+  bash /scripts/backup.sh' 2>&1) || rc=$?
+check 'm-5: a TERM after the rename exits 143' [ "$rc" = 143 ]; [ "$rc" = 143 ] || echo "$out" >&2
+check 'm-5: it says the backup is whole but not recorded, never that no backup was written' bash -c \
+  'grep -qE "backup: STOPPED \(exit 143\) after late/[0-9]{8}-[0-9]{6} was written: it is whole, but control has not recorded it" <<< "$1" &&
+  ! grep -q "no backup written" <<< "$1"' _ "$out"
+check 'm-5: and the backup is in place' in_backups '[ -f "$(ls -d /backups/late/[0-9]*-[0-9]* | head -n1)/MANIFEST" ]'
+
 # M-7: a size or sum the MANIFEST cannot get (a stand-in stat or sha256sum fails) fails the backup: nothing renamed
 for tool in stat sha256sum; do
   JOB_ENV=(-e BACKUP_SUBDIR=mf-$tool)
@@ -363,6 +373,16 @@ JOB_ENV=(-e BACKUP_SUBDIR=quar)
 rc=0; out=$(job db "$P-storage" bash /scripts/backup.sh 2>&1) || rc=$?
 check 'M-6: the next run removes the leftover' bash -c '[ "$1" = 0 ]' _ "$rc"
 check 'M-6: (it is gone, and only timestamp dirs are left)' in_backups '! ls -A /backups/quar | grep -qvE "^[0-9]{8}-[0-9]{6}$"'
+# m-6: prune-only still prints pruned when the retention fails (the stand-in mv), so control reads the deleted lines
+in_backups 'mkdir -p /backups/export-pf/20200101-000000 /backups/export-pf/20200102-000000'
+rc=0; out=$(docker run --rm --network none -v "$P-backups:/backups" -e BACKUP_SUBDIR=export-pf -e BACKUP_PRUNE_ONLY=1 "$IMAGE" bash -c \
+  'mv() { case "$*" in *20200101-000000*) echo "mv: refused by the test" >&2; return 1 ;; esac; command mv "$@"; }; export -f mv
+  bash /scripts/backup.sh' 2>&1) || rc=$?
+check 'm-6: a prune-only run whose retention fails keeps exit 0' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
+check 'm-6: it reports what it deleted, warns, and still ends with the pruned line' bash -c \
+  'grep -q "^backup: deleted export-pf/20200102-000000" <<< "$1" && grep -q "backup: WARNING" <<< "$1" &&
+  [ "$2" = "backup: pruned export-pf" ]' _ "$out" "$(lastout "$out")"
+
 # ---- I1: ROTATE_KEYS=1 (an import with rotate_keys) deletes the restored sessions, before control starts core ----
 JOB_ENV=(-e RESTORE_DIR=t/$ts -e ROTATE_KEYS=yes)
 rc=0; out=$(job db "$P-storage" bash /scripts/restore.sh 2>&1) || rc=$?
