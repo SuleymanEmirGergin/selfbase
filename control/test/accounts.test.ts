@@ -332,6 +332,24 @@ describe('invitations', () => {
     return { ...body, token: body.link.split('/invite/')[1] as string }
   }
 
+  // the address travels in a header (x-selfbase-actor) on every admin call, which takes ASCII only
+  test('a non-ASCII address is refused at invite (400 email_not_ascii) and when an account is created', async () => {
+    const cookie = await login(OWNER, PASSWORD)
+    for (const email of ['şule@example.test', 'dev@örnek.test', 'ığdır@example.test']) {
+      const res = await as(cookie, 'POST', '/platform/organizations/default/invitations', { email, role: 'developer' })
+      expect(res.status, email).toBe(400)
+      expect(await res.json(), email).toEqual({ error: 'email_not_ascii', message: expect.any(String) })
+    }
+    expect((await pool.query(`select count(*)::int as n from control.invitations where email !~ '^[ -~]*$'`)).rows[0].n).toBe(0)
+    const { createConfirmedUser } = await import('../src/routes/platform-auth.ts')
+    await expect(createConfirmedUser('şule@example.test', PASSWORD)).rejects.toMatchObject({ status: 400, code: 'email_not_ascii' })
+    const r = cli(['create-owner', 'şule@example.test'], `${PASSWORD}
+`)
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toMatch(/ASCII/)
+    expect((await pool.query(`select count(*)::int as n from auth.users where email !~ '^[ -~]*$'`)).rows[0].n).toBe(0)
+  })
+
   test('accept creates the account and membership; the same token twice fails; the hash is stored', async () => {
     const cookie = await login(OWNER, PASSWORD)
     const inv = await invite(cookie, 'dev@example.test')

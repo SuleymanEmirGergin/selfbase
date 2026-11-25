@@ -1,6 +1,7 @@
 // Studio sign-in on core's auth module (AC-12). Only /recover, GET /verify and PUT /user of core's router are reachable,
-// under /platform/auth/v1; everything else of it (signup, otp, oauth, token, ...) is not mounted, because
-// AUTH_DISABLE_SIGNUP only closes POST /signup and the others would create dashboard accounts.
+// under /platform/auth/v1; everything else of it (signup, otp, oauth, token, ...) is not mounted. AUTH_DISABLE_SIGNUP
+// closes POST /signup, user creation through /otp and a first Google login; the routes stay unmounted anyway, so a
+// dashboard account is never made through core's public auth surface.
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
@@ -57,10 +58,20 @@ export async function tx<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<
 }
 
 /**
+ * Refuses an address with anything but printable ASCII: it travels as a header (x-selfbase-actor, forward.ts) on every
+ * admin call, and a header cannot hold ş, ğ or ı. Every place that creates a user or an invitation calls this.
+ */
+export function asciiEmail(email: string): void {
+  if (!/^[\x21-\x7e]+$/.test(email))
+    throw new ApiError(400, 'email_not_ascii', 'the email address must use ASCII characters only (letters such as ş, ğ or ı are not supported)')
+}
+
+/**
  * A dashboard user whose address is taken as proven (the CLI, an accepted invitation), written on `db` so it can be
  * part of the caller's transaction. The same rows core's createUser writes, with email_confirmed_at set.
  */
 export async function createConfirmedUser(email: string, password: string, db: Db = pool): Promise<{ id: string; email: string }> {
+  asciiEmail(email)
   const id = randomUUID()
   const lower = email.toLowerCase()
   await db.query(

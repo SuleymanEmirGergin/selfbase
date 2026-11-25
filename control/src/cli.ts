@@ -4,12 +4,17 @@
 // once any account exists: later accounts come through invitations.
 import { closeDb, migrate } from './db.ts'
 import { MIN_PASSWORD } from './core-env.ts'
-import { createConfirmedUser, tx } from './routes/platform-auth.ts'
+import { asciiEmail, createConfirmedUser, tx } from './routes/platform-auth.ts'
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 export async function createOwner(email: string, password: string): Promise<string> {
   if (!EMAIL_RE.test(email)) throw new Error('create-owner: not an email address')
+  try {
+    asciiEmail(email)
+  } catch (e) {
+    throw new Error(`create-owner: ${(e as Error).message}`)
+  }
   if (password.length < MIN_PASSWORD) throw new Error(`create-owner: the password must be at least ${MIN_PASSWORD} characters`)
   await migrate()
   // one transaction: all three rows or none; the lock serialises two create-owner runs so only one sees no users

@@ -267,6 +267,7 @@ const RULES: Record<string, RegExp | ((e: ApiError) => Params | null)> = {
   account_exists: /^This address already has an account: sign in as it and accept without a password$/,
   invalid_path: /^the path is not valid$/,
   invalid_backup_dir: /^backup_dir is not one of this organization's backups$/,
+  email_not_ascii: /^the email address must use ASCII characters only \(letters such as ş, ğ or ı are not supported\)$/,
   logout_failed: /^The session could not be ended\. Try again\.$/,
   weak_password: /^Password should be at least (?<n>\d+) characters\.$/,
   weak_passphrase: /^the passphrase must be at least (?<n>\d+) characters$/,

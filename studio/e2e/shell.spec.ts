@@ -143,6 +143,19 @@ test('a read_only member sees no create, import or member actions', async ({ pag
   await expect(page.getByRole('button', { name: /^Çıkar:/ })).toHaveCount(0)
 })
 
+test('an invitation refused for a non-ASCII address shows the reason', async ({ page }) => {
+  const api = await mockApi(page, {
+    ...signedIn(),
+    'POST /organizations/acme/invitations': { status: 400, body: {
+      error: 'email_not_ascii', message: 'the email address must use ASCII characters only (letters such as ş, ğ or ı are not supported)' } },
+  })
+  await page.goto('/org/acme/members')
+  await page.getByLabel('E-posta').fill('dev@örnek.test')
+  await page.getByRole('button', { name: 'Davet et' }).click()
+  await expect(page.getByText('E-posta adresinde yalnızca ASCII karakterler olabilir. ş, ğ, ı gibi harfler desteklenmiyor.')).toBeVisible()
+  expect(api.count('POST /organizations/acme/invitations')).toBe(1)
+})
+
 test('an owner can invite, change a role and remove a member', async ({ page }) => {
   const api = await mockApi(page, {
     ...signedIn(),
