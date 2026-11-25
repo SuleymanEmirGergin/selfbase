@@ -70,18 +70,20 @@ export async function enqueueExportPrunes(db: pg.Pool): Promise<void> {
   }
 }
 
-export function startSchedule(db: pg.Pool): { stop(): void } {
+export function startSchedule(db: pg.Pool): { stop(): Promise<void> } {
   let timer: NodeJS.Timeout
+  // the night's run in flight (it never rejects): stop waits for it, so shutdown closes the pool after it
+  let run: Promise<void> = Promise.resolve()
   // a timer may fire a little early: the next one is armed from a minute ahead, so one 03:15 never runs twice
   const arm = (from: number) => {
     timer = setTimeout(() => {
       // the prunes after the backups: a refused night (low disk) still frees what has expired
-      enqueueDailyBackups(db).catch((e: Error) => console.error(`schedule: daily backups not enqueued: ${e.message}`))
+      run = enqueueDailyBackups(db).catch((e: Error) => console.error(`schedule: daily backups not enqueued: ${e.message}`))
         .then(() => enqueueExportPrunes(db)).catch((e: Error) => console.error(`schedule: export prunes not enqueued: ${e.message}`))
       arm(60_000)
     }, msUntilNext(new Date(Date.now() + from)) + from)
     timer.unref()
   }
   arm(0)
-  return { stop: () => clearTimeout(timer) }
+  return { stop: () => { clearTimeout(timer); return run } }
 }
