@@ -8,6 +8,7 @@ import { evictStaleLegacyNames, startWorkers } from './jobs/index.ts'
 import { httpProvisioner, setProvisioner } from './provisioner.ts'
 import { startReconcile } from './reconcile.ts'
 import { startSchedule } from './schedule.ts'
+import { shutdownHandler } from './shutdown.ts'
 
 // Schema first; a failure names the migration file only (never SQL or secrets)
 await migrate().catch((e: Error) => {
@@ -24,23 +25,11 @@ const provisioner = httpProvisioner(config.provisionerUrl, config.provisionerTok
 setProvisioner(provisioner)
 // X-Forwarded-For counts only from the proxy container (by exact name, via the provisioner) and listed addresses
 trustProxies(async () => (await provisioner.proxy()).addresses, config.trustedProxyIps)
-startWorkers({ db: pool, provisioner })
-startReconcile({ db: pool, provisioner })
-startSchedule(pool)
+const workers = startWorkers({ db: pool, provisioner })
+const reconcile = startReconcile({ db: pool, provisioner })
+const schedule = startSchedule(pool)
 const server = serve({ fetch: app.fetch, port: config.port }, (info) => console.log(`selfbase-control listening on :${info.port}`))
 
-// Deploys send SIGTERM: stop taking requests, let the ones in flight finish, then close the pool.
-let stopping = false
-async function shutdown(signal: string) {
-  if (stopping) return
-  stopping = true
-  console.log(`${signal}: shutting down`)
-  setTimeout(() => process.exit(1), 8000).unref() // a stuck request must not outlive docker's 10 s grace period
-  const closed = new Promise((r) => server.close(r))
-  ;(server as Server).closeIdleConnections?.()
-  await closed
-  await closeDb()
-  process.exit(0)
-}
+const shutdown = shutdownHandler(server as Server, [workers, reconcile, schedule], closeDb)
 process.on('SIGTERM', () => void shutdown('SIGTERM'))
 process.on('SIGINT', () => void shutdown('SIGINT'))
