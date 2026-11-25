@@ -52,7 +52,8 @@ test("the scheduler's stop waits for the nightly run in flight", async () => {
   let schedule: ReturnType<typeof startSchedule>
   try {
     schedule = startSchedule(db)
-    vi.advanceTimersByTime(msUntilNext(new Date()) + 1) // just past the next 03:15, once
+    // Date is real: the schedule's own delay was taken a moment earlier, so step a minute past (the next run is a day on)
+    vi.advanceTimersByTime(msUntilNext(new Date()) + 60_000)
   } finally {
     vi.useRealTimers()
   }
