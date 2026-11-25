@@ -127,6 +127,10 @@ test('R6: core and control alone on sb-<ref>-ctl, whose /29 is all the admin por
   assert.deepEqual(n[`sb-${REF}-ctl`].IPAM.Config, [{ Subnet: '10.207.0.48/29', IPRange: '10.207.0.52/30', Gateway: '10.207.0.49' }])
   assert.deepEqual(n[`sb-${REF}-egress`].IPAM.Config, [{ Subnet: '10.207.0.56/29', Gateway: '10.207.0.57' }])
   for (const x of Object.values(n)) assert.equal(x.Labels['selfbase.project'], REF)
+  // M-2: IPv6 off on every project network, whatever the daemon's default network options say (with or without isolation)
+  for (const x of [...iso.networks, ...buildProject(input({ env: dryRunEnv(real) }), real, sizes, NODE).networks]) {
+    assert.equal((x.body as any).EnableIPv6, false, x.name)
+  }
   // no route out and no host gateway for db, rest, pooler (and core's admin side); fn keeps egress on its own network
   const isolated = { Internal: true, Options: { 'com.docker.network.bridge.gateway_mode_ipv4': 'isolated' } }
   for (const k of [`sb-${REF}`, `sb-${REF}-ctl`]) assert.deepEqual({ Internal: n[k].Internal, Options: n[k].Options }, isolated, k)

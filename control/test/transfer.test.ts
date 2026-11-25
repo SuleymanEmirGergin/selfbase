@@ -464,6 +464,15 @@ describe('backup_dir belongs to the caller', () => {
     for (const d of [`${mine.ref}/20261121-031500`, `export-${mine.ref}/20261121-031500`, `${gone.ref}/20261121-031500`, 'import/acme/v1-dump']) {
       expect((await status(d)).status, d).toBe(202)
     }
+    // round 2: a name with a leading dot is backup.sh's own (.tmp-, .deleting-) or hidden, never a dump; refused here,
+    // before any project exists, not by restore.sh after the import made one
+    const before = (await pool.query('select count(*)::int as n from control.projects')).rows[0].n
+    for (const d of ['import/acme/.snapshot', 'import/acme/.deleting-20200101-000000', 'import/.acme/v1-dump']) {
+      const r = await status(d)
+      expect(r.status, d).toBe(400)
+      expect(r.body.error).toBe('invalid_backup_dir')
+    }
+    expect((await pool.query('select count(*)::int as n from control.projects')).rows[0].n).toBe(before)
   })
 
   test('the import job checks backup_dir again: a foreign one fails before any restore', async () => {
@@ -497,6 +506,17 @@ describe('backup and export', () => {
     const list = await (await withToken(dev.token, 'GET', `/platform/projects/${p.ref}/backups`)).json()
     expect(list).toEqual([expect.objectContaining({ kind: 'logical', status: 'succeeded', size_bytes: 1234,
       location: `${p.ref}/20261122-031500`, started_at: expect.any(String), finished_at: expect.any(String) })])
+  })
+
+  test('a deleted line for a backup whose row is already gone (a quarantine swept on a later run) is no error', async () => {
+    const p = await project(acme.id, { name: 'swept' })
+    await pool.query(`insert into control.backups (project_id, kind, status, location) values ($1, 'logical', 'succeeded', $2)`, [p.id, `${p.ref}/20200102-000000`])
+    fake.jobResult = (ref) => ({ status: 'succeeded', exitCode: 0, tail: `backup: deleted ${ref}/20200101-000000 (left by an earlier run)\n`
+      + `backup: deleted ${ref}/20200102-000000 (left by an earlier run)\nbackup: size 7 bytes\nbackup: wrote ${ref}/20261122-031500\n` })
+    const { job_id } = await (await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/backups`)).json()
+    workers()
+    expect((await finished(job_id)).status).toBe('succeeded')
+    expect((await pool.query('select location from control.backups where project_id = $1', [p.id])).rows).toEqual([{ location: `${p.ref}/20261122-031500` }])
   })
 
   test('a paused project cannot be backed up or exported', async () => {
@@ -1158,6 +1178,14 @@ describe("I3: exports past their window leave the disk, a deleted project's too"
     expect(jobs.sort()).toEqual([gone.id, stale.id].sort())
     expect(jobs).not.toContain(fresh.id)
     expect(jobs).not.toContain(none.id)
+  })
+
+  test('an export directory left holding only a .deleting-<ts> quarantine is pruned too', async () => {
+    const left = await project(acme.id, { name: 'prune-left', status: 'REMOVED' })
+    exportDir(left.ref, `.deleting-${stamp(30)}`)
+    await enqueueExportPrunes(pool)
+    const jobs = (await pool.query(`select project_id from control.jobs where type = 'project.prune'`)).rows.map((r) => r.project_id)
+    expect(jobs).toContain(left.id)
   })
 
   test('the job prunes export-<ref> only, with the retention settings, and drops the rows of what it deleted', async () => {

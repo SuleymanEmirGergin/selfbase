@@ -41,7 +41,9 @@ iptables -I INPUT -s 10.207.0.0/16 -m conntrack --ctstate NEW -j DROP
 iptables -I DOCKER-USER -s 10.207.0.0/16 -m conntrack --ctstate DNAT -j DROP
 ```
 
-Neither rule touches traffic between containers on the same network or fn's traffic to the internet. Make the rules
+Neither rule touches traffic between containers on the same network or fn's traffic to the internet, with one
+exception: the DNAT rule also drops fn's calls to public sites this same server serves (Studio, any project's address,
+its own included, other teams' apps), because those reach the proxy's published ports through Docker's DNAT. Make the rules
 persistent the way the host does it (for example `iptables-persistent`). Check afterwards that fn still resolves and
 fetches an outside URL.
 

@@ -63,6 +63,11 @@ const warnedVersions = new Set<string>()
 // loop guard: set when a network made with the isolation reads back without it (an engine that drops the option);
 // from then on this process treats the engine as one that cannot isolate, so no ensure rebuilds networks again
 let isolationLost = false
+// the same guard for IPv6: set when a network made with EnableIPv6 false reads back with it on. It stops the rebuilds,
+// never the check: from then on a network with IPv6 on is refused (its IPv6 gateway reaches the host)
+let ipv6Kept = false
+const noIpv6 = (name: string): never => refuse(503, 'network_ipv6', `${name} has IPv6 on and this engine does not keep it off; `
+  + 'turn IPv6 off in the Docker daemon, then restart the provisioner')
 export async function engineIsolates(): Promise<boolean> {
   const version = String((await docker('GET', '/version')).data?.Version ?? '')
   const ok = !isolationLost && Number(version.split('.')[0]) >= 28
@@ -146,7 +151,9 @@ export async function ensure(ctx: Ctx, ref: string, body: unknown) {
   // A network made where the engine could not isolate (below Docker 28) or before the isolation existed is made again
   // the same way, once, now that it can.
   const weak = (n: { body: Record<string, unknown> }, e: any) => n.body.Internal === true
-    && (e.Internal !== true || e.Options?.['com.docker.network.bridge.gateway_mode_ipv4'] !== 'isolated')
+    && (e?.Internal !== true || e?.Options?.['com.docker.network.bridge.gateway_mode_ipv4'] !== 'isolated')
+  // and one with IPv6 on (daemon defaults, or made before spec.ts pinned it off): its IPv6 gateway reaches the host
+  const v6 = (e: any) => e?.EnableIPv6 === true
   const rebuild: { name: string; net: any }[] = []
   const ours = new Set([...spec.containers.map((c) => c.name), ctx.node.controlContainer])
   const foreign = (net: any, allowJobs: boolean) => (Object.values(net.Containers ?? {}) as { Name: string }[])
@@ -164,7 +171,8 @@ export async function ensure(ctx: Ctx, ref: string, body: unknown) {
     // job containers count as its own)
     const other = foreign(e, true)
     if (other) refuse(409, 'network_busy', `${other.Name} is on ${n.name} and is not this project's; remove it`)
-    if ((n === tenant && old) || weak(n, e)) rebuild.push({ name: n.name, net: e })
+    if (v6(e) && ipv6Kept) noIpv6(n.name)
+    if ((n === tenant && old) || weak(n, e) || v6(e)) rebuild.push({ name: n.name, net: e })
   }
   if (rebuild.length) {
     // a rebuild removes the network: a running job on it is a conflict for a later pass
@@ -185,10 +193,17 @@ export async function ensure(ctx: Ctx, ref: string, body: unknown) {
   for (const n of spec.networks) {
     if (await inspectNetwork(n.name)) continue
     await docker('POST', '/networks/create', n.body)
-    // the loop guard: a network that reads back weak right after it was made would be rebuilt on every pass
-    if (!isolationLost && weak(n, await inspectNetwork(n.name))) {
+    // the loop guards: a network that reads back weak right after it was made would be rebuilt on every pass
+    const made = await inspectNetwork(n.name)
+    if (!made) refuse(502, 'docker_refused', `${n.name} was created but cannot be read back; retry the ensure`)
+    if (!isolationLost && weak(n, made)) {
       isolationLost = true
       console.warn(`provisioner: ${n.name} was made with gateway_mode_ipv4=isolated but the engine did not keep it; networks are no longer rebuilt for the isolation until the provisioner restarts`)
+    }
+    if (v6(made)) {
+      if (!ipv6Kept) console.warn(`provisioner: ${n.name} was made with IPv6 off but the engine turned it on; until the provisioner restarts, networks are not rebuilt for IPv6 and one with IPv6 on is refused`)
+      ipv6Kept = true
+      noIpv6(n.name)
     }
   }
   for (const v of spec.volumes) {

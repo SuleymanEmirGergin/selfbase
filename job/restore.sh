@@ -43,15 +43,18 @@
 #      after 16 s, 17 s at most with its KILL): the stop of pg_restore's sessions runs until 20 s are left, the
 #      writer's whole process group gets TERM, then KILL 5 s later while any of it is left; every psql has 5 s to
 #      connect, 10 s for its transaction (one bound for a call of two statements) and a wall-clock bound of 16 s, or
-#      the time left before the deadline (a server that stops answering does not hold it). A step that finds no time
-#      left is skipped: an undo skipped is exit 8 (said, with the SQL to run by hand); a temp dir left is removed by
-#      the next restore
+#      the time left before the deadline (a server that stops answering does not hold it: "the database did not
+#      answer in time", a failure like any other, exit 1 before pg_restore starts). The exception is step 4b
+#      (ROTATE_KEYS): its two statements run after the commit without these bounds (a time bound for them is wave 2).
+#      A step that finds no time left is skipped: an undo skipped or failed is exit 8 (said, with the SQL to run by
+#      hand); a temp dir left is removed by the next restore
+#   1d. the dump's table of contents is read (exit 10 when it cannot be) and, for a v1 dump (step 4), the new
+#      project's ledger probed (exit 1 when the probe fails): before step 2, so either failure changes nothing
 #   2. cron: every active job is set inactive (committed) and running job sessions are terminated, so no job runs
 #      during the restore; the restore brings back the backup's job states (on a failure before pg_restore starts the
 #      jobs set inactive here are set active again)
 #   3. pg_restore --clean --if-exists --single-transaction --exit-on-error: every object in the dump is dropped and
-#      recreated in ONE transaction; any failure from its start is exit 8 (above). A dump whose table of contents
-#      cannot be read fails before it, nothing restored (exit 10)
+#      recreated in ONE transaction; any failure from its start is exit 8 (above)
 #   4. a dump whose table of contents has no selfbase.platform_migrations (a v1 database): the ledger the new
 #      project's core created is moved aside before step 3 (it would keep --clean from dropping schema selfbase) and
 #      dropped after it (moved back on a failure before step 3 starts), so core adopts the restored database at its
@@ -75,6 +78,8 @@ set -euo pipefail
 rel=${RESTORE_DIR:?RESTORE_DIR is required}
 [[ $rel =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)?$ || $rel =~ ^import/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] && [[ ! /$rel/ =~ /\.\.?/ ]] ||
   { echo "restore: RESTORE_DIR must be one or two plain path segments, or import/<a>/<b>" >&2; exit 2; }
+# a name with a leading dot is backup.sh's own (.tmp-<ts> being written, .deleting-<ts> being deleted): never a backup
+[[ ! /$rel =~ /\. ]] || { echo "restore: $rel is not a backup (a temp or deleted directory of backup.sh)" >&2; exit 2; }
 dir=/backups/$rel
 rotate=${ROTATE_KEYS:-0}
 [[ $rotate =~ ^[01]$ ]] || { echo "restore: ROTATE_KEYS must be 0 or 1" >&2; exit 2; }
@@ -90,7 +95,8 @@ for f in $listed; do
     echo "restore: the MANIFEST of $rel lists an unknown file; refusing" >&2; exit 1 ;;
   esac
 done
-while read -r f size sum; do
+# || [ -n "$f" ]: a last line without a newline is checked too (read returns 1 on it)
+while read -r f size sum || [ -n "$f" ]; do
   if [ "$(stat -c %s "$dir/$f" 2>/dev/null)" != "$size" ] || [ "$(sha256sum < "$dir/$f" | cut -d' ' -f1)" != "$sum" ]; then
     echo "restore: $rel/$f does not match its MANIFEST (size or sha256); refusing" >&2
     exit 1
@@ -171,18 +177,22 @@ q() { PGOPTIONS="$PGOPTIONS -c search_path=pg_catalog" psql -XAtq -v ON_ERROR_ST
 # foreground ends) and every one the cleanup runs. 5 s to connect and 10 s for its statements together (a lock they
 # wait for included) are the server's bounds; timeout kills psql after 16 s, or 1 s before the cleanup's deadline,
 # whatever the server does (a dead connection, a server that stops answering). psql runs in a bash -c so a psql
-# function the environment exports (the tests' stand-ins) still applies
+# function the environment exports (the tests' stand-ins) still applies. timeout's 124 (TERM) and 137 (KILL) are one
+# failure, said as such: 1, never a status the cleanup would read as a signal to this script
 qt() {
-  local n=16
+  local n=16 qrc=0
   [ -z "$deadline" ] || [ $((deadline - SECONDS - 1)) -ge 16 ] || n=$((deadline - SECONDS - 1))
   [ "$n" -ge 1 ] || return 1
   PGCONNECT_TIMEOUT=5 PGOPTIONS="$PGOPTIONS -c search_path=pg_catalog -c statement_timeout=10s -c transaction_timeout=10s" \
-    timeout -k 1 "$n" bash -c 'psql -XAtq -v ON_ERROR_STOP=1 "$@"' qt "$@"
+    timeout -k 1 "$n" bash -c 'psql -XAtq -v ON_ERROR_STOP=1 "$@"' qt "$@" || qrc=$?
+  case $qrc in 124 | 137) echo "restore: the database did not answer in time" >&2; return 1 ;; esac
+  return "$qrc"
 }
 # the cleanup's state (no function declares a local of these names: the trap runs in the scope of the function a
 # signal stopped). db_done: pg_restore committed; swapped: the storage swap began; started: pg_restore started (from
 # then on only db_done is known); contained: no stop failed to show that the restore's sessions ended; deadline: the
-# end of the cleanup's 40 s, set by the first floor stop or the cleanup; spent: an undo found no time left
+# end of the cleanup's 40 s, set by the first floor stop or the cleanup; spent: an undo was skipped (no time left) or
+# failed, so the cleanup is incomplete
 jobs='' db_done=0 swapped=0 t='' held=0 w='' wstop='' wrc=0 contained=1 started=0 deadline='' spent=0
 HOLD=selfbase_restore_hold
 # committed: pg_restore exited 0, the database is the backup's; the cron and ledger steps are never undone over it
@@ -191,11 +201,12 @@ committed() { db_done=1 held=0 jobs='' contained=1; }
 # reaches <by>; 1 when it still runs then
 ends() { while kill -0 -- "$1" 2> /dev/null; do [ "$SECONDS" -lt "$2" ] || return 1; sleep 0.2; done; }
 # undo <done> <not done> <sql>: a step made before pg_restore started, undone when 16 s of the deadline are left (a
-# qt and a margin); one skipped (spent) or failed is said, with its SQL to run by hand
+# qt and a margin); one skipped or failed (a timeout included: whether it committed is not known) is spent, said
+# with its SQL to run by hand
 undo() {
   if [ $((deadline - SECONDS)) -lt 16 ]; then spent=1; echo "restore: could NOT $2 (no time left); do it by hand: $3" >&2
   elif qt -c "$3"; then echo "restore: $1" >&2
-  else echo "restore: could NOT $2; do it by hand: $3" >&2; fi
+  else spent=1; echo "restore: could NOT $2; do it by hand: $3" >&2; fi
 }
 cleanup() {
   local rc=$? code r
@@ -220,7 +231,7 @@ cleanup() {
     [ -z "$jobs" ] || undo "cron jobs $jobs set active again" "set cron jobs $jobs active again" \
       "update cron.job set active = true where jobid in ($jobs)"
     if [ "$spent" = 1 ]; then code=8
-      echo "restore: STOPPED, STATE UNKNOWN (exit $rc): the cleanup ran out of time before it undid what is named above (pg_restore never started)" >&2
+      echo "restore: STOPPED, STATE UNKNOWN (exit $rc): the cleanup could not undo what is named above, for lack of time or because the undo failed (pg_restore never started)" >&2
     elif [ "$rc" -ge 129 ]; then
       echo "restore: STOPPED by a signal (exit $rc) before pg_restore started: nothing was restored" >&2
     fi
@@ -321,6 +332,15 @@ watched '' tar --no-same-owner --no-same-permissions --no-unquote -xzf "$dir/sto
   { echo "restore: $rel/storage.tar.gz could not be extracted; nothing was changed" >&2; exit 1; }
 [ -z "$(find "$t" ! -type f ! -type d -print -quit)" ] ||
   { echo "restore: the extracted storage holds something other than files and directories; nothing was changed" >&2; exit 1; }
+# read before the restore: a TOC that cannot be listed is a dump that cannot be restored either
+toc=$(pg_restore -l "$dir/db.dump") ||
+  { echo "restore: FAILED: the table of contents of $rel/db.dump cannot be read; nothing was restored" >&2; exit 10; }
+v1=0
+grep -qE ' TABLE selfbase platform_migrations ' <<< "$toc" || v1=1
+# before the cron step, so a probe that fails has changed nothing: a failure (exit 1), never "no ledger" (pg_restore
+# --clean would run with the ledger in selfbase)
+ledger=f
+[ "$v1" = 0 ] || ledger=$(qt -c "select pg_catalog.to_regclass('selfbase.platform_migrations') is not null") || exit 1
 jobs=$(qt -c "select case when pg_catalog.to_regclass('cron.job') is null then '' else (select coalesce(pg_catalog.string_agg(jobid::text, ','), '')
   from (select jobid from cron.job where active) j) end")
 if [ -n "$jobs" ]; then
@@ -329,12 +349,7 @@ if [ -n "$jobs" ]; then
 fi
 qt -c "select pg_catalog.pg_terminate_backend(pid) from pg_catalog.pg_stat_activity
       where (application_name = 'pg_cron' or backend_type = 'pg_cron') and pid <> pg_catalog.pg_backend_pid()" > /dev/null
-# read before the restore: a TOC that cannot be listed is a dump that cannot be restored either
-toc=$(pg_restore -l "$dir/db.dump") ||
-  { echo "restore: FAILED: the table of contents of $rel/db.dump cannot be read; nothing was restored" >&2; exit 10; }
-v1=0
-grep -qE ' TABLE selfbase platform_migrations ' <<< "$toc" || v1=1
-if [ "$v1" = 1 ] && [ "$(qt -c "select pg_catalog.to_regclass('selfbase.platform_migrations') is not null")" = t ]; then
+if [ "$ledger" = t ]; then
   # held first: a failure or signal as the move commits still finds it (the undo's "if exists" covers one that did not)
   held=1
   qt -c "create schema if not exists $HOLD; alter table selfbase.platform_migrations set schema $HOLD"

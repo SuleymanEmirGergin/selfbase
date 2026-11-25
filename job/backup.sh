@@ -24,7 +24,10 @@
 # It is built in a .tmp-<ts> directory next to it and renamed when complete, so a directory with a timestamp name
 # is always a whole backup. Backups in that subdirectory older than BACKUP_RETENTION_DAYS (exports:
 # EXPORT_RETENTION_DAYS) or beyond the newest BACKUP_MAX_COUNT are deleted, never the one just written. The last stdout line is `backup: wrote <subdir>/<ts>` (control reads
-# it, and the size line before it). Any failure: non-zero exit and a "backup: FAILED" line. Never prints a value from the environment.
+# it, and the size line before it). Any failure before the rename: non-zero exit and a "backup: FAILED" line; after
+# it (the retention, the size) the backup exists: a "backup: WARNING" line, exit 0 and the wrote line still; a signal
+# after it is a "backup: STOPPED" line that says the backup is whole but unrecorded. Never prints a value from the
+# environment.
 # shortcut: backups live on the same server, add off-site copy before production
 set -euo pipefail
 umask 077 # the dump holds every row and the auth password hashes: owner-only files and directories
@@ -39,9 +42,11 @@ ts=$(date -u +%Y%m%d-%H%M%S)
 tmp="$backups/.tmp-$ts"
 # the writer capped() runs (its process group), stopped and reaped before the temp dir goes; a signal is a failure the
 # trap sees (bash runs the EXIT trap on one with $? of the last command, often 0)
-w=''
+# moving: set just before the rename; the trap then reads its outcome from the disk (a signal can land as mv finishes)
+w='' moving=0
 trap 'rc=$?; [ -z "$w" ] || { kill -TERM -- "-$w" 2> /dev/null || true; wait "$w" 2> /dev/null || true; }
-  [ $rc = 0 ] || { rm -rf "$tmp"; echo "backup: FAILED (exit $rc); no backup written for $sub/$ts" >&2; }' EXIT
+  if [ $rc != 0 ] && [ $moving = 1 ] && [ -d "$backups/$ts" ] && [ ! -e "$tmp" ]; then echo "backup: STOPPED (exit $rc) after $sub/$ts was written: it is whole, but control has not recorded it" >&2
+  elif [ $rc != 0 ]; then rm -rf "$tmp"; echo "backup: FAILED (exit $rc); no backup written for $sub/$ts" >&2; fi' EXIT
 trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 
 export_keep=${EXPORT_RETENTION_DAYS:-7}
@@ -53,19 +58,33 @@ min_free=${BACKUP_MIN_FREE_MIB:-}
 
 # Retention by the name's timestamp, then by count (newest first); the backup just written always stays. Exports
 # (export-<ref>) too, by EXPORT_RETENTION_DAYS: an export is taken to be moved or imported within days (R3).
+# A backup to delete is first renamed to .deleting-<ts> (no listing, count or restore takes that name) and reported
+# deleted right then, so control drops its row even when the delete then fails half way; the next run removes what
+# is left, and reports that backup deleted again first (control drops a row a failed or stopped run kept).
 retain() {
-  local days cutoff n=0 d why
+  local days cutoff n=0 d why bad=0 q
   [[ $sub == export-* ]] && days=$export_keep || days=$keep
   cutoff=$(date -u -d "-$days days" +%Y%m%d-%H%M%S)
+  for q in "$backups"/.deleting-*; do
+    [ -e "$q" ] || [ -L "$q" ] || continue # a dangling link too (rm -rf removes the link, never its target)
+    d=${q##*/.deleting-}
+    # only a quarantine retain() made names a backup: an odd name, or a <ts> that is live again, goes silently
+    if [[ $d =~ ^[0-9]{8}-[0-9]{6}$ ]] && [ ! -e "$backups/$d" ]; then echo "backup: deleted $sub/$d (left by an earlier run)"; fi
+    rm -rf "$q" || { echo "backup: WARNING: could not remove the leftover $sub/${q##*/}" >&2; bad=1; }
+  done
   for d in $(ls "$backups" | grep -E '^[0-9]{8}-[0-9]{6}$' | sort -r || true); do
     n=$((n + 1))
     [ "$d" != "$ts" ] || continue
     if [[ $d < $cutoff ]]; then why="older than $days days"
     elif [ "$n" -gt "$max" ]; then why="beyond the newest $max"
     else continue; fi
-    rm -rf "${backups:?}/$d"
+    # control drops the rows of the deleted lines: a backup no longer under its name is gone for it
+    # -T: never into a .deleting-<ts> left over (the next run removes it first)
+    if ! mv -T "${backups:?}/$d" "$backups/.deleting-$d"; then echo "backup: WARNING: could not delete $sub/$d ($why)" >&2; bad=1; continue; fi
     echo "backup: deleted $sub/$d ($why)"
+    rm -rf "$backups/.deleting-$d" || { echo "backup: WARNING: $sub/.deleting-$d is left for the next run" >&2; bad=1; }
   done
+  return "$bad"
 }
 
 # BACKUP_PRUNE_ONLY=1: retention alone, for exports past their window (control's nightly run, a deleted project's
@@ -75,7 +94,7 @@ prune_only=${BACKUP_PRUNE_ONLY:-0}
 if [ "$prune_only" = 1 ]; then
   [[ $sub == export-* ]] || { echo "backup: BACKUP_PRUNE_ONLY takes an export-<ref> directory only" >&2; exit 2; }
   [ -d "$backups" ] || { echo "backup: $sub is not mounted" >&2; exit 1; }
-  retain
+  retain || echo "backup: WARNING: the retention of $sub did not finish; what is left is pruned on the next run" >&2
   echo "backup: pruned $sub"
   exit 0
 fi
@@ -168,10 +187,18 @@ if [ -n "${MANIFEST_B64:-}" ]; then
   chmod 0750 "$backups" "$tmp"
   chmod 0640 "$tmp/project.json"
 fi
+# each size and sum into a variable first: a stat or sha256sum that fails inside echo's arguments would go unseen
 for f in $files; do
-  echo "$f $(stat -c %s "$tmp/$f") $(sha256sum "$tmp/$f" | cut -d' ' -f1)"
+  size=$(stat -c %s "$tmp/$f") && sum=$(sha256sum "$tmp/$f" | cut -d' ' -f1) && [[ $size =~ ^[0-9]+$ && $sum =~ ^[0-9a-f]{64}$ ]] ||
+    { echo "backup: the MANIFEST entry of $f could not be made" >&2; exit 1; }
+  echo "$f $size $sum"
 done > "$tmp/MANIFEST"
-mv "$tmp" "$backups/$ts"
-retain
-echo "backup: size $(du -sb "$backups/$ts" | cut -f1) bytes"
+moving=1
+mv -T "$tmp" "$backups/$ts" # -T: never into a <ts> dir that appeared after the exists check
+# the backup is whole and in place: from here a failure is a warning (exit 0), never "no backup written", and the
+# wrote line control records the backup by still comes last
+retain || echo "backup: WARNING: the retention of $sub did not finish; older backups may be left" >&2
+size=$(du -sb "$backups/$ts" | cut -f1) || true
+if [[ $size =~ ^[0-9]+$ ]]; then echo "backup: size $size bytes"
+else echo "backup: WARNING: the size of $sub/$ts could not be read" >&2; fi
 echo "backup: wrote $sub/$ts"

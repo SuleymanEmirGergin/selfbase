@@ -61,7 +61,7 @@ check 'M2: no function of restore.sh shadows a global its cleanup reads' [ -z "$
 # finds neither (the window is a few builtins wide, too narrow to hit from a test: the order is checked here)
 first=$(sed -n '/^reap() {/,/^}/p' job/restore.sh | grep -v '^[[:space:]]*#' | grep -oE "committed|^  w=''" | head -n1)
 check '1: reap records the commit before it clears the writer' [ "$first" = committed ]
-s=$(shadows backup.sh rc w tmp sub ts)
+s=$(shadows backup.sh rc w tmp sub ts backups moving)
 check 'M2: no function of backup.sh shadows a global its trap reads' [ -z "$s" ]; [ -z "$s" ] || echo "shadowed: $s" >&2
 
 echo "# building $IMAGE and starting $P"
@@ -260,6 +260,14 @@ rc=0; out=$(job db "$P-storage" bash /scripts/restore.sh 2>&1) || rc=$?
 check 'a corrupted backup is refused' [ "$rc" != 0 ]
 check 'the refusal names the MANIFEST' grep -q 'does not match its MANIFEST' <<< "$out"
 check 'the database is unchanged after the refusal' [ "$(sql db 'select v from public.marker')" = after-backup ]
+# M-4: a MANIFEST whose last line has no newline is still checked (read returns 1 on it): a wrong sum there is refused
+in_backups "cp -a /backups/t/$ts /backups/t/nonl && cd /backups/t/nonl &&
+  sed -i '\$ s/ [0-9a-f]*\$/ $(printf '0%.0s' $(seq 64))/' MANIFEST && printf %s \"\$(cat MANIFEST)\" > MANIFEST"
+JOB_ENV=(-e RESTORE_DIR=t/nonl)
+rc=0; out=$(job db "$P-storage" bash /scripts/restore.sh 2>&1) || rc=$?
+check 'M-4: a wrong last MANIFEST line without a newline is refused (exit 1)' [ "$rc" = 1 ]; [ "$rc" = 1 ] || echo "$out" >&2
+check 'M-4: the refusal names the MANIFEST' grep -q 'does not match its MANIFEST' <<< "$out"
+check 'M-4: the database is unchanged after it' [ "$(sql db 'select v from public.marker')" = after-backup ]
 
 # ---- R4: a storage archive with a link or a path out of the volume is refused, even with a matching MANIFEST ----
 # evil-link: ./stub/link -> /etc (a later entry stub/link/x would write through it); evil-dotdot: ../outside
@@ -304,6 +312,105 @@ rc=0; out=$(job db "$P-storage" bash -c 'du() { return 1; }; export -f du; bash 
 check 'R3: a du that prints no size fails the backup (exit 1)' [ "$rc" = 1 ]
 check 'R3: and says the storage size could not be read' grep -q 'backup: the storage size could not be read' <<< "$out"
 check 'R3: and writes nothing' in_backups '[ ! -d /backups/dunone ] || [ -z "$(ls -A /backups/dunone)" ]'
+# M-3: once the backup is renamed into place it exists: a retention that fails (a stand-in mv refuses to move the old
+# backup aside) or a size that cannot be read (a stand-in du) is a warning, and the wrote line control records it by
+# still comes
+in_backups 'mkdir -p /backups/postmv/20200101-000000'
+JOB_ENV=(-e BACKUP_SUBDIR=postmv)
+# the last stdout line (control reads stdout): docker run gives no order between a run's stdout and stderr lines
+lastout() { grep -v -e '^backup: WARNING' -e '^mv: ' -e '^rm: ' <<< "$1" | tail -n1; }
+rc=0; out=$(job db "$P-storage" bash -c 'mv() { case "$*" in *.deleting-*) echo "mv: refused by the test" >&2; return 1 ;; esac
+  command mv "$@"; }; export -f mv; bash /scripts/backup.sh' 2>&1) || rc=$?
+pts=$(lastout "$out"); pts=${pts#backup: wrote postmv/}
+check 'M-3: a retention that fails after the rename keeps exit 0' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
+check 'M-3: its last line is still the wrote line, of a whole backup' in_backups "[[ $pts =~ ^[0-9]{8}-[0-9]{6}\$ ]] && [ -f /backups/postmv/$pts/MANIFEST ]"
+check 'M-3: it warns, never says no backup was written or that the old one was deleted' bash -c \
+  'grep -q "backup: WARNING: .*20200101-000000" <<< "$1" && ! grep -qE "no backup written|backup: deleted postmv/20200101-000000" <<< "$1"' _ "$out"
+rc=0; out=$(job db "$P-storage" bash -c 'du() { case "$1" in -sb) return 1 ;; esac; command du "$@"; }; export -f du
+  bash /scripts/backup.sh' 2>&1) || rc=$?
+check 'M-3: a size that cannot be read after the rename keeps exit 0 and the wrote line' \
+  bash -c '[ "$2" = 0 ] && grep -qE "^backup: wrote postmv/[0-9]{8}-[0-9]{6}$" <<< "$1"' _ "$(lastout "$out")" "$rc"
+[ "$rc" = 0 ] || echo "$out" >&2
+check 'M-3: it warns instead of printing a size line without a number' \
+  bash -c 'grep -q "backup: WARNING: the size of postmv/" <<< "$1" && ! grep -E "^backup: size" <<< "$1" | grep -qvE "^backup: size [0-9]+ bytes$"' _ "$out"
+# m-5: a stop after the rename (TERM while the size is read) leaves a whole backup that control has not recorded
+JOB_ENV=(-e BACKUP_SUBDIR=late)
+rc=0; out=$(job db "$P-storage" bash -c 'du() { case "$1" in -sb) kill -TERM $$ ;; esac; command du "$@"; }; export -f du
+  bash /scripts/backup.sh' 2>&1) || rc=$?
+check 'm-5: a TERM after the rename exits 143' [ "$rc" = 143 ]; [ "$rc" = 143 ] || echo "$out" >&2
+check 'm-5: it says the backup is whole but not recorded, never that no backup was written' bash -c \
+  'grep -qE "backup: STOPPED \(exit 143\) after late/[0-9]{8}-[0-9]{6} was written: it is whole, but control has not recorded it" <<< "$1" &&
+  ! grep -q "no backup written" <<< "$1"' _ "$out"
+check 'm-5: and the backup is in place' in_backups '[ -f "$(ls -d /backups/late/[0-9]*-[0-9]* | head -n1)/MANIFEST" ]'
+# round 2: a TERM that lands as the rename itself finishes (a stand-in mv signals right after it) is the same case
+JOB_ENV=(-e BACKUP_SUBDIR=latemv)
+rc=0; out=$(job db "$P-storage" bash -c 'mv() { case "$*" in */.tmp-*) command mv "$@" && kill -TERM $$; return ;; esac; command mv "$@"; }
+  export -f mv; bash /scripts/backup.sh' 2>&1) || rc=$?
+check 'm-5: a TERM as the rename finishes exits 143' [ "$rc" = 143 ]; [ "$rc" = 143 ] || echo "$out" >&2
+check 'm-5: it says that backup is whole but not recorded, never that no backup was written' bash -c \
+  'grep -qE "backup: STOPPED \(exit 143\) after latemv/[0-9]{8}-[0-9]{6} was written" <<< "$1" && ! grep -q "no backup written" <<< "$1"' _ "$out"
+check 'm-5: (it is in place)' in_backups '[ -f "$(ls -d /backups/latemv/[0-9]*-[0-9]* | head -n1)/MANIFEST" ]'
+
+# M-7: a size or sum the MANIFEST cannot get (a stand-in stat or sha256sum fails) fails the backup: nothing renamed
+for tool in stat sha256sum; do
+  JOB_ENV=(-e BACKUP_SUBDIR=mf-$tool)
+  rc=0; out=$(job db "$P-storage" bash -c "$tool() { case \"\$*\" in *globals.sql*) return 1 ;; esac; command $tool \"\$@\"; }
+    export -f $tool; bash /scripts/backup.sh" 2>&1) || rc=$?
+  check "M-7: a $tool that fails for the MANIFEST fails the backup (exit 1)" [ "$rc" = 1 ]; [ "$rc" = 1 ] || echo "$out" >&2
+  check "M-7: it names the file and writes no backup ($tool)" bash -c \
+    'grep -q "backup: the MANIFEST entry of globals.sql could not be made" <<< "$1" && ! grep -q "backup: wrote" <<< "$1"' _ "$out"
+  check "M-7: nothing is renamed and no temp dir is left ($tool)" in_backups "[ -z \"\$(ls -A /backups/mf-$tool)\" ]"
+done
+
+# M-6: retention moves an old backup aside (.deleting-<ts>) before it deletes it, and says deleted right after the move,
+# so control drops its row even when the delete fails half way (a stand-in rm removes one file, then fails); the next
+# run removes what is left; neither the listing nor a restore takes the quarantine name
+in_backups 'mkdir -p /backups/quar/20200101-000000 && cd /backups/quar/20200101-000000 && touch a b c'
+JOB_ENV=(-e BACKUP_SUBDIR=quar)
+rc=0; out=$(job db "$P-storage" bash -c 'rm() { case "$*" in *.deleting-*) command rm -f "${@: -1}/a"; echo "rm: refused by the test" >&2; return 1 ;; esac
+  command rm "$@"; }; export -f rm; bash /scripts/backup.sh' 2>&1) || rc=$?
+check 'M-6: a delete that fails half way keeps exit 0' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
+check 'M-6: the old backup is reported deleted (control drops its row)' grep -qx 'backup: deleted quar/20200101-000000 (older than 7 days)' <<< "$out"
+check 'M-6: it warns that what is left stays for the next run' grep -q 'backup: WARNING: .*quar/.deleting-20200101-000000' <<< "$out"
+check 'M-6: no backup is left under the old name, the rest is in quarantine' in_backups \
+  '[ ! -e /backups/quar/20200101-000000 ] && [ -f /backups/quar/.deleting-20200101-000000/b ] && [ ! -e /backups/quar/.deleting-20200101-000000/a ]'
+JOB_ENV=(-e RESTORE_DIR=quar/.deleting-20200101-000000)
+rc=0; out=$(job db "$P-storage" bash /scripts/restore.sh 2>&1) || rc=$?
+check 'M-6: a restore of the quarantine name is refused (exit 2)' [ "$rc" = 2 ]; [ "$rc" = 2 ] || echo "$out" >&2
+JOB_ENV=(-e BACKUP_SUBDIR=quar)
+rc=0; out=$(job db "$P-storage" bash /scripts/backup.sh 2>&1) || rc=$?
+check 'M-6: the next run removes the leftover' bash -c '[ "$1" = 0 ]' _ "$rc"
+# round 2: and says it deleted that backup first, as control reads it, so a row a failed run kept goes now
+check 'M-6: it reports the swept leftover deleted, under its backup name' grep -qx 'backup: deleted quar/20200101-000000 (left by an earlier run)' <<< "$out"
+check 'M-6: (it is gone, and only timestamp dirs are left)' in_backups '! ls -A /backups/quar | grep -qvE "^[0-9]{8}-[0-9]{6}$"'
+# round 3: the sweep names a backup only for an exact .deleting-<ts> whose <ts> is not live; other leftovers, a
+# dangling link among them, go silently, and a link goes without its target (a long retention keeps the live 2020 one)
+in_backups 'mkdir -p "/backups/sweep/20200101-000000" "/backups/sweep/.deleting-20200101-000000" "/backups/sweep/.deleting-20200101-000000 extra" /backups/sweep-target &&
+  touch /backups/sweep/20200101-000000/keep /backups/sweep-target/t && ln -s /backups/sweep/nowhere /backups/sweep/.deleting-dangling &&
+  ln -s /backups/sweep-target /backups/sweep/.deleting-link'
+JOB_ENV=(-e BACKUP_SUBDIR=sweep -e BACKUP_RETENTION_DAYS=36500)
+rc=0; out=$(job db "$P-storage" bash /scripts/backup.sh 2>&1) || rc=$?
+check 'sweep: the run succeeds' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
+check 'sweep: no deleted line names the live backup' bash -c '! grep -q "^backup: deleted sweep/20200101-000000" <<< "$1"' _ "$out"
+check 'sweep: the live backup stays' in_backups '[ -f /backups/sweep/20200101-000000/keep ]'
+check 'sweep: every leftover is gone, the dangling link too' in_backups '! ls -A /backups/sweep | grep -q "^\.deleting-"'
+check 'sweep: a linked leftover goes without its target' in_backups '[ -f /backups/sweep-target/t ]'
+# round 3: the publish rename is mv -T: a <ts> dir that appears after the exists check is never moved into
+JOB_ENV=(-e BACKUP_SUBDIR=race)
+rc=0; out=$(job db "$P-storage" bash -c 'mv() { case "$*" in */.tmp-*) mkdir -p "${@: -1}" && touch "${@: -1}/x" ;; esac; command mv "$@"; }
+  export -f mv; bash /scripts/backup.sh' 2>&1) || rc=$?
+check 'race: a <ts> dir in the way fails the backup' [ "$rc" != 0 ]; [ "$rc" != 0 ] || echo "$out" >&2
+check 'race: it says no backup was written' grep -q 'no backup written for race/' <<< "$out"
+check 'race: (nothing was moved into that dir)' in_backups '! ls -A /backups/race/[0-9]*-[0-9]* | grep -q "^\.tmp-"'
+# m-6: prune-only still prints pruned when the retention fails (the stand-in mv), so control reads the deleted lines
+in_backups 'mkdir -p /backups/export-pf/20200101-000000 /backups/export-pf/20200102-000000'
+rc=0; out=$(docker run --rm --network none -v "$P-backups:/backups" -e BACKUP_SUBDIR=export-pf -e BACKUP_PRUNE_ONLY=1 "$IMAGE" bash -c \
+  'mv() { case "$*" in *20200101-000000*) echo "mv: refused by the test" >&2; return 1 ;; esac; command mv "$@"; }; export -f mv
+  bash /scripts/backup.sh' 2>&1) || rc=$?
+check 'm-6: a prune-only run whose retention fails keeps exit 0' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
+check 'm-6: it reports what it deleted, warns, and still ends with the pruned line' bash -c \
+  'grep -q "^backup: deleted export-pf/20200102-000000" <<< "$1" && grep -q "backup: WARNING" <<< "$1" &&
+  [ "$2" = "backup: pruned export-pf" ]' _ "$out" "$(lastout "$out")"
 
 # ---- I1: ROTATE_KEYS=1 (an import with rotate_keys) deletes the restored sessions, before control starts core ----
 JOB_ENV=(-e RESTORE_DIR=t/$ts -e ROTATE_KEYS=yes)
@@ -655,21 +762,22 @@ check '2: within the deadline (under 45 s) as well' [ "$took" -lt 45 ]; [ "$took
 sql db-empty "update cron.job set active = true where jobname = 'e_job'" > /dev/null
 # an undo query that blocks (a test session holds a lock on cron.job, taken as the pg_cron step fails; PGOPTIONS
 # emptied, or it would inherit the hooked query's statement timeout) ends at its own statement timeout: the cron jobs
-# are left to be set active by hand, and the restore keeps its exit (1)
+# are left to be set active by hand; an undo that failed leaves the cleanup incomplete: exit 8 (round 6 Minor)
 start=$SECONDS
 rc=0; out=$(cramped "$small" 1 '' 'psql() { case "$*" in *"backend_type = "*)
     PGOPTIONS= command psql -XAtq -c "begin; lock table cron.job; select pg_catalog.pg_sleep(90)" > /dev/null 2>&1 & sleep 2; return 1 ;; esac
   command psql "$@"; }; export -f psql') || rc=$?
 took=$((SECONDS - start))
 sql db-empty "select pg_terminate_backend(pid) from pg_stat_activity where query like '%lock table cron.job%' and pid <> pg_backend_pid()" > /dev/null
-check '2: a failure whose cron undo is blocked by a lock keeps its exit (1)' [ "$rc" = 1 ]; [ "$rc" = 1 ] || echo "$out" >&2
+check '2: a failure whose cron undo is blocked by a lock exits 8' [ "$rc" = 8 ]; [ "$rc" = 8 ] || echo "$out" >&2
+check '2: and says the state is unknown' grep -q 'STOPPED, STATE UNKNOWN .*could not undo' <<< "$out"
 check '2: it ends within the deadline (under 45 s)' [ "$took" -lt 45 ]; [ "$took" -lt 45 ] || echo "took ${took}s" >&2
 check '2: and says the cron jobs are to be set active by hand' grep -q 'could NOT set cron jobs .* active again; do it by hand' <<< "$out"
 check '2: (they are still inactive)' [ "$(ejob)" = f ]
 sql db-empty "update cron.job set active = true where jobname = 'e_job'" > /dev/null
 # round 6, 1: a psql here is bounded by the wall clock, not only by the server's timeouts. A stand-in server accepts
 # the connection, completes the startup, then never answers (it exits after 60 s): the restore's first query ends
-# at its bound (16 s, timeout's exit 124), not when the server goes
+# at its bound (16 s, timeout's exit 124), not when the server goes; the restore says so and exits 1 (m2: not 124)
 docker run --rm -i -v "$P-backups:/backups" "$IMAGE" bash -c 'mkdir -p /backups/standin && cat > /backups/standin/silent.pl' <<'EOF'
 alarm 60;
 use IO::Socket::INET;
@@ -688,7 +796,8 @@ start=$SECONDS
 rc=0; out=$(cramped "$small" 1 '' 'perl /backups/standin/silent.pl & sleep 1
   export PGHOST=127.0.0.1 PGPORT=5499 PGSSLMODE=disable PGGSSENCMODE=disable') || rc=$?
 took=$((SECONDS - start))
-check '1: a query to a server that never answers ends at its bound (exit 124)' [ "$rc" = 124 ]; [ "$rc" = 124 ] || echo "$out" >&2
+check '1: a query to a server that never answers ends at its bound (exit 1)' [ "$rc" = 1 ]; [ "$rc" = 1 ] || echo "$out" >&2
+check 'm2: and says the database did not answer in time' grep -q 'restore: the database did not answer in time' <<< "$out"
 check '1: well before the server goes (under 30 s)' [ "$took" -lt 30 ]; [ "$took" -lt 30 ] || echo "took ${took}s" >&2
 # the two-statement ledger undo is one bound too (transaction_timeout): the hold step fails once it moved the ledger,
 # with a session holding the ledger table for 7 s and another the hold schema for 90 s. Per statement (10 s each) the
@@ -705,9 +814,55 @@ took=$((SECONDS - start))
 sql db-empty "select pg_terminate_backend(pid) from pg_stat_activity where query like '%selfbase_restore_hold.blk%' and pid <> pg_backend_pid()" > /dev/null
 check '1: a ledger undo under locks ends on the transaction timeout' grep -q 'transaction timeout' <<< "$out"; grep -q 'transaction timeout' <<< "$out" || echo "$out" >&2
 check '1: and says the ledger is to be moved back by hand' grep -q 'could NOT move the platform ledger back; do it by hand' <<< "$out"
-check '1: the restore keeps its exit (1), within the deadline (under 45 s)' [ "$rc" = 1 ] && [ "$took" -lt 45 ]
+check '1: the failed undo is exit 8' [ "$rc" = 8 ]; [ "$rc" = 8 ] || echo "rc=$rc" >&2
+check '1: within the deadline (under 45 s)' [ "$took" -lt 45 ]; [ "$took" -lt 45 ] || echo "took ${took}s" >&2
 sql db-empty "drop schema if exists selfbase_restore_hold cascade; drop table if exists selfbase.platform_migrations;
   $([ "$had" = 1 ] || echo 'drop schema if exists selfbase;') update cron.job set active = true where jobname = 'e_job'" > /dev/null
+# round 6 m1: a v1-ledger probe that fails is a failure before anything changes (exit 1), never read as "no ledger":
+# pg_restore must not run with the ledger still in schema selfbase
+sql db-empty "create schema if not exists selfbase; create table selfbase.platform_migrations (version text)" > /dev/null
+rc=0; out=$(cramped "$small" 1 '' 'psql() { case "$*" in *"to_regclass('"'"'selfbase.platform_migrations'"'"') is not null"*) return 2 ;; esac
+  command psql "$@"; }; export -f psql') || rc=$?
+check 'm1: a failed v1-ledger probe exits 1' [ "$rc" = 1 ]; [ "$rc" = 1 ] || echo "$out" >&2
+check 'm1: pg_restore never ran (the database is as it was)' [ "$(emarker)" = after-backup ]
+check 'm1: the ledger is still in selfbase' [ "$(sql db-empty "select to_regclass('selfbase.platform_migrations') is not null")" = t ]
+check 'm1: the cron job stays active' [ "$(ejob)" = t ]
+# fix round 1 #4: the probe runs before the cron step, so nothing was changed to undo
+check 'm1: the cron step never ran (the probe comes first)' bash -c '! grep -qE "set inactive for the restore|set active again" <<< "$1"' _ "$out"
+sql db-empty "drop table if exists selfbase.platform_migrations; $([ "$had" = 1 ] || echo 'drop schema if exists selfbase;')
+  update cron.job set active = true where jobname = 'e_job'; update public.e_marker set v = 'after-backup'" > /dev/null
+# round 6 m2: a psql that ignores TERM is killed by its bound (timeout's 137): the restore says the database did not
+# answer in time and exits 1, never 137 or "STOPPED by a signal"
+rc=0; out=$(cramped "$small" 1 '' 'psql() { trap "" TERM; sleep 30; }; export -f psql') || rc=$?
+check 'm2: a psql killed by its bound (137) exits 1' [ "$rc" = 1 ]; [ "$rc" = 1 ] || echo "$out" >&2
+check 'm2: it says the database did not answer in time, not that a signal stopped the restore' \
+  bash -c 'grep -q "restore: the database did not answer in time" <<< "$1" && ! grep -q "STOPPED by a signal" <<< "$1"' _ "$out"
+# round 6 m3: the deadline spent. The hold step fails once it moved the ledger, and the ledger undo takes 26 s (a
+# stand-in timeout): the cron undo after it finds less than 16 s left, is skipped and said, and the exit is 8
+sql db-empty "create schema if not exists selfbase; create table selfbase.platform_migrations (version text)" > /dev/null
+docker run --rm -i -v "$P-backups:/backups" "$IMAGE" bash -c \
+  'mkdir -p /backups/standin/slowundo && cat > /backups/standin/slowundo/timeout && chmod +x /backups/standin/slowundo/timeout' <<'EOF'
+#!/bin/bash
+case "$*" in *"alter table if exists selfbase_restore_hold"*) sleep 26; exit 124 ;; esac
+exec /usr/bin/timeout "$@"
+EOF
+start=$SECONDS
+rc=0; out=$(cramped "$small" 1 '' 'export PATH=/backups/standin/slowundo:$PATH
+  psql() { case "$*" in *"set schema selfbase_restore_hold"*) command psql "$@"; return 1 ;; esac; command psql "$@"; }; export -f psql') || rc=$?
+took=$((SECONDS - start))
+check 'm3: an undo skipped for the deadline exits 8' [ "$rc" = 8 ]; [ "$rc" = 8 ] || echo "$out" >&2
+check 'm3: it says the cron undo was skipped, with its SQL' grep -q 'could NOT set cron jobs .* active again (no time left); do it by hand: update cron.job' <<< "$out"
+check 'm3: (the cron job is still inactive)' [ "$(ejob)" = f ]
+check 'm3: within the deadline (under 45 s)' [ "$took" -lt 45 ]; [ "$took" -lt 45 ] || echo "took ${took}s" >&2
+sql db-empty "drop schema if exists selfbase_restore_hold cascade; drop table if exists selfbase.platform_migrations;
+  $([ "$had" = 1 ] || echo 'drop schema if exists selfbase;') update cron.job set active = true where jobname = 'e_job'" > /dev/null
+# round 6 m3: a writer that ends by itself still has its group killed: a stand-in tar leaves a child that ignores TERM
+# running, then extracts and exits 0; the restore succeeds and no process of that group outlives it
+standin lingers '( trap "" TERM; while :; do sleep 0.2; done ) &'
+rc=0; out=$(cramped "$small" 1 '' 'export PATH=/backups/standin/lingers:$PATH') || rc=$?
+check 'm3: a restore whose tar left a child running succeeds' [ "$rc" = 0 ]; [ "$rc" = 0 ] || echo "$out" >&2
+check 'm3: and that child is killed with the group' grep -qx tars=0 <<< "$out"; grep -qx tars=0 <<< "$out" || echo "$out" >&2
+sql db-empty "update public.e_marker set v = 'after-backup'" > /dev/null
 # round 6, 2: the whole writer group is killed. A stand-in tar fills the inodes past the floor; on TERM its leader
 # exits, while a child it started ignores TERM and keeps writing into the temp dir (making it again if it is gone)
 standin orphan 'cd "${@: -1}"; d=$PWD; ( trap "" TERM; while :; do mkdir -p "$d" && : > "$d/c$((i += 1))"; sleep 0.1; done ) 2> /dev/null &

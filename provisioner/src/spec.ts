@@ -192,6 +192,8 @@ export function buildProject(input: EnsureInput, tpl: Template, sizes: Sizes, no
   const egress = egressNetworkName(ref)
   const names = Object.keys(tpl.services)
   if (names.length > MAX_SERVICES) refuse(500, 'template_invalid', `at most ${MAX_SERVICES} services have a fixed address in the tenant /28`)
+  // shortcut: addresses follow the template's service order, so a service added anywhere but last moves the ones
+  // after it (a recreate of each); give each service a fixed slot when the first new service comes (wave 2)
   const addr: Record<string, string> = Object.fromEntries(names.map((s, i) => [s, dotted(sub.base + 2 + i)]))
   const outbound = names.filter((s) => EGRESS.has(s))
   // Siblings by address only: core is also on the proxy network, where Docker's DNS answers a name or alias any
@@ -249,9 +251,11 @@ export function buildProject(input: EnsureInput, tpl: Template, sizes: Sizes, no
     return seal(name, service, body, service === 'core' ? [net, ctl, node.proxyNetwork] : EGRESS.has(service) ? [net, egress] : [net])
   })
 
-  // each gateway is pinned to its range's first address (with IPRange set Docker would take the range's first)
+  // each gateway is pinned to its range's first address (with IPRange set Docker would take the range's first).
+  // IPv6 off whatever the daemon's default network options say: ISOLATED covers IPv4 only, and an IPv6 gateway would
+  // reach the host's services
   const network = (name: string, at: number, prefix: number, range: string | null, internal: boolean) => ({ name, body: {
-    Name: name, Driver: 'bridge', ...(internal ? ISOLATED : {}),
+    Name: name, Driver: 'bridge', EnableIPv6: false, ...(internal ? ISOLATED : {}),
     IPAM: { Driver: 'default', Config: [{ Subnet: `${dotted(sub.base + at)}/${prefix}`, ...(range ? { IPRange: range } : {}), Gateway: dotted(sub.base + at + 1) }] },
     Labels: { 'selfbase.managed': 'true', 'selfbase.project': ref } } })
   return {

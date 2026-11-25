@@ -109,14 +109,19 @@ Sunucuda iki tür yığın (stack) var:
 └─────────────────────────┘   └────────────────────────────────────┘
 ```
 
+core'un önündeki proxy, tarayıcının gönderdiği Host başlığını değiştirmeden geçirmeli. Traefik bunu
+kendiliğinden yapar. Araya nginx gibi başka bir proxy girerse orada da ayarlanmalı (nginx'te
+`proxy_set_header Host $host`). Core, başka bir adresten başlayan Google girişini `PUBLIC_URL`'in adresine
+gönderir. Host'u değiştiren bir proxy yüzünden giriş bu yönlendirmede döner durur.
+
 **Kontrol yığını**
 
 | Container | Ne yapar | Neden |
 |---|---|---|
 | `selfbase-control` | Studio'yu sunar. `/platform` (Studio'nun API'si) ve `/v1` (yönetim API'si) burada. Hesapları, rolleri, işleri (job) ve her 30 saniyede bir çalışan uzlaştırma (reconcile) döngüsünü yürütür. Duraklatılmış projelerin adresine `540` cevabı da buradan gelir. | İnternete bakan tek kontrol parçası. Docker'a doğrudan erişimi yok. |
 | `selfbase-control-db` | Postgres. Hesaplar, organizasyonlar, projeler, şifreli proje sırları, iş kayıtları, denetim kaydı. | "Ne olmalı" bilgisinin tek kaynağı. |
-| `selfbase-provisioner` | Docker'la konuşan tek servis. Sadece tipli işlemler sunar: "şu projeyi şu sürümle kur", "durdur", "sil", "yedek işi çalıştır". Container tanımını kendisi şablondan kurar. | control ele geçirilse bile şablonun izin verdiğinden fazlasını yaptıramasın. `Privileged`, host bağlama (bind mount) ya da yetki ekleme hiç kullanılmaz. |
-| `selfbase-socket-proxy` | Docker soketini bağlayan tek container. Provisioner'dan gelen ve sadece `sb-*` adlı nesnelere giden izinli çağrıları geçirir. `exec`, `build`, `prune` yok. | İkinci duvar: provisioner'da bir hata olsa bile zarar `sb-*` nesneleriyle sınırlı kalsın. |
+| `selfbase-provisioner` | Docker'la konuşan tek servis. Sadece tipli işlemler sunar: "şu projeyi şu sürümle kur", "durdur", "sil", "yedek işi çalıştır". Container tanımını kendisi şablondan kurar. | control ele geçirilse bile şablonun izin verdiğinden fazlasını yaptıramasın. `Privileged` ve yetki ekleme hiç kullanılmaz. Host bağlama (bind mount) da yok, tek istisna yedek işinin `/opt/selfbase/backups` altındaki kendi klasörünü bağlaması. |
+| `selfbase-socket-proxy` | Docker soketini bağlayan tek container. Provisioner'dan gelen ve sadece `sb-*` adlı nesnelere giden izinli çağrıları geçirir. `exec`, `build`, `prune` yok. Oluşturma isteklerinin gövdesine bakmaz (bind mount kaynağı hariç): `Privileged` gibi alanları provisioner denetler. | İkinci duvar: provisioner'da bir hata olsa bile zarar `sb-*` nesneleriyle sınırlı kalsın. |
 | `selfbase-logs` | VictoriaLogs. Proje container'larının günlüklerini toplar (14 gün ya da 5 GiB). | Studio'nun Günlükler ekranı buradan okur. |
 | `selfbase-traefik`, `selfbase-traefik-socket-proxy` | Sadece kendi sunucunda (`PROXY_MODE=own`): 80/443'ü dinleyen Traefik ve onun salt okunur soket vekili. | Coolify yokken HTTPS'i ve sertifikaları bunlar sağlar. |
 
@@ -339,6 +344,7 @@ açılmaz: control projelerin container'larını yeniden kuramaz, yeni sürüme 
 gösteremez. Çalışan container'lar çalışmaya devam eder (sırları ortam değişkenlerinde) ama bir container
 silindiği an o proje geri gelmez. Anahtar control-db'ye ve control-db'nin yedeklerine hiç yazılmaz. Yani
 yedekten de geri gelmez. Tek çare dışa aktarılmış yedekler: onları kendi seçtiğin şifre açar (bölüm 9).
+Dışa aktarma sunucuda `EXPORT_RETENTION_DAYS` gün kalır, sonra silinir. Bu sürede sunucu dışına kopyala.
 
 **8. `.env`'i yaz.** Dosya sadece root'un okuyabileceği şekilde oluşur:
 
@@ -402,8 +408,10 @@ Satır satır (boş bırakılan isteğe bağlı satır sağdaki varsayılanı al
 | `JOB_SLOT_MB` | Tek iş yuvasına ayrılan MiB | `512` |
 | `NODE_NAME` | Bu sunucunun control-db'deki adı | `main` |
 | `BACKUP_HOST_DIR` | **Zorunlu.** Yedek klasörü, `/opt/selfbase/` altında, 0711 | `/opt/selfbase/backups` |
-| `BACKUP_RETENTION_DAYS` | Planlı yedeklerin kaç gün tutulacağı | `7` |
-| `LOG_SYSLOG_ADDR` | Proje günlüklerinin gideceği yer. Boşsa sadece Docker'ın kendi günlüğü. | `udp://127.0.0.1:5514` |
+| `BACKUP_RETENTION_DAYS` | Proje ve kontrol yedeklerinin kaç gün tutulacağı (planlı ve elle alınanlar) | `7` |
+| `EXPORT_RETENTION_DAYS` | Dışa aktarmaların kaç gün tutulacağı | `7` |
+| `BACKUP_MAX_COUNT` | Bir klasörde en fazla kaç yedek kalacağı (planlı, elle alınan, dışa aktarma) | `14` |
+| `LOG_SYSLOG_ADDR` | Proje günlüklerinin gideceği yer. Boşsa sadece Docker'ın kendi günlüğü (proje container'larında 10 MB × 3). | `udp://127.0.0.1:5514` |
 | `CGROUP_PARENT` | Bütün selfbase container'larının cgroup'u. Sadece systemd sürücüsünde. Boşsa yok. | `selfbase.slice` (adım 9) |
 | `DOCKER_SOCKET_GID` | `/var/run/docker.sock`'un grubu | adım 1 |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | Studio'nun davet ve şifre sıfırlama postaları. Boşsa bağlantılar Studio'da görünür (bölüm 5). | boş |
@@ -541,6 +549,8 @@ Sonra bölüm 3'ün 2-11. adımları (dizinler, etiket, imajlar, compose dosyala
 >    varsa iki yol var, ikisi de denenmedi: (a) selfbase'in Traefik'ini başka portlara al ve öbür proxy'den
 >    `selfbase.<BASE>` ile `*.<BASE>`'i, `/.well-known/acme-challenge/` dahil, o portlara yönlendir. (b) öbür
 >    proxy'yi kaldır, her şeyi selfbase'in Traefik'ine bırak.
+>    (a)'da öbür proxy Host başlığını değiştirmeden geçirmeli (nginx'te `proxy_set_header Host $host`),
+>    yoksa Google girişi döngüye girer (bölüm 1'deki şemanın altına bak).
 
 **Yerelde provası (doğrulandı).** Gerçek sunucudan önce aynı adımları Windows'ta Docker Desktop'ta
 deneyebilirsin. Bu rehberin 4, 5 ve 6. bölümleri böyle doğrulandı:
@@ -643,9 +653,9 @@ Her rol, solundaki rollerin yapabildiği her şeyi de yapar.
 
 | İşlem | Salt okunur | Geliştirici | Yönetici | Sahip |
 |---|---|---|---|---|
-| Projeleri ve verileri görmek | ✓ | ✓ | ✓ | ✓ |
+| Projeleri, kullanıcı şemalarındaki verileri (`public` ve projenin açtığı şemalar), `core` ve `rest` günlüklerini görmek | ✓ | ✓ | ✓ | ✓ |
 | Kendi erişim token'larını yönetmek | ✓ | ✓ | ✓ | ✓ |
-| Tabloya yazmak, SQL çalıştırmak, API anahtarlarını görmek | | ✓ | ✓ | ✓ |
+| Tabloya yazmak, SQL çalıştırmak, API anahtarlarını görmek, sistem şemalarını (`auth`, `storage`, `cron` gibi) ve `db`, `fn`, `pooler` günlüklerini görmek | | ✓ | ✓ | ✓ |
 | Proje oluşturmak, duraklatmak, silmek, yedeklemek, içe aktarmak, güncellemek, alan adı eklemek | | | ✓ | ✓ |
 | Üye davet etmek, rol değiştirmek, üye çıkarmak | | | ✓ | ✓ |
 | Sahip atamak, organizasyon oluşturmak | | | | ✓ |
@@ -663,6 +673,8 @@ Studio → organizasyon → **Access tokens** (Erişim belirteçleri), adres `/o
 - Token `sbp_` ile başlar ve 44 karakterdir (`sbp_` + 40 onaltılık rakam).
 - **Sadece bir kez gösterilir.** Kaybedersen sil, yenisini oluştur.
 - **Süresi yok.** İşin bitince Studio'dan sil. Silinen token'la yapılan her istek reddedilir.
+- **Şifre değişince silinir.** Şifreni değiştirdiğinde oturumların kapanır ve bütün erişim token'ların
+  silinir. Script'ler için yenisini oluştur.
 - Token seninle aynı rollerle çalışır: yönetim API'si (`/v1`), Studio'nun API'si (`/platform`) ve
   `import-project.mjs` gibi script'ler. Token sadece Studio oturumundan oluşturulur, başka bir token'la
   oluşturulamaz.
@@ -704,8 +716,8 @@ Form iki şeyi baştan gösterir: sunucuda kaç MiB boş ve bu hafta kaç yeni a
 
 Ne oluyor (iş adımları): `allocate` (ref, ağ, adres), `secrets` (şifreler ve anahtarlar üretilir,
 şifrelenip saklanır), `ensure` (container'lar kurulur), `healthy` (beş servis sağlıklı), `warm`,
-`coming_up`, `certificate` (adresin sertifikası), `activate`. Hazır olunca Studio projenin ana sayfasını
-açar: API adresi ve anahtarlar burada.
+`certificate` (adresin sertifikası), `activate`. `coming_up` adımı sadece içe aktarmada var. Hazır olunca
+Studio projenin ana sayfasını açar: API adresi ve anahtarlar burada.
 
 ![Proje ana sayfası](screens/v2/project-home.png)
 
@@ -753,7 +765,7 @@ Adres hakkı bittiyse ret mesajı başka (bölüm 7):
 ### Duraklatma ve devam ettirme
 
 Proje → **Settings** (Ayarlar) → **Pause / resume** → **Pause** → onay. Container'lar durur, volume'ler ve
-veri kalır, bellek bütçeye geri döner. Duraklatılmış projenin adresi **540** döner (`project paused`). Yani
+veri kalır, bellek bütçeye geri döner. Duraklatılmış projenin adresi **540** döner (`project is not running`). Yani
 uygulama ağ hatası değil, "proje duraklatıldı" görür. **Resume** ile geri gelir. Devam ettirme de bütçeye
 bakar: yer yoksa reddedilir.
 
@@ -763,7 +775,8 @@ Doğrulandı: duraklatınca `https://<ref>.<BASE>/health` → `540`, devam ettir
 
 Proje → **Settings** → **Delete project** kutusu → proje adını yaz → **Delete project**. Container'lar, ağ
 ve volume'ler silinir. Veritabanı, dosyalar ve anahtarlar **kalıcı olarak gider**. Projenin adresi boşa
-çıkar, sıradaki proje onu yeni sertifika almadan kullanır. Silmeden önce gerekirse dışa aktar (bölüm 9).
+çıkar, sıradaki proje onu yeni sertifika almadan kullanır. Silmeden önce gerekirse dışa aktar ve
+`EXPORT_RETENTION_DAYS` gün içinde sunucu dışına kopyala (bölüm 9).
 
 Doğrulandı: silmeden sonra `sb-<ref>` adlı container, ağ ya da volume kalmadı. Projenin
 `/opt/selfbase/backups/<ref>/` altındaki yedekleri **kalır**. İstemiyorsan elle silersin (bölüm 15).
@@ -904,13 +917,15 @@ Kurallar:
 
 Her gün **03:15 UTC**'de control iki tür iş başlatır: kontrol yığınının yedeği (`control.backup`) ve
 çalışan her proje için bir yedek. Yedekler tek bir iş yuvasında **sırayla** çalışır, böylece bellek
-bütçesini aşmazlar. `BACKUP_RETENTION_DAYS` günden (varsayılan 7) eski planlı yedekler silinir.
+bütçesini aşmazlar. Her yedek işi kendi klasörünü budar: `BACKUP_RETENTION_DAYS` günden (varsayılan 7)
+eski yedekler silinir, elle alınanlar da. Bir klasörde en fazla `BACKUP_MAX_COUNT` (varsayılan 14) yedek
+kalır, fazlası en eskiden başlayarak silinir. Bu sayı elle alınan yedekleri ve dışa aktarmaları da kapsar.
 
 ```
 /opt/selfbase/backups/
 ├── control/<YYYYMMDD-HHMMSS>/    control-db: db.dump, globals.sql, MANIFEST
 ├── <ref>/<YYYYMMDD-HHMMSS>/      proje: db.dump, globals.sql, storage.tar.gz, MANIFEST
-├── export-<ref>/<...>/           dışa aktarma: aynısı + project.json (hiç silinmez)
+├── export-<ref>/<...>/           dışa aktarma: aynısı + project.json (EXPORT_RETENTION_DAYS gün kalır)
 └── import/<org>/<ad>/            içe aktarma alanı (v1 ya da dışarıdan gelen yedekler)
 ```
 
@@ -935,8 +950,10 @@ Doğrulandı: yerelde düğmeden sonra iki saniyede liste satırı geldi. Klasö
 Proje → **Settings** → **Backups** → **Export** formu → en az 12 karakterlik bir şifre, iki kez →
 **Export**. Normal bir yedek alınır, yanına `project.json` yazılır: projenin ayarları açık, sırları (JWT
 secret, `anon` ve `service_role` anahtarları, varsa SMTP şifresi ve Google secret'ı) senin şifrenle şifreli.
-Şifre saklanmaz. Unutursan `project.json` açılmaz. Dışa aktarmalar `export-<ref>/<ts>` altında durur ve
-planlı temizlikte silinmez.
+Şifre saklanmaz. Unutursan `project.json` açılmaz. Dışa aktarmalar `export-<ref>/<ts>` altında durur.
+Kalıcı değiller: `EXPORT_RETENTION_DAYS` günden (varsayılan 7) eski olanlar her gece silinir, projesi
+silinmiş olsa da. Klasörde en fazla `BACKUP_MAX_COUNT` (varsayılan 14) dışa aktarma kalır. Saklamak
+istediğin bir dışa aktarmayı bu süre dolmadan sunucu dışına kopyala.
 
 Neden önemli: planlı yedekte projenin anahtarları yok. Bir projeyi **aynı anahtarlarla** (yani
 uygulamaları yeniden ayarlamadan) geri getirmenin ya da başka sunucuya taşımanın yolu dışa aktarmadır.
@@ -957,10 +974,15 @@ control env dosyasını ya da şifreyi saklamaz. Sırları şifreleyip kaydeder,
 saydığını ve hangilerini tanımadığını adlarıyla gösterir. Proje yeni bir adres ister: sertifika
 gerekir ve haftalık hakka sayılır (bölüm 7).
 
+**Google girişi.** Google'ın geri dönüş adresi projenin varsayılan adresidir, içe aktarmada o da değişir:
+`https://<varsayılan adres>/auth/v1/callback`. Varsayılan adres Studio'da görünen adrestir, çoğu zaman
+`<yeni ref>.<BASE>`. Google konsolunda bu adresi ekle. Projenin başka bir
+adresinden (eski ya da özel) başlayan giriş önce varsayılan adrese yönlendirilir, konsolda tek adres yeter.
+
 **İçe aktarma geri yükleme adımında başarısız olursa** proje `INIT_FAILED` kalır ve control veritabanı dahil
 beş servisini de durdurmaya çalışır. Durduramazsa reconcile aralıklarla yeniden dener, sonra da onları
 durdurulmuş tutar. Veritabanı yüklenmeye başladıktan sonra hata ne olursa olsun veritabanının hangi durumda
-kaldığı bilinmez. Yükleme tek transaction'dır ama dökümün kendi SQL'i ondan önce commit edebilir: veritabanında
+kaldığı bilinmez. Yükleme tek transaction'dır ama dökümün kendi SQL'i yükleme bitmeden commit edebilir: veritabanında
 yedeğin tamamı, bir kısmı ya da hiçbiri olabilir. Depolama dosyaları ise hiç değişmemiş de olabilir, bir kısmı
 değişmiş de. Böyle bir projeyi sil, sonra içe aktarmayı baştan çalıştır. **Pause**, sonra **Resume** ile projeyi yine de
 başlatabilirsin, engellenmez, çünkü veri senin (tek istisna: `rotate_keys` ile yapılmış ve geri yüklenen
@@ -984,7 +1006,11 @@ tar -C /opt/selfbase/backups/export-<ref> -czf /root/<ad>.tgz <ts>
 
 **2. Dosyayı yeni sunucunun `/root/` klasörüne kopyala** (ör. kendi bilgisayarından `scp` ile iki adımda).
 İçinde bütün veritabanı ve şifre hash'leri var. Yolda başka bir yerde bırakma, işin bitince kendi
-bilgisayarındaki kopyayı da sil.
+bilgisayarındaki kopyayı da sil. Kopya yeni sunucuya ulaşınca eski sunucudaki paketi de sil (root, eski sunucu):
+
+```bash
+shred -u /root/<ad>.tgz
+```
 
 **3. Yeni sunucuda içe aktarma alanına aç ve izinleri ver.** (root, organizasyon `default`)
 
@@ -1024,7 +1050,8 @@ Proje yeni bir ref ve yeni bir adres alır (haftalık hakka sayılır, bölüm 7
 Dalga 1'de CorteQS'in v1 kurulumu bu yolla proje #1 oldu (`docs/proofs/wave1-cutover.md`). Sıra:
 
 1. **v1'in yedeğini içe aktarma alanına koy.** v1'in kendi `backup.sh`'ının yazdığı bir klasör (`db.dump`,
-   `globals.sql`, `storage.tar.gz`, `MANIFEST`) olduğu gibi `/opt/selfbase/backups/import/<org slug>/<ad>`   altına gider. Sahibi root, 0700/0600. env dosyasıyla içe aktarmada control klasörü okumaz, bu yüzden
+   `globals.sql`, `storage.tar.gz`, `MANIFEST`) olduğu gibi `/opt/selfbase/backups/import/<org slug>/<ad>`
+   altına gider. Sahibi root, 0700/0600. env dosyasıyla içe aktarmada control klasörü okumaz, bu yüzden
    root'a kapalı kalabilir (şifreyle içe aktarma farklı, yukarıda).
 2. **v1'in env dosyasını al.** Sadece root okusun:
    ```bash
@@ -1081,7 +1108,7 @@ Sunucuda (root):
 
 ```bash
 docker logs --tail 100 sb-<ref>-core                 # bir projenin bir servisi
-docker logs --tail 100 selfbase-control              # control (Docker'ın kendi günlüğü, 10 MB × 3)
+docker logs --tail 100 selfbase-control              # control (Docker'ın kendi günlüğü, sınırı Docker'ın ayarında)
 docker logs --tail 100 selfbase-provisioner
 ```
 
@@ -1144,7 +1171,8 @@ projeler zaten yeni sürümle gelir. Önemli bir projede önce **Back up now** y
 imajlar yerinde olmalı. Coolify temizliği sildiyse bölüm 3, adım 4 ile o sürümü yeniden derle. Projeler
 için dikkat: yeni sürüm yeni platform migration'ları getirdiyse (`db/platform/` altında yeni dosya), core
 onları uyguladı ve eski core'un bunları bilip bilmediği garanti değil. Sürüm notları "platform migration
-yok" demiyorsa projeyi geri almak yerine güncellemeden önceki dışa aktarmadan yeni proje olarak içe aktar.
+yok" demiyorsa projeyi geri almak yerine güncellemeden önceki dışa aktarmadan yeni proje olarak içe aktar. O
+dışa aktarma sunucuda `EXPORT_RETENTION_DAYS` gün sonra silinir: güncellemeden önce sunucu dışına kopyala.
 
 ---
 
@@ -1226,6 +1254,8 @@ unset PW
 
 Şifre ekrana basılmaz ve komut satırına (`ps`) çıkmaz, sadece o komutun ortamında durur. Doğrulandı: yerelde
 yeni bir projeye `--from-empty` ile bir migration uygulandı, tablo oluştu, PostgREST şemayı yeniledi.
+sync.mjs çalışırken onun container'ı `sb-<ref>` ağında durur. Bu sürede o projenin `ensure`'u (güncelleme,
+devam ettirme, alan adı ekleme) `409 network_busy` döner. Sync bitince yeniden dene.
 
 **Bilinen kısıtlar (dalga 2'de ele alınacak):**
 
@@ -1293,6 +1323,7 @@ Bu sorgular sadece okur. control-db'ye elle yazma, durumu control yönetir.
 | Proje oluşturma "new hostnames for this week" ile reddedildi | Haftalık adres hakkı bitti (bölüm 7) | Mesajdaki tarihi bekle ya da bir projeyi silip adresini boşalt. Deneme için test adresi. |
 | Bir iş başarısız (`INIT_FAILED`, `PAUSE_FAILED`, `RESTORE_FAILED`, `REMOVE_FAILED`) | İşin bir adımı tekrar denemelerden sonra da hata verdi | Yukarıdaki sorguyla adımı ve hatayı oku. `PAUSE_FAILED`: tekrar **Pause**. `RESTORE_FAILED`: tekrar **Resume**. `INIT_FAILED`: projeyi sil, yeniden oluştur. `REMOVE_FAILED`: tekrar sil. Aynı hata tekrar ederse `docker logs selfbase-provisioner`. |
 | `another operation is running on this project` | Projede bir iş zaten çalışıyor | Bitmesini bekle (Studio'da durum değişir). |
+| Bir iş `503` `network_ipv6` hatasıyla başarısız | Docker daemon'u projenin ağında IPv6'yı açtı. Açık IPv6 ile ağın IPv6 ağ geçidi sunucunun kendisine ulaşır, provisioner bu yüzden ağı reddeder. | Daemon'da IPv6'yı kapat (`/etc/docker/daemon.json`). Paylaşılan sunucuda bu dosya sunucu sahibinindir, değişikliği ondan iste. Sonra `docker restart selfbase-provisioner` ve işi tekrar başlat. |
 | Gece yedeği başarısız | Çoğunlukla `selfbase-job` imajı silinmiş (bölüm 12) | `docker image ls | grep selfbase-job`. Yoksa yeniden derle, sonra **Back up now**. |
 | Studio girişi "Too many failed attempts" | IP başına 5 dakikada 5 deneme | Bekle. |
 | Şifreyi unuttun | | Bölüm 5, "Şifremi unuttum". |
@@ -1318,7 +1349,8 @@ adres boşa çıkar. Yedekleri kalır. Onları da istemiyorsan (root, sunucu):
 ls /opt/selfbase/backups/<ref>/ && rm -r /opt/selfbase/backups/<ref>
 ```
 
-Dışa aktarmaları (`export-<ref>/`) ayrıca silersin. Geri dönüşü yok.
+Dışa aktarmalar (`export-<ref>/`) `EXPORT_RETENTION_DAYS` gün (varsayılan 7) sonra kendiliğinden silinir.
+Daha önce istiyorsan elle silersin. Geri dönüşü yok.
 
 ### Bütün platformu kaldırmak
 
@@ -1617,10 +1649,12 @@ CorteQS'in CSP'si iki yerde sabit: `nginx.conf.template` (canlı) ve `server.mjs
 | Auth istek sınırları | IP başına 5 dakikada: giriş + kayıt 30, doğrulama 30, yenileme 150, e-posta 30. Aşılınca 429. | Şifre deneme ve e-posta bombardımanına karşı. |
 | PDF dosyaları | `application/pdf` tarayıcıda açılır. Diğer türler `sandbox` CSP ile gelir. | HTML ya da SVG içindeki script selfbase'in adresinde çalışmasın. |
 | Fonksiyon cevapları | `x-content-type-options: nosniff`, kendi CSP'si yoksa `content-security-policy: sandbox`. | Aynı sebep. |
+| İstek gövdesi sınırları | `/rest/v1` ve `/functions/v1`'e en fazla 20 MiB (chunked gövdeler dahil), fazlası `413` alır. core'un kendi JSON uçlarına 1 MiB. control'ün yazma isteklerine (Studio ve yönetim API'si) 256 KiB. Studio'dan yüklenen dosyalar bu sınıra girmez, onlarda projenin kendi yükleme sınırı geçerli. | Tek bir istek sunucunun belleğini dolduramasın. |
 | Token'sız dosya yükleme | Reddedilir (401). | supabase-js zaten her zaman gönderir. |
 | E-posta OTP kodu, PKCE, resim dönüştürme | Yok. | Uygulama kullanmıyor. |
 | Realtime | Sadece `postgres_changes`, sadece `eq` filtresi. Broadcast ve presence yok. | Uygulamanın kullanımı bu kadar. |
 | Telefon girişi | Kapalı. | Dev'de de kapalı. |
+| Kayıt kapatma (`AUTH_DISABLE_SIGNUP=true`) | Kayıt ve OTP ile yeni kullanıcı oluşturma reddedilir. Bir Google hesabının ilk girişi sadece o e-postayla hiç kullanıcı yoksa reddedilir, varsa hesap o kullanıcıya bağlanır. Var olan kullanıcılar girebilir. Önceden açılmış ama onaylanmamış bir hesap yine de onaylanabilir: yeniden gönderme (resend), şifre sıfırlama ya da Google girişiyle. Kayıt kapalıyken `/otp` onaylanmamış bir hesaba ve `create_user` açıkken (varsayılan bu) bilinmeyen bir adrese `422` döner. Onaylı bir hesaba ya da `create_user: false` ile bilinmeyen bir adrese `200` döner. Yani hangi adreslerin kayıtlı olduğu bundan anlaşılabilir. E-posta hız sınırı bunu yavaşlatır. İkisi de Supabase'deki gibi. | GoTrue de böyle yapar. |
 
 ---
 

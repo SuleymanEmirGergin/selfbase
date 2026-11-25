@@ -67,6 +67,8 @@ test('renders for every size; only core joins the proxy, on 8080; the admin port
     const t = sizes[size]
     assert.ok(by.db.body.Cmd.includes(`shared_buffers=${t.db.shared_buffers}`) && by.db.body.Cmd.includes(`max_connections=${t.db.max_connections}`))
     assert.equal(envOf('pooler').POOL_SIZE, String(t.pooler.pool_size))
+    // M-1: Postgres gets a minute to shut down cleanly on a stop, a recreate or a delete (Docker's default is 10 s)
+    assert.equal(by.db.body.StopTimeout, 60)
     assert.equal(envOf('rest').PGRST_DB_URI, 'postgres://authenticator:a@db:5432/postgres')
     const core = envOf('core')
     assert.deepEqual([core.ADMIN_PORT, core.ADMIN_TOKEN, core.PROJECT_REF, core.AUTH_DISABLE_SIGNUP], ['8081', 't', ENV.PROJECT_REF, 'false'])
