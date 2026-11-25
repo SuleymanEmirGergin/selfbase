@@ -821,24 +821,31 @@ Studio'da projenin ana sayfasında yazar. Google sana bir client id ve bir clien
 
 **Ayarı gönder.** Secret'ı komuta sen yazarsın, ekranda görünmez. `uri_allow_list` girişten sonra
 dönülebilecek uygulama adreslerinin virgülle ayrılmış listesi. `site_url` ise listede olmayan bir adres
-istendiğinde dönülen adres. Git Bash ya da sunucuda:
+istendiğinde dönülen adres.
+
+Sunucuda (Linux bash). Bu tarif Git Bash'te çalışmaz, Windows'ta aşağıdaki PowerShell bloğunu kullan:
 
 ```bash
 read -rs T; echo     # erişim token'ı (sbp_...)
 read -rs GS; echo    # Google'ın verdiği client secret
-printf '{"external_google_client_id":"%s","external_google_secret":"%s","site_url":"%s","uri_allow_list":"%s"}' \
-  '<client id>' "$GS" 'https://<uygulamanın adresi>' 'https://<uygulamanın adresi>/**,http://localhost:5173/**' \
+GS="$GS" jq -n --arg id '<client id>' --arg site 'https://<uygulamanın adresi>' \
+    --arg list 'https://<uygulamanın adresi>/**,http://localhost:5173/**' \
+    '{external_google_client_id: $id, external_google_secret: env.GS, site_url: $site, uri_allow_list: $list}' \
   | curl -fsS -X PATCH -H @<(printf 'Authorization: Bearer %s\n' "$T") -H 'content-type: application/json' \
       --data-binary @- https://selfbase.<BASE>/v1/projects/<ref>/config/auth
 unset T GS
 ```
 
-`printf` kabuğun kendi komutu: token ve secret komut satırına (`ps`) çıkmaz. PowerShell'de:
+Gövdeyi `jq` kurar, değerdeki `"` ya da `\` gövdeyi bozmaz. Secret `jq`'ya ortam değişkeniyle gider, token
+kabuğun kendi komutu `printf` ile: ikisi de komut satırına (`ps`) çıkmaz. Sunucuda `jq` yoksa
+`apt install jq` ile kur. PowerShell'de (Windows):
 
 ```powershell
 $T  = Read-Host 'Erisim token' -AsSecureString
 $GS = Read-Host 'Google client secret' -AsSecureString
-$plain = { param($s) [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($s)) }
+$plain = { param($s)
+  $b = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($s)
+  try { [Runtime.InteropServices.Marshal]::PtrToStringBSTR($b) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b) } }
 $body = @{
   external_google_client_id = '<client id>'
   external_google_secret    = & $plain $GS
@@ -848,7 +855,7 @@ $body = @{
 Invoke-RestMethod -Method Patch -Uri 'https://selfbase.<BASE>/v1/projects/<ref>/config/auth' `
   -Headers @{ Authorization = "Bearer $(& $plain $T)" } -ContentType 'application/json' -Body $body |
   Select-Object site_url, uri_allow_list, external_google_enabled, external_google_client_id
-Remove-Variable T, GS, body
+Remove-Variable T, GS, body, plain
 ```
 
 Beklenen: cevapta `external_google_enabled: true` ve `external_google_secret: null`. Secret hiçbir cevapta
@@ -860,13 +867,18 @@ bir `project.apply` işi kuyruğa girer ve `core`'u yeni ayarlarla yeniden kurar
   `smtp_admin_email`. Öteki alanlar: `disable_signup`, `mailer_autoconfirm`, `mailer_secure_email_change_enabled`,
   `password_min_length`, `mailer_otp_exp`, `smtp_max_frequency`, `security_refresh_token_reuse_interval`,
   `external_phone_enabled`.
+- Kayıtlı bir SMTP şifresi varken `smtp_host` ya da `smtp_user` değişiyorsa aynı istekte `smtp_pass` da
+  gönderilir. Yoksa cevap `400 smtp_pass_required` olur. Kayıtlı şifre böylece başka bir sunucuya gitmez.
+  Sadece `smtp_port` değişiyorsa şifre gerekmez.
+- `smtp_host` bir yerel, özel ya da bağlantı-yerel IP adresi olamaz (`127.0.0.1`, `10.x`, `169.254.x` gibi).
 - `smtp_pass` ve `external_google_secret` sadece yazılır, `GET` ikisini de `null` gösterir. Boş metin (`""`)
-  sırrı siler.
-- `"external_google_enabled": false` Google girişini kapatır ve client id'yi unutur. Açmak için client id'yi
-  yeniden gönder.
+  sırrı siler. `smtp_user` ve `smtp_admin_email` sadece yönetici ve sahibe görünür.
+- `"external_google_enabled": false` Google girişini kapatır, client id'yi ve secret'ı siler. Açmak için
+  ikisini yeniden gönder.
 - Bir alana `null` göndermek onu varsayılana döndürür.
 - Listede olmayan bir alan `400 not_supported` döner, yanlış tipte bir değer `400 validation_failed`. İkisinde
-  de mesaj alanın adını söyler, değeri yazmaz. Bu durumda hiçbir şey kaydedilmez.
+  de mesaj alanın adını söyler, değeri yazmaz. Bu durumda hiçbir şey kaydedilmez. Gövde
+  `application/json` olmalı, yoksa `415`. Proje silinirken istek `409 project_busy` alır.
 
 ---
 
