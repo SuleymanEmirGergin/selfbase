@@ -124,7 +124,9 @@ export const enqueueCoalesced = (db: pg.Pool, j: EnqueueInput & { projectId: str
   underEnqueueLock(db, j.projectId, async (c) => {
     await first?.(c)
     return (await c.query(
-      `select id from control.jobs where project_id = $1 and type = $2 and payload = $3::jsonb and status = 'pending' limit 1`,
+      // for update: a row a worker is claiming is waited for, then re-checked (running drops out, a new job goes in);
+      // a row locked here is skipped by claim's skip locked until this commits
+      `select id from control.jobs where project_id = $1 and type = $2 and payload = $3::jsonb and status = 'pending' limit 1 for update`,
       [j.projectId, j.type, storedPayload(j)])).rows[0]?.id ?? (await insertJob(c, j, false))!
   })
 

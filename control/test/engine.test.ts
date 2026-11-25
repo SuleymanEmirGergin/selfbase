@@ -188,6 +188,29 @@ test('enqueueCoalesced finds the pending job of a versioned type (its stored pay
   expect((await pool.query(`select count(*)::int as n from control.jobs where project_id = $1`, [projectId])).rows[0].n).toBe(1)
 })
 
+test('enqueueCoalesced does not join a pending job a worker is claiming: it waits for the claim and inserts a new one', async () => {
+  const type = uniq('coalesce-claim')
+  defineJob(type, 'light', [])
+  const projectId = await projectRow()
+  const first = await enqueueCoalesced(pool, { type, projectId, payload: {}, createdBy: null })
+  // a worker's claim, held open: the pending row locked and set to running, not yet committed
+  const worker = await pool.connect()
+  try {
+    await worker.query('begin')
+    await worker.query(`select id from control.jobs where id = $1 for update skip locked`, [first])
+    await worker.query(`update control.jobs set status = 'running' where id = $1`, [first])
+    const second = enqueueCoalesced(pool, { type, projectId, payload: {}, createdBy: null })
+    await new Promise((r) => setTimeout(r, 200))
+    await worker.query('commit')
+    expect(await second).not.toBe(first)
+  } finally {
+    await worker.query('rollback').catch(() => {})
+    worker.release()
+  }
+  expect((await pool.query(`select status from control.jobs where project_id = $1 order by created_at`, [projectId])).rows.map((r) => r.status))
+    .toEqual(['running', 'pending'])
+})
+
 test('S5: the light and heavy lanes never run two jobs of one project at once; other projects are not held up', async () => {
   const active = new Map<string, number>()
   let overlap = 0
