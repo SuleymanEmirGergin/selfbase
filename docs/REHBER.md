@@ -344,6 +344,7 @@ açılmaz: control projelerin container'larını yeniden kuramaz, yeni sürüme 
 gösteremez. Çalışan container'lar çalışmaya devam eder (sırları ortam değişkenlerinde) ama bir container
 silindiği an o proje geri gelmez. Anahtar control-db'ye ve control-db'nin yedeklerine hiç yazılmaz. Yani
 yedekten de geri gelmez. Tek çare dışa aktarılmış yedekler: onları kendi seçtiğin şifre açar (bölüm 9).
+Dışa aktarma sunucuda `EXPORT_RETENTION_DAYS` gün kalır, sonra silinir. Bu sürede sunucu dışına kopyala.
 
 **8. `.env`'i yaz.** Dosya sadece root'un okuyabileceği şekilde oluşur:
 
@@ -774,7 +775,8 @@ Doğrulandı: duraklatınca `https://<ref>.<BASE>/health` → `540`, devam ettir
 
 Proje → **Settings** → **Delete project** kutusu → proje adını yaz → **Delete project**. Container'lar, ağ
 ve volume'ler silinir. Veritabanı, dosyalar ve anahtarlar **kalıcı olarak gider**. Projenin adresi boşa
-çıkar, sıradaki proje onu yeni sertifika almadan kullanır. Silmeden önce gerekirse dışa aktar (bölüm 9).
+çıkar, sıradaki proje onu yeni sertifika almadan kullanır. Silmeden önce gerekirse dışa aktar ve
+`EXPORT_RETENTION_DAYS` gün içinde sunucu dışına kopyala (bölüm 9).
 
 Doğrulandı: silmeden sonra `sb-<ref>` adlı container, ağ ya da volume kalmadı. Projenin
 `/opt/selfbase/backups/<ref>/` altındaki yedekleri **kalır**. İstemiyorsan elle silersin (bölüm 15).
@@ -973,7 +975,8 @@ saydığını ve hangilerini tanımadığını adlarıyla gösterir. Proje yeni 
 gerekir ve haftalık hakka sayılır (bölüm 7).
 
 **Google girişi.** Google'ın geri dönüş adresi projenin varsayılan adresidir, içe aktarmada o da değişir:
-`https://<yeni ref>.<BASE>/auth/v1/callback`. Google konsolunda bu adresi ekle. Projenin başka bir
+`https://<varsayılan adres>/auth/v1/callback`. Varsayılan adres Studio'da görünen adrestir, çoğu zaman
+`<yeni ref>.<BASE>`. Google konsolunda bu adresi ekle. Projenin başka bir
 adresinden (eski ya da özel) başlayan giriş önce varsayılan adrese yönlendirilir, konsolda tek adres yeter.
 
 **İçe aktarma geri yükleme adımında başarısız olursa** proje `INIT_FAILED` kalır ve control veritabanı dahil
@@ -1168,7 +1171,8 @@ projeler zaten yeni sürümle gelir. Önemli bir projede önce **Back up now** y
 imajlar yerinde olmalı. Coolify temizliği sildiyse bölüm 3, adım 4 ile o sürümü yeniden derle. Projeler
 için dikkat: yeni sürüm yeni platform migration'ları getirdiyse (`db/platform/` altında yeni dosya), core
 onları uyguladı ve eski core'un bunları bilip bilmediği garanti değil. Sürüm notları "platform migration
-yok" demiyorsa projeyi geri almak yerine güncellemeden önceki dışa aktarmadan yeni proje olarak içe aktar.
+yok" demiyorsa projeyi geri almak yerine güncellemeden önceki dışa aktarmadan yeni proje olarak içe aktar. O
+dışa aktarma sunucuda `EXPORT_RETENTION_DAYS` gün sonra silinir: güncellemeden önce sunucu dışına kopyala.
 
 ---
 
@@ -1644,11 +1648,12 @@ CorteQS'in CSP'si iki yerde sabit: `nginx.conf.template` (canlı) ve `server.mjs
 | Auth istek sınırları | IP başına 5 dakikada: giriş + kayıt 30, doğrulama 30, yenileme 150, e-posta 30. Aşılınca 429. | Şifre deneme ve e-posta bombardımanına karşı. |
 | PDF dosyaları | `application/pdf` tarayıcıda açılır. Diğer türler `sandbox` CSP ile gelir. | HTML ya da SVG içindeki script selfbase'in adresinde çalışmasın. |
 | Fonksiyon cevapları | `x-content-type-options: nosniff`, kendi CSP'si yoksa `content-security-policy: sandbox`. | Aynı sebep. |
+| İstek gövdesi sınırları | `/rest/v1` ve `/functions/v1`'e en fazla 20 MiB (chunked gövdeler dahil), fazlası `413` alır. core'un kendi JSON uçlarına 1 MiB. control'ün yazma isteklerine (Studio ve yönetim API'si) 256 KiB. | Tek bir istek sunucunun belleğini dolduramasın. |
 | Token'sız dosya yükleme | Reddedilir (401). | supabase-js zaten her zaman gönderir. |
 | E-posta OTP kodu, PKCE, resim dönüştürme | Yok. | Uygulama kullanmıyor. |
 | Realtime | Sadece `postgres_changes`, sadece `eq` filtresi. Broadcast ve presence yok. | Uygulamanın kullanımı bu kadar. |
 | Telefon girişi | Kapalı. | Dev'de de kapalı. |
-| Kayıt kapatma (`AUTH_DISABLE_SIGNUP=true`) | Kayıt, OTP ile yeni kullanıcı oluşturma ve bir Google hesabının ilk girişi reddedilir. Var olan kullanıcılar girebilir. Önceden açılmış ama onaylanmamış bir hesap yine de onaylanabilir: yeniden gönderme (resend), şifre sıfırlama ya da Google girişiyle. Kayıt kapalıyken `/otp` onaylanmamış bir hesaba `422`, bilinmeyen ya da onaylı bir adrese `200` döner. Biri bununla onaylanmamış hesapları ayırt edebilir. E-posta hız sınırı bunu yavaşlatır. İkisi de Supabase'deki gibi. | GoTrue de böyle yapar. |
+| Kayıt kapatma (`AUTH_DISABLE_SIGNUP=true`) | Kayıt ve OTP ile yeni kullanıcı oluşturma reddedilir. Bir Google hesabının ilk girişi sadece o e-postayla hiç kullanıcı yoksa reddedilir, varsa hesap o kullanıcıya bağlanır. Var olan kullanıcılar girebilir. Önceden açılmış ama onaylanmamış bir hesap yine de onaylanabilir: yeniden gönderme (resend), şifre sıfırlama ya da Google girişiyle. Kayıt kapalıyken `/otp` onaylanmamış bir hesaba ve `create_user` açıkken (varsayılan bu) bilinmeyen bir adrese `422` döner. Onaylı bir hesaba ya da `create_user: false` ile bilinmeyen bir adrese `200` döner. Yani hangi adreslerin kayıtlı olduğu bundan anlaşılabilir. E-posta hız sınırı bunu yavaşlatır. İkisi de Supabase'deki gibi. | GoTrue de böyle yapar. |
 
 ---
 
