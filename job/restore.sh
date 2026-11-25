@@ -90,7 +90,8 @@ for f in $listed; do
     echo "restore: the MANIFEST of $rel lists an unknown file; refusing" >&2; exit 1 ;;
   esac
 done
-while read -r f size sum; do
+# || [ -n "$f" ]: a last line without a newline is checked too (read returns 1 on it)
+while read -r f size sum || [ -n "$f" ]; do
   if [ "$(stat -c %s "$dir/$f" 2>/dev/null)" != "$size" ] || [ "$(sha256sum < "$dir/$f" | cut -d' ' -f1)" != "$sum" ]; then
     echo "restore: $rel/$f does not match its MANIFEST (size or sha256); refusing" >&2
     exit 1

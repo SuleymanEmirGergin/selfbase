@@ -260,6 +260,14 @@ rc=0; out=$(job db "$P-storage" bash /scripts/restore.sh 2>&1) || rc=$?
 check 'a corrupted backup is refused' [ "$rc" != 0 ]
 check 'the refusal names the MANIFEST' grep -q 'does not match its MANIFEST' <<< "$out"
 check 'the database is unchanged after the refusal' [ "$(sql db 'select v from public.marker')" = after-backup ]
+# M-4: a MANIFEST whose last line has no newline is still checked (read returns 1 on it): a wrong sum there is refused
+in_backups "cp -a /backups/t/$ts /backups/t/nonl && cd /backups/t/nonl &&
+  sed -i '\$ s/ [0-9a-f]*\$/ $(printf '0%.0s' $(seq 64))/' MANIFEST && printf %s \"\$(cat MANIFEST)\" > MANIFEST"
+JOB_ENV=(-e RESTORE_DIR=t/nonl)
+rc=0; out=$(job db "$P-storage" bash /scripts/restore.sh 2>&1) || rc=$?
+check 'M-4: a wrong last MANIFEST line without a newline is refused (exit 1)' [ "$rc" = 1 ]; [ "$rc" = 1 ] || echo "$out" >&2
+check 'M-4: the refusal names the MANIFEST' grep -q 'does not match its MANIFEST' <<< "$out"
+check 'M-4: the database is unchanged after it' [ "$(sql db 'select v from public.marker')" = after-backup ]
 
 # ---- R4: a storage archive with a link or a path out of the volume is refused, even with a matching MANIFEST ----
 # evil-link: ./stub/link -> /etc (a later entry stub/link/x would write through it); evil-dotdot: ../outside
