@@ -56,6 +56,11 @@ test('a logout without a session cookie writes no audit row; one with a session 
   await pool.query('truncate control.audit_log')
   expect((await anonLogout('203.0.113.23')).status).toBe(200)
   expect(await rows()).toBe(0)
+  // forged cookie values name no session: they end nothing and write nothing
+  for (const cookie of ['__Host-sb_studio=x', '__Host-sb_studio_refresh=x', '__Host-sb_studio=x; __Host-sb_studio_refresh=y']) {
+    expect((await app.request('/platform/logout', { method: 'POST', headers: { cookie, origin: ORIGIN } })).status, cookie).toBe(200)
+    expect(await rows(), cookie).toBe(0)
+  }
   const cookie = await login('logout@example.test', PASSWORD)
   const out = await app.request('/platform/logout', { method: 'POST', headers: { cookie, origin: ORIGIN } })
   expect(out.status).toBe(200)

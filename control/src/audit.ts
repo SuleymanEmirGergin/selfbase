@@ -2,12 +2,11 @@
 // never its values: tokens, passwords and secrets travel in bodies.
 import type { Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
-import { getCookie } from 'hono/cookie'
 import { createMiddleware } from 'hono/factory'
 import { pool } from './db.ts'
 import { clientIp, take } from './core.ts'
 import { ApiError } from './errors.ts'
-import { ACCESS_COOKIE, apiRoute, checkOrigin, PUBLIC, REFRESH_COOKIE } from './session.ts'
+import { apiRoute, checkOrigin, PUBLIC } from './session.ts'
 import type { Env } from './session.ts'
 
 export const BODY_LIMIT = 256 * 1024
@@ -75,8 +74,9 @@ export const audit = createMiddleware<Env>(async (c, next) => {
   // publicLimit, so these refusals are unlimited), when no route answers the path, or when a rate limit refused it.
   // Failed sign-ins (400 from core) keep their row: core's signIn bucket bounds them.
   if (!c.get('user') && ([401, 403, 429].includes(c.res.status) || !apiRoute(c))) return
-  // a logout with no session cookie ended nothing: it answers 200, and a row each would let anyone fill the log
-  if (c.req.path === '/platform/logout' && !getCookie(c, ACCESS_COOKIE) && !getCookie(c, REFRESH_COOKIE)) return
+  // a logout that named no real session (no cookie, or a forged value) ended nothing: it answers 200, and a row each
+  // would let anyone fill the log. The handler sets an audit scope once core or the refresh token found the session.
+  if (c.req.path === '/platform/logout' && !c.get('audit')) return
   const path = c.get('audit')?.path
   await writeAudit(c, { status: c.res.status, body_keys: bodyKeys, ...(path ? { path } : {}) })
 })

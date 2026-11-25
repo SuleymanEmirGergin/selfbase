@@ -124,15 +124,21 @@ const logoutFailed = () => new ApiError(502, 'logout_failed', 'The session could
 platformAuth.post('/logout', async (c) => {
   checkOrigin(c)
   const jwt = getCookie(c, ACCESS_COOKIE)
+  // the audit row is written only for a logout that named a real session (audit.ts): forged cookie values write none
+  const realSession = () => c.set('audit', {})
   if (jwt) {
     const res = await callCore(c, 'POST', '/logout?scope=local', { bearer: `Bearer ${jwt}` })
     // a 4xx is an expired or forged access cookie, which ends nothing by itself; the refresh cookie below still does
     if (res.status >= 500) throw logoutFailed()
+    if (res.ok) realSession()
   }
   const refresh = getCookie(c, REFRESH_COOKIE)
   try {
     const sid = refresh ? await sessionOfRefresh(refresh) : null
-    if (sid) await revokeSession(sid)
+    if (sid) {
+      realSession()
+      await revokeSession(sid)
+    }
   } catch (e) {
     console.error(`logout: ${(e as Error).message}`)
     throw logoutFailed()
