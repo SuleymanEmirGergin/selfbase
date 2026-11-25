@@ -808,6 +808,66 @@ printf 'Authorization: Bearer %s\n' "$SELFBASE_ACCESS_TOKEN" | curl -fsS -H @- -
 İşin bitince projeyi Studio'dan sil ki adres boşalsın. Doluysa ikinci deneme projesi şu mesajla reddedilir:
 `The test host ... is in use by another project`.
 
+### Auth ayarları ve Google ile giriş
+
+Studio'da bu ayarların ekranı henüz yok. Ayarları yönetim API'siyle değiştirirsin:
+`PATCH https://selfbase.<BASE>/v1/projects/<ref>/config/auth` (aynısı `/platform/projects/<ref>/config/auth`
+altında da var). Yazmak için projede yönetici ya da sahip rolü gerekir, `GET` ile okumaya her üye yeter.
+Erişim token'ını Studio'dan oluşturursun (bölüm 5, **Erişim belirteçleri**).
+
+**Google Console'da.** APIs & Services → Credentials → **OAuth client ID** (Web application). **Authorized
+redirect URIs** alanına şunu yaz: `https://<projenin API adresi>/auth/v1/callback`. Projenin API adresi
+Studio'da projenin ana sayfasında yazar. Google sana bir client id ve bir client secret verir.
+
+**Ayarı gönder.** Secret'ı komuta sen yazarsın, ekranda görünmez. `uri_allow_list` girişten sonra
+dönülebilecek uygulama adreslerinin virgülle ayrılmış listesi. `site_url` ise listede olmayan bir adres
+istendiğinde dönülen adres. Git Bash ya da sunucuda:
+
+```bash
+read -rs T; echo     # erişim token'ı (sbp_...)
+read -rs GS; echo    # Google'ın verdiği client secret
+printf '{"external_google_client_id":"%s","external_google_secret":"%s","site_url":"%s","uri_allow_list":"%s"}' \
+  '<client id>' "$GS" 'https://<uygulamanın adresi>' 'https://<uygulamanın adresi>/**,http://localhost:5173/**' \
+  | curl -fsS -X PATCH -H @<(printf 'Authorization: Bearer %s\n' "$T") -H 'content-type: application/json' \
+      --data-binary @- https://selfbase.<BASE>/v1/projects/<ref>/config/auth
+unset T GS
+```
+
+`printf` kabuğun kendi komutu: token ve secret komut satırına (`ps`) çıkmaz. PowerShell'de:
+
+```powershell
+$T  = Read-Host 'Erisim token' -AsSecureString
+$GS = Read-Host 'Google client secret' -AsSecureString
+$plain = { param($s) [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($s)) }
+$body = @{
+  external_google_client_id = '<client id>'
+  external_google_secret    = & $plain $GS
+  site_url                  = 'https://<uygulamanın adresi>'
+  uri_allow_list            = 'https://<uygulamanın adresi>/**,http://localhost:5173/**'
+} | ConvertTo-Json
+Invoke-RestMethod -Method Patch -Uri 'https://selfbase.<BASE>/v1/projects/<ref>/config/auth' `
+  -Headers @{ Authorization = "Bearer $(& $plain $T)" } -ContentType 'application/json' -Body $body |
+  Select-Object site_url, uri_allow_list, external_google_enabled, external_google_client_id
+Remove-Variable T, GS, body
+```
+
+Beklenen: cevapta `external_google_enabled: true` ve `external_google_secret: null`. Secret hiçbir cevapta
+geri gelmez, günlüğe ve denetim kaydına da yazılmaz (kayıtta sadece alan adları var). Ayar kaydedilince
+bir `project.apply` işi kuyruğa girer ve `core`'u yeni ayarlarla yeniden kurar. Projede başka bir iş
+çalışıyorsa (yedek gibi) o bittikten sonra çalışır.
+
+- Aynı yolla SMTP de ayarlanır: `smtp_host`, `smtp_port` (metin, ör. `"587"`), `smtp_user`, `smtp_pass`,
+  `smtp_admin_email`. Öteki alanlar: `disable_signup`, `mailer_autoconfirm`, `mailer_secure_email_change_enabled`,
+  `password_min_length`, `mailer_otp_exp`, `smtp_max_frequency`, `security_refresh_token_reuse_interval`,
+  `external_phone_enabled`.
+- `smtp_pass` ve `external_google_secret` sadece yazılır, `GET` ikisini de `null` gösterir. Boş metin (`""`)
+  sırrı siler.
+- `"external_google_enabled": false` Google girişini kapatır ve client id'yi unutur. Açmak için client id'yi
+  yeniden gönder.
+- Bir alana `null` göndermek onu varsayılana döndürür.
+- Listede olmayan bir alan `400 not_supported` döner, yanlış tipte bir değer `400 validation_failed`. İkisinde
+  de mesaj alanın adını söyler, değeri yazmaz. Bu durumda hiçbir şey kaydedilmez.
+
 ---
 
 ## 7. Alan adları ve sertifikalar
@@ -1234,7 +1294,7 @@ v1'in volume'leri duruyor.
 | Fonksiyon dağıtımı | Projeler fonksiyon sunmuyor (`/functions/v1/<ad>` → 404). v1 de sunmuyordu. Dalga 2'de geliyor. |
 | CLI (operatör token'ıyla çalışan komut satırı aracı) | Studio, ya da `curl` ile `/v1` ve `/platform` (bölüm 5). |
 | Dışarıdan veritabanı portu | Veritabanına dışarıdan bağlanılamaz. Studio'nun **SQL** ekranı, ya da sunucuda `docker exec -it sb-<ref>-db psql -U postgres`. |
-| Proje ayar ekranları (auth ayarları, SMTP, Google, sınırlar) | Proje kurulurken varsayılanlar gelir. İçe aktarmada v1'in env dosyasındaki ayarlar taşınır. Değiştirmek dalga 2'de. |
+| Proje ayar ekranları (auth ayarları, SMTP, Google, sınırlar) | Proje kurulurken varsayılanlar gelir. İçe aktarmada v1'in env dosyasındaki ayarlar taşınır. Auth, SMTP ve Google ayarları API'yle değişir (bölüm 6, "Auth ayarları ve Google ile giriş"). Studio ekranı ve hız sınırları sonraki dalgada. |
 | Sunucu dışı yedek | Dışa aktar, kopyala (bölüm 9). |
 
 **`sync.mjs`'i bir projeye karşı çalıştırma.** Ekibin yeni migration'larını uygulayan `sync.mjs` (bölüm
