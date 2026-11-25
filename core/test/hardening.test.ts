@@ -345,6 +345,21 @@ describe('config and mail', () => {
     }
   })
 
+  it('a numeric setting that is not a number stops startup', async () => {
+    for (const [name, value] of [['AUTH_MIN_PASSWORD', 'six'], ['AUTH_RATE_LIMIT_SIGN_IN', '30/min'], ['AUTH_OTP_EXPIRY', '-1'], ['SMTP_PORT', 'smtp']]) {
+      const saved = process.env[name]
+      process.env[name] = value
+      vi.resetModules()
+      try {
+        await expect(import('../src/config.ts'), name).rejects.toThrow(`${name} must be a number`)
+      } finally {
+        if (saved === undefined) delete process.env[name]
+        else process.env[name] = saved
+        vi.resetModules()
+      }
+    }
+  })
+
   it('SMTP requires STARTTLS except on the implicit-TLS port 465', () => {
     const base = { host: 'smtp.example.test', user: 'u', pass: 'p', from: 'f@example.test' }
     expect(smtpOptions({ ...base, port: 587 })).toMatchObject({ secure: false, requireTLS: true })
