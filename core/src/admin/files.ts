@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { pool } from '../db.ts'
+import { config } from '../config.ts'
 import type { JwtClaims } from '../jwt.ts'
 import { withTx } from '../auth/users.ts'
 import { StorageError, resolveObjectPath } from '../storage/paths.ts'
@@ -10,7 +11,6 @@ import { logLine } from '../log.ts'
 
 // Storage helpers run their row work through asUser(); service_role bypasses RLS, which is what the operator needs.
 const SERVICE = { role: 'service_role', exp: 0 } as JwtClaims
-const MAX_UPLOAD = Number(process.env.STORAGE_MAX_UPLOAD_BYTES) || 50 * 1024 * 1024
 const OBJ = '/files/:bucket/:name{.+}'
 
 const router = new Hono()
@@ -52,7 +52,7 @@ const auditFile = (action: string, target: string, detail: object) =>
 const tooLarge = () => new StorageError(413, 'Payload too large', 'The object exceeded the maximum allowed size')
 
 // raw body with the file's content type; always an upsert (the operator overwrites on purpose)
-router.post(OBJ, bodyLimit({ maxSize: MAX_UPLOAD, onError: () => { throw tooLarge() } }), async (c) => {
+router.post(OBJ, bodyLimit({ maxSize: config.storageMaxUploadBytes, onError: () => { throw tooLarge() } }), async (c) => {
   const { bucket, name } = c.req.param()
   resolveObjectPath(bucket, name)
   const mimetype = c.req.header('content-type') || 'application/octet-stream'

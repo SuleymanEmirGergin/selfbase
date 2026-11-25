@@ -370,19 +370,39 @@ describe('config and mail', () => {
     }
   })
 
-  it('a numeric setting that is not a number stops startup', async () => {
-    for (const [name, value] of [['AUTH_MIN_PASSWORD', 'six'], ['AUTH_RATE_LIMIT_SIGN_IN', '30/min'], ['AUTH_OTP_EXPIRY', '-1'], ['SMTP_PORT', 'smtp']]) {
-      const saved = process.env[name]
-      process.env[name] = value
+  // every numeric setting: [name, lowest accepted value, highest]; 0 only where it means something (a limit off, strict reuse)
+  const NUMERIC: [string, number, number][] = [
+    ['PORT', 1, 65535], ['ADMIN_PORT', 1, 65535], ['DB_PORT', 1, 65535], ['SMTP_PORT', 1, 65535],
+    ['AUTH_MIN_PASSWORD', 1, Number.MAX_SAFE_INTEGER], ['AUTH_OTP_EXPIRY', 1, Number.MAX_SAFE_INTEGER],
+    ['AUTH_EMAIL_INTERVAL', 1, Number.MAX_SAFE_INTEGER], ['AUTH_REFRESH_REUSE_INTERVAL', 0, Number.MAX_SAFE_INTEGER],
+    ['AUTH_RATE_LIMIT_SIGN_IN', 0, Number.MAX_SAFE_INTEGER], ['AUTH_RATE_LIMIT_VERIFY', 0, Number.MAX_SAFE_INTEGER],
+    ['AUTH_RATE_LIMIT_REFRESH', 0, Number.MAX_SAFE_INTEGER], ['AUTH_RATE_LIMIT_EMAIL', 0, Number.MAX_SAFE_INTEGER],
+    ['STORAGE_MAX_UPLOAD_BYTES', 1, Number.MAX_SAFE_INTEGER],
+  ]
+  /** Loads config.ts with name=value; restores the environment after. */
+  async function loadWith(name: string, value: string) {
+    const saved = process.env[name]
+    process.env[name] = value
+    vi.resetModules()
+    try {
+      return await import('../src/config.ts')
+    } finally {
+      if (saved === undefined) delete process.env[name]
+      else process.env[name] = saved
       vi.resetModules()
-      try {
-        await expect(import('../src/config.ts'), name).rejects.toThrow(`${name} must be a number`)
-      } finally {
-        if (saved === undefined) delete process.env[name]
-        else process.env[name] = saved
-        vi.resetModules()
-      }
     }
+  }
+
+  it('a numeric setting must be a whole number within its range, or startup stops', async () => {
+    for (const [name, min, max] of NUMERIC) {
+      const bad = [' ', '\t', '1.5', '0x10', '1e3', '-1', 'Infinity', '+5', '5 ', String(min - 1),
+        max < Number.MAX_SAFE_INTEGER ? String(max + 1) : '9007199254740993']
+      for (const v of bad) await expect(loadWith(name, v), `${name}=${JSON.stringify(v)}`).rejects.toThrow(`${name} must be a whole number`)
+      for (const v of [String(min), String(Math.min(max, 4096))]) await expect(loadWith(name, v), `${name}=${v}`).resolves.toBeTruthy()
+    }
+    // empty means unset (compose passes an unset value as empty): the default
+    expect((await loadWith('SMTP_PORT', '')).config.smtp.port).toBe(587)
+    expect((await loadWith('STORAGE_MAX_UPLOAD_BYTES', '')).config.storageMaxUploadBytes).toBe(50 * 1024 * 1024)
   })
 
   it('SMTP requires STARTTLS except on the implicit-TLS port 465', () => {

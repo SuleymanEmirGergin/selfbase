@@ -4,6 +4,7 @@ import { HTTPException } from 'hono/http-exception'
 import { bodyLimit } from 'hono/body-limit'
 import { createMiddleware } from 'hono/factory'
 import { asUser } from '../db.ts'
+import { config } from '../config.ts'
 import { auth } from '../jwt.ts'
 import type { AppEnv } from '../jwt.ts'
 import { StorageError, resolveObjectPath } from './paths.ts'
@@ -89,7 +90,6 @@ const download = async (c: Context<Env>) => {
 router.get('/object/authenticated' + OBJ, download)
 router.get('/object' + OBJ, download)
 
-const MAX_UPLOAD = Number(process.env.STORAGE_MAX_UPLOAD_BYTES) || 50 * 1024 * 1024
 // values that would make the Response headers throw on download
 const badHeader = (v: string) => /[\0-\x1f\x7f]/.test(v)
 
@@ -105,7 +105,7 @@ const uploadPrecheck = createMiddleware<Env>(async (c, next) => {
   c.set('bucket', b)
   return next()
 })
-const uploadLimit = bodyLimit({ maxSize: MAX_UPLOAD, onError: () => { throw tooLarge() } })
+const uploadLimit = bodyLimit({ maxSize: config.storageMaxUploadBytes, onError: () => { throw tooLarge() } })
 
 // PUT is supabase-js update(); treated as upsert
 router.on(['POST', 'PUT'], '/object' + OBJ, uploadPrecheck, uploadLimit, async (c) => {
