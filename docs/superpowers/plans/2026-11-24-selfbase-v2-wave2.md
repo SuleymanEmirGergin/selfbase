@@ -31,7 +31,7 @@
 - Shared-host rule (spec 5) as in wave 1. New in this wave: published host ports, only from `DB_PORT_RANGE` (`54000-54999`), only for a project whose external access an administrator switched on.
 - The provisioner still never sets `Privileged`, `CapAdd`, host namespaces, devices or bind mounts beyond the backup directory. `PortBindings` are allowed only as Task 12 defines. No runtime dependency beyond Node's standard library. Line cap: 1100 (D-3).
 - Job types stay the fixed enum of AC-11. This wave adds none.
-- Platform migrations `0004`+ are safe to run twice and never drop user data. Numbers are assigned here: `0004-migration-history`, `0005-net-complete`, `0006-vault-encryption`, `0007-graphql-queues-webhooks`, `0008-pooler-auth`. Control migrations: `0006-functions-created-at` (Task 14), `0007-external-db` (Task 15); `0004` and `0005` were taken by wave 1's fix wave.
+- Platform migrations `0004`+ are safe to run twice and never drop user data. Numbers are assigned here: `0004-migration-history`, `0005-net-complete`, `0006-vault-encryption`, `0007-graphql-queues-webhooks`, `0008-pooler-auth`. Control migrations: `0008-functions-created-at` (Task 14), `0009-external-db` (Task 15); `0004`–`0007` were taken by wave 1's fix wave.
 - Language (owner, 2026-11-23): English is the product's main language, Turkish the second locale. Every new Studio string is a `t()` key present in **both** `studio/src/i18n/en.ts` and `tr.ts`; no literal user-facing string in a component. Turkish strings are checked with the `turkce-dogal` skill before the task's commit. CLI output is English. `docs/REHBER.md` stays Turkish.
 - Code, comments, commit messages in English. Commit format `<type>: <description>`. Commits are local; pushing is an Owner step (Task 25).
 - Each code task: failing test → implementation → passing test → commit. Integration tests run against real Postgres / real Docker / real Deno, no mocks of them.
@@ -306,10 +306,10 @@ JOB_ENV     += 'BACKUP_MODE'                                               // va
 
 ### Task 14: Control — functions and function secrets
 
-**Depends on:** Tasks 9, 10, 12, 13. **Files:** `control/src/routes/functions.ts`, `control/src/{app.ts,audit.ts,project-env.ts,secrets.ts,provisioner.ts}`, `control/src/jobs/project.ts` (pass `fnEnv`), `control/migrations/0006-functions-created-at.sql`, `control/test/{functions.test.ts,fn-secrets.test.ts,leak.test.ts,openapi.test.ts,fake-provisioner.ts,stub-core.ts}`.
+**Depends on:** Tasks 9, 10, 12, 13. **Files:** `control/src/routes/functions.ts`, `control/src/{app.ts,audit.ts,project-env.ts,secrets.ts,provisioner.ts}`, `control/src/jobs/project.ts` (pass `fnEnv`), `control/migrations/0008-functions-created-at.sql`, `control/test/{functions.test.ts,fn-secrets.test.ts,leak.test.ts,openapi.test.ts,fake-provisioner.ts,stub-core.ts}`.
 
 **Interfaces — Produces:**
-- `0006`: `control.functions` gains `created_at timestamptz not null default now()`.
+- `0008`: `control.functions` gains `created_at timestamptz not null default now()`.
 - `secrets.ts`: `export async function getFunctionSecrets(db: Db, project: { id: string; ref: string }): Promise<Record<string, string>>` (rows named `fn:<NAME>`, prefix stripped) and `export async function deleteSecret(db: Db, projectId: string, name: string): Promise<boolean>`. `getSecrets` is unchanged; `buildEnv` already ignores names it does not know.
 - `loadProjectEnv` returns `{ hosts, env, fnEnv }`; `fnEnv` = function secrets, plus `SUPABASE_DB_URL` (`postgres://postgres:<POSTGRES_PASSWORD>@pooler:6432/postgres`) in `env` when config `FN_DB_URL_ENABLED` is `true` (default `false`, section `functions`). `EnsureInput` (control's type and the client) gains `fnEnv`; `ensure()` passes it.
 
@@ -331,13 +331,13 @@ JOB_ENV     += 'BACKUP_MODE'                                               // va
 
 ### Task 15: Control — external database access with an internal CA
 
-**Depends on:** Tasks 12, 14. **Files:** `control/src/{ca.ts,ports.ts,config.ts,session.ts}`, `control/src/routes/external-db.ts`, `control/src/jobs/project.ts` (`project.external`, certificate in `ensure`), `control/src/{app.ts,project-env.ts}`, `control/migrations/0007-external-db.sql`, `control/{compose.yml,.env.example}`, `control/package.json` (`@peculiar/x509`), `control/test/{ca.test.ts,ports.test.ts,external-db.test.ts,lifecycle.test.ts}`.
+**Depends on:** Tasks 12, 14. **Files:** `control/src/{ca.ts,ports.ts,config.ts,session.ts}`, `control/src/routes/external-db.ts`, `control/src/jobs/project.ts` (`project.external`, certificate in `ensure`), `control/src/{app.ts,project-env.ts}`, `control/migrations/0009-external-db.sql`, `control/{compose.yml,.env.example}`, `control/package.json` (`@peculiar/x509`), `control/test/{ca.test.ts,ports.test.ts,external-db.test.ts,lifecycle.test.ts}`.
 
 **Depends on wave 1 deploy:** `DB_PORT_RANGE=54000-54999` is unused on the server and the host has no firewall (spec 15), so an enabled port is public. Assumption: both still true (Task 1 re-checks).
 
 **Interfaces — Produces:**
 - Config: `dbPortRange` from `DB_PORT_RANGE` (`''` → external access unavailable), `externalDbHost` from `EXTERNAL_DB_HOST` (default: the project's default hostname).
-- `0007`: unique partial indexes on `control.projects (db_port)` and `(pooler_port)` where not null.
+- `0009`: unique partial indexes on `control.projects (db_port)` and `(pooler_port)` where not null.
 - `ca.ts`: `export async function loadCa(db: Db): Promise<Ca>` — on first use creates an EC P-256 CA (`CN=selfbase CA <nodeName>`, 10 years) and stores `ca_cert` (PEM) and `ca_key` (PKCS#8, encrypted with `encrypt('control', 'ca_key', …)`) in `control.settings` with `on conflict do nothing`, then re-reads; `export async function caCertPem(db: Db): Promise<string>`; `export async function issueServerCert(ca: Ca, hosts: string[]): Promise<{ cert: string; key: string; notAfter: Date }>` (EC P-256, SANs = hosts plus `db` and `pooler`, 5 years; `shortcut: no scheduled renewal, reissued by any apply inside 90 days of expiry`).
 - `export async function ensureDbCert(db: Db, project: { id: string; ref: string }, hosts: string[]): Promise<boolean>` — issues and stores secrets `DB_TLS_CERT` / `DB_TLS_KEY` when absent, when the SAN set differs from `hosts`, or inside 90 days of expiry; called by `ensure()` next to `ensureSecrets`. `SECRET_ENV` is unchanged (both are optional in the template); `buildEnv` copies them when present.
 - `ports.ts`: `export async function allocatePorts(db: Db, projectId: string, skip?: number[]): Promise<{ db: number; pooler: number }>` — the two lowest free ports in the range not in `skip`, written to the project row in one transaction (the unique indexes settle a race; retry on conflict); `releasePorts(db, projectId)`. Range exhausted → 409 `no_free_port`.
