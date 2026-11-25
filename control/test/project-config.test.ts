@@ -7,7 +7,7 @@ import { config } from '../src/config.ts'
 import { resetRateLimits } from '../src/core.ts'
 import { pool } from '../src/db.ts'
 import { startWorkers } from '../src/jobs/index.ts'
-import { loadProjectEnv } from '../src/project-env.ts'
+import { loadProjectEnv, setConfig } from '../src/project-env.ts'
 import { setProvisioner } from '../src/provisioner.ts'
 import { getSecrets } from '../src/secrets.ts'
 import { FakeProvisioner } from './fake-provisioner.ts'
@@ -231,7 +231,9 @@ describe.each(MOUNTS)('%s/projects/:ref/config/auth', (mount) => {
   })
 
   test('a field we do not store: 400 not_supported naming it, nothing stored', async () => {
-    for (const extra of [{ mfa_max_enrolled_factors: 3 }, { external_github_enabled: true }, { refresh_token_rotation_enabled: false }]) {
+    // prototype names as own keys, the way JSON.parse makes them
+    const protoKeys = ['__proto__', 'constructor', 'toString', 'hasOwnProperty'].map((k) => JSON.parse(`{"${k}":"x"}`))
+    for (const extra of [{ mfa_max_enrolled_factors: 3 }, { external_github_enabled: true }, { refresh_token_rotation_enabled: false }, ...protoKeys]) {
       const res = await patch(owner.token, mount, p.ref, { smtp_user: 'not-stored', ...extra })
       expect(res.status).toBe(400)
       const body = await res.json()
@@ -339,6 +341,14 @@ describe.each(MOUNTS)('%s/projects/:ref/config/auth', (mount) => {
     expect((await applies(q.id)).filter((j) => j.status === 'pending')).toHaveLength(1)
     await finishJobs(q.id)
   })
+})
+
+test('setConfig writes third-party secrets only: a platform secret name throws and changes nothing', async () => {
+  const before = await getSecrets(pool, b)
+  for (const name of ['JWT_SECRET', 'POSTGRES_PASSWORD', 'SERVICE_ROLE_KEY', 'ANYTHING']) {
+    await expect(setConfig(pool, b, 'auth', {}, { [name]: 'test-overwrite' }, owner.id)).rejects.toThrow(name)
+  }
+  expect(await getSecrets(pool, b)).toEqual(before)
 })
 
 test('both mounts are the same handler: a write through one reads back through the other', async () => {

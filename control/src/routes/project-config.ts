@@ -159,15 +159,16 @@ both('get', PATH, 'v1-get-auth-service-config', async (c) => c.json(await authCo
 both('patch', PATH, 'v1-update-auth-service-config', async (c) => {
   const p = await projectFor(c, 'project.manage')
   const b = await body(c)
-  const unknown = Object.keys(b).find((k) => !FIELDS[k] && !SECRETS[k] && !DERIVED.includes(k))
+  // own keys only: FIELDS['constructor'] and the like are inherited, never a field
+  const unknown = Object.keys(b).find((k) => !Object.hasOwn(FIELDS, k) && !Object.hasOwn(SECRETS, k) && !DERIVED.includes(k))
   if (unknown) throw new ApiError(400, 'not_supported', `${unknown} is not supported here`)
   if (b.refresh_token_rotation_enabled !== undefined && b.refresh_token_rotation_enabled !== true)
     throw new ApiError(400, 'not_supported', 'refresh_token_rotation_enabled: refresh tokens always rotate here')
   const patch: Record<string, string | null> = {}
   const secrets: Record<string, string> = {}
   for (const [name, v] of Object.entries(b)) {
-    if (SECRETS[name]) secrets[SECRETS[name]] = v === null ? '' : text(name, v)
-    else if (FIELDS[name]) patch[FIELDS[name].env] = v === null ? null : envValue(name, FIELDS[name], v)
+    if (Object.hasOwn(SECRETS, name)) secrets[SECRETS[name]] = v === null ? '' : text(name, v)
+    else if (Object.hasOwn(FIELDS, name)) patch[FIELDS[name].env] = v === null ? null : envValue(name, FIELDS[name], v)
   }
   // enabled means a client id is stored: false forgets it, true needs one
   const google = b.external_google_enabled
