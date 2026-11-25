@@ -30,6 +30,14 @@ describe('outbound guard', () => {
     for (const i of own) expect(isBlocked(i!.address), i!.address).toBe(true)
   })
 
+  it('refuses site-local, local-use NAT64 and Teredo IPv6, and a refusal carries the code EBLOCKED', async () => {
+    for (const host of ['[fec0::1]', '[64:ff9b:1::a00:5]', '[2001::1]', '[2001:0:4136:e378:8000:63bf:3fff:fdd2]']) {
+      await expect(resolveChecked(host, new Set(), dns), host).rejects.toMatchObject({ code: 'EBLOCKED' })
+    }
+    // public IPv6 outside those ranges still passes
+    for (const a of ['2001:4860:4860::8888', '2001:db8::1', '2a00:1450::1']) expect(isBlocked(a), a).toBe(false)
+  })
+
   it('passes the default Google endpoints and a public SMTP host', async () => {
     expect((await resolveChecked('oauth2.googleapis.com', new Set(), dns)).map((a) => a.address)).toEqual(['203.0.113.10'])
     expect((await resolveChecked('openidconnect.googleapis.com', new Set(), dns)).length).toBe(2)
