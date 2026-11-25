@@ -172,8 +172,11 @@ if [ -n "${MANIFEST_B64:-}" ]; then
   chmod 0750 "$backups" "$tmp"
   chmod 0640 "$tmp/project.json"
 fi
+# each size and sum into a variable first: a stat or sha256sum that fails inside echo's arguments would go unseen
 for f in $files; do
-  echo "$f $(stat -c %s "$tmp/$f") $(sha256sum "$tmp/$f" | cut -d' ' -f1)"
+  size=$(stat -c %s "$tmp/$f") && sum=$(sha256sum "$tmp/$f" | cut -d' ' -f1) && [[ $size =~ ^[0-9]+$ && $sum =~ ^[0-9a-f]{64}$ ]] ||
+    { echo "backup: the MANIFEST entry of $f could not be made" >&2; exit 1; }
+  echo "$f $size $sum"
 done > "$tmp/MANIFEST"
 mv "$tmp" "$backups/$ts"
 # the backup is whole and in place: from here a failure is a warning (exit 0), never "no backup written", and the

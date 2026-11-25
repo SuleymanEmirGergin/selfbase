@@ -329,6 +329,17 @@ check 'M-3: a size that cannot be read after the rename keeps exit 0 and the wro
   bash -c '[ "$2" = 0 ] && grep -qE "^backup: wrote postmv/[0-9]{8}-[0-9]{6}$" <<< "$(tail -n1 <<< "$1")"' _ "$out" "$rc"
 check 'M-3: it warns instead of printing a size line without a number' \
   bash -c 'grep -q "backup: WARNING: the size of postmv/" <<< "$1" && ! grep -E "^backup: size" <<< "$1" | grep -qvE "^backup: size [0-9]+ bytes$"' _ "$out"
+# M-7: a size or sum the MANIFEST cannot get (a stand-in stat or sha256sum fails) fails the backup: nothing renamed
+for tool in stat sha256sum; do
+  JOB_ENV=(-e BACKUP_SUBDIR=mf-$tool)
+  rc=0; out=$(job db "$P-storage" bash -c "$tool() { case \"\$*\" in *globals.sql*) return 1 ;; esac; command $tool \"\$@\"; }
+    export -f $tool; bash /scripts/backup.sh" 2>&1) || rc=$?
+  check "M-7: a $tool that fails for the MANIFEST fails the backup (exit 1)" [ "$rc" = 1 ]; [ "$rc" = 1 ] || echo "$out" >&2
+  check "M-7: it names the file and writes no backup ($tool)" bash -c \
+    'grep -q "backup: the MANIFEST entry of globals.sql could not be made" <<< "$1" && ! grep -q "backup: wrote" <<< "$1"' _ "$out"
+  check "M-7: nothing is renamed and no temp dir is left ($tool)" in_backups "[ -z \"\$(ls -A /backups/mf-$tool)\" ]"
+done
+
 
 # ---- I1: ROTATE_KEYS=1 (an import with rotate_keys) deletes the restored sessions, before control starts core ----
 JOB_ENV=(-e RESTORE_DIR=t/$ts -e ROTATE_KEYS=yes)
