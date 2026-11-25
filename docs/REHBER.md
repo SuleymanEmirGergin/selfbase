@@ -402,7 +402,9 @@ Satır satır (boş bırakılan isteğe bağlı satır sağdaki varsayılanı al
 | `JOB_SLOT_MB` | Tek iş yuvasına ayrılan MiB | `512` |
 | `NODE_NAME` | Bu sunucunun control-db'deki adı | `main` |
 | `BACKUP_HOST_DIR` | **Zorunlu.** Yedek klasörü, `/opt/selfbase/` altında, 0711 | `/opt/selfbase/backups` |
-| `BACKUP_RETENTION_DAYS` | Planlı yedeklerin kaç gün tutulacağı | `7` |
+| `BACKUP_RETENTION_DAYS` | Proje ve kontrol yedeklerinin kaç gün tutulacağı (planlı ve elle alınanlar) | `7` |
+| `EXPORT_RETENTION_DAYS` | Dışa aktarmaların kaç gün tutulacağı | `7` |
+| `BACKUP_MAX_COUNT` | Bir klasörde en fazla kaç yedek kalacağı (planlı, elle alınan, dışa aktarma) | `14` |
 | `LOG_SYSLOG_ADDR` | Proje günlüklerinin gideceği yer. Boşsa sadece Docker'ın kendi günlüğü. | `udp://127.0.0.1:5514` |
 | `CGROUP_PARENT` | Bütün selfbase container'larının cgroup'u. Sadece systemd sürücüsünde. Boşsa yok. | `selfbase.slice` (adım 9) |
 | `DOCKER_SOCKET_GID` | `/var/run/docker.sock`'un grubu | adım 1 |
@@ -904,13 +906,15 @@ Kurallar:
 
 Her gün **03:15 UTC**'de control iki tür iş başlatır: kontrol yığınının yedeği (`control.backup`) ve
 çalışan her proje için bir yedek. Yedekler tek bir iş yuvasında **sırayla** çalışır, böylece bellek
-bütçesini aşmazlar. `BACKUP_RETENTION_DAYS` günden (varsayılan 7) eski planlı yedekler silinir.
+bütçesini aşmazlar. Her yedek işi kendi klasörünü budar: `BACKUP_RETENTION_DAYS` günden (varsayılan 7)
+eski yedekler silinir, elle alınanlar da. Bir klasörde en fazla `BACKUP_MAX_COUNT` (varsayılan 14) yedek
+kalır, fazlası en eskiden başlayarak silinir. Bu sayı elle alınan yedekleri ve dışa aktarmaları da kapsar.
 
 ```
 /opt/selfbase/backups/
 ├── control/<YYYYMMDD-HHMMSS>/    control-db: db.dump, globals.sql, MANIFEST
 ├── <ref>/<YYYYMMDD-HHMMSS>/      proje: db.dump, globals.sql, storage.tar.gz, MANIFEST
-├── export-<ref>/<...>/           dışa aktarma: aynısı + project.json (hiç silinmez)
+├── export-<ref>/<...>/           dışa aktarma: aynısı + project.json (EXPORT_RETENTION_DAYS gün kalır)
 └── import/<org>/<ad>/            içe aktarma alanı (v1 ya da dışarıdan gelen yedekler)
 ```
 
@@ -935,8 +939,10 @@ Doğrulandı: yerelde düğmeden sonra iki saniyede liste satırı geldi. Klasö
 Proje → **Settings** → **Backups** → **Export** formu → en az 12 karakterlik bir şifre, iki kez →
 **Export**. Normal bir yedek alınır, yanına `project.json` yazılır: projenin ayarları açık, sırları (JWT
 secret, `anon` ve `service_role` anahtarları, varsa SMTP şifresi ve Google secret'ı) senin şifrenle şifreli.
-Şifre saklanmaz. Unutursan `project.json` açılmaz. Dışa aktarmalar `export-<ref>/<ts>` altında durur ve
-planlı temizlikte silinmez.
+Şifre saklanmaz. Unutursan `project.json` açılmaz. Dışa aktarmalar `export-<ref>/<ts>` altında durur.
+Kalıcı değiller: `EXPORT_RETENTION_DAYS` günden (varsayılan 7) eski olanlar her gece silinir, projesi
+silinmiş olsa da. Klasörde en fazla `BACKUP_MAX_COUNT` (varsayılan 14) dışa aktarma kalır. Saklamak
+istediğin bir dışa aktarmayı bu süre dolmadan sunucu dışına kopyala.
 
 Neden önemli: planlı yedekte projenin anahtarları yok. Bir projeyi **aynı anahtarlarla** (yani
 uygulamaları yeniden ayarlamadan) geri getirmenin ya da başka sunucuya taşımanın yolu dışa aktarmadır.
@@ -1318,7 +1324,8 @@ adres boşa çıkar. Yedekleri kalır. Onları da istemiyorsan (root, sunucu):
 ls /opt/selfbase/backups/<ref>/ && rm -r /opt/selfbase/backups/<ref>
 ```
 
-Dışa aktarmaları (`export-<ref>/`) ayrıca silersin. Geri dönüşü yok.
+Dışa aktarmalar (`export-<ref>/`) `EXPORT_RETENTION_DAYS` gün (varsayılan 7) sonra kendiliğinden silinir.
+Daha önce istiyorsan elle silersin. Geri dönüşü yok.
 
 ### Bütün platformu kaldırmak
 
