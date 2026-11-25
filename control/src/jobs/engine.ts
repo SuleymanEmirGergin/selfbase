@@ -125,7 +125,7 @@ export const enqueueCoalesced = (db: pg.Pool, j: EnqueueInput & { projectId: str
     await first?.(c)
     return (await c.query(
       `select id from control.jobs where project_id = $1 and type = $2 and payload = $3::jsonb and status = 'pending' limit 1`,
-      [j.projectId, j.type, j.payload])).rows[0]?.id ?? (await insertJob(c, j, false))!
+      [j.projectId, j.type, storedPayload(j)])).rows[0]?.id ?? (await insertJob(c, j, false))!
   })
 
 async function underEnqueueLock<T>(db: pg.Pool, projectId: string, fn: (c: pg.PoolClient) => Promise<T>): Promise<T> {
