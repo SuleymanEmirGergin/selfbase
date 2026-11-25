@@ -26,6 +26,7 @@ const body = (ref: string, subnet: string) => ({ templateVersion: '2.1.0', size:
 
 const nets = new Map<string, any>()
 const calls: string[] = []
+let forget = false // the stand-in makes a network but cannot read it back (404), as a racing removal would
 const engine = createServer(async (req, res) => {
   let text = ''
   for await (const c of req) text += c
@@ -42,7 +43,7 @@ const engine = createServer(async (req, res) => {
   // the stand-in: IPv6 on, whatever the body asked for
   if (req.method === 'POST' && path === '/networks/create') {
     const b = JSON.parse(text)
-    nets.set(b.Name, { ...b, EnableIPv6: true, Containers: {} })
+    if (!forget) nets.set(b.Name, { ...b, EnableIPv6: true, Containers: {} })
     return send(201, { Id: b.Name })
   }
   if (req.method === 'GET' && net) return nets.has(net[1]) ? send(200, nets.get(net[1])) : send(404, { message: 'no such network' })
@@ -76,4 +77,14 @@ test('after the guard tripped, a second project whose networks have IPv6 on is r
   const from = calls.length
   await assert.rejects(ensure(ctx, ref, body(ref, '10.207.0.64/27')), refusedV6)
   assert.deepEqual(changes(from), [])
+})
+
+test('a network that cannot be read back right after it was made is a clear refusal, not a TypeError', async () => {
+  forget = true
+  try {
+    await assert.rejects(ensure(ctx, 'cccccccccccccccccccc', body('cccccccccccccccccccc', '10.207.0.96/27')),
+      (e: any) => e?.code === 'docker_refused' && /cannot be read back/.test(e.message))
+  } finally {
+    forget = false
+  }
 })

@@ -151,7 +151,7 @@ export async function ensure(ctx: Ctx, ref: string, body: unknown) {
   // A network made where the engine could not isolate (below Docker 28) or before the isolation existed is made again
   // the same way, once, now that it can.
   const weak = (n: { body: Record<string, unknown> }, e: any) => n.body.Internal === true
-    && (e.Internal !== true || e.Options?.['com.docker.network.bridge.gateway_mode_ipv4'] !== 'isolated')
+    && (e?.Internal !== true || e?.Options?.['com.docker.network.bridge.gateway_mode_ipv4'] !== 'isolated')
   // and one with IPv6 on (daemon defaults, or made before spec.ts pinned it off): its IPv6 gateway reaches the host
   const v6 = (e: any) => e?.EnableIPv6 === true
   const rebuild: { name: string; net: any }[] = []
@@ -195,6 +195,7 @@ export async function ensure(ctx: Ctx, ref: string, body: unknown) {
     await docker('POST', '/networks/create', n.body)
     // the loop guards: a network that reads back weak right after it was made would be rebuilt on every pass
     const made = await inspectNetwork(n.name)
+    if (!made) refuse(502, 'docker_refused', `${n.name} was created but cannot be read back; retry the ensure`)
     if (!isolationLost && weak(n, made)) {
       isolationLost = true
       console.warn(`provisioner: ${n.name} was made with gateway_mode_ipv4=isolated but the engine did not keep it; networks are no longer rebuilt for the isolation until the provisioner restarts`)
