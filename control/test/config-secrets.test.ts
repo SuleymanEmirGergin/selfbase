@@ -45,4 +45,10 @@ it('BASE_DOMAIN and TEST_HOST must be hostnames, and no IP literal is one', () =
     expect(() => loadConfig({ ...plain, TEST_HOST: bad }), bad).toThrow(/TEST_HOST/)
   expect(() => loadConfig({ ...plain, LEGACY_HOSTNAMES: '203.0.113.5' })).toThrow(/LEGACY_HOSTNAMES/)
   expect(loadConfig({ ...plain, BASE_DOMAIN: '203.0.113.5.sslip.io' }).testHost).toBe('sb-test.203.0.113.5.sslip.io')
+  // a local install (REHBER, test/e2e): localhost is the one bare name allowed, for TEST_HOST too
+  expect(loadConfig({ ...plain, BASE_DOMAIN: 'localhost' })).toMatchObject({ baseDomain: 'localhost', testHost: 'sb-test.localhost',
+    publicUrl: 'https://selfbase.localhost' })
+  expect(loadConfig({ ...plain, BASE_DOMAIN: 'localhost', TEST_HOST: 'localhost' }).testHost).toBe('localhost')
+  for (const bare of ['single', 'local', 'localhost.'])
+    expect(() => loadConfig({ ...plain, BASE_DOMAIN: bare }), bare).toThrow(/BASE_DOMAIN/)
 })
