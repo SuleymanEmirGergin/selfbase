@@ -192,6 +192,8 @@ export function buildProject(input: EnsureInput, tpl: Template, sizes: Sizes, no
   const egress = egressNetworkName(ref)
   const names = Object.keys(tpl.services)
   if (names.length > MAX_SERVICES) refuse(500, 'template_invalid', `at most ${MAX_SERVICES} services have a fixed address in the tenant /28`)
+  // shortcut: addresses follow the template's service order, so a service added anywhere but last moves the ones
+  // after it (a recreate of each); give each service a fixed slot when the first new service comes (wave 2)
   const addr: Record<string, string> = Object.fromEntries(names.map((s, i) => [s, dotted(sub.base + 2 + i)]))
   const outbound = names.filter((s) => EGRESS.has(s))
   // Siblings by address only: core is also on the proxy network, where Docker's DNS answers a name or alias any
