@@ -37,6 +37,9 @@ router.use('*', auth())
 const OBJ = '/:bucket/:name{.+}'
 const params = (c: Context) => ({ bucket: c.req.param('bucket')!, name: c.req.param('name')! })
 const body = (c: Context): Promise<Record<string, unknown>> => c.req.json().catch(() => ({}))
+const tooLarge = () => new StorageError(413, 'Payload too large', 'The object exceeded the maximum allowed size')
+// the JSON routes read whole bodies; uploads have their own STORAGE_MAX_UPLOAD_BYTES limit
+const jsonLimit = bodyLimit({ maxSize: 1024 * 1024, onError: () => { throw tooLarge() } })
 const BUCKET_COLS = 'id, name, owner, public, file_size_limit::float8 as file_size_limit, allowed_mime_types, created_at, updated_at'
 
 router.get('/bucket', async (c) => {
@@ -51,7 +54,7 @@ router.get('/bucket/:id', async (c) => {
   return c.json(rows[0])
 })
 
-router.post('/object/sign' + OBJ, async (c) => {
+router.post('/object/sign' + OBJ, jsonLimit, async (c) => {
   const { bucket, name } = params(c)
   const { expiresIn } = await body(c)
   if (!Number.isInteger(expiresIn) || (expiresIn as number) <= 0)
@@ -67,7 +70,7 @@ router.get('/object/sign' + OBJ, async (c) => {
   return fileResponse(bucket, name, await readMetaUnchecked(bucket, name), c.req.header('range'))
 })
 
-router.post('/object/list/:bucket', async (c) => {
+router.post('/object/list/:bucket', jsonLimit, async (c) => {
   const { prefix, limit, offset } = await body(c)
   const int = (v: unknown, d: number) => (Number.isInteger(v) && (v as number) >= 0 ? (v as number) : d)
   return c.json(await listObjects(c.get('claims'), c.req.param('bucket'), typeof prefix === 'string' ? prefix : '', int(limit, 100), int(offset, 0)))
@@ -87,7 +90,6 @@ router.get('/object/authenticated' + OBJ, download)
 router.get('/object' + OBJ, download)
 
 const MAX_UPLOAD = Number(process.env.STORAGE_MAX_UPLOAD_BYTES) || 50 * 1024 * 1024
-const tooLarge = () => new StorageError(413, 'Payload too large', 'The object exceeded the maximum allowed size')
 // values that would make the Response headers throw on download
 const badHeader = (v: string) => /[\0-\x1f\x7f]/.test(v)
 
@@ -129,7 +131,7 @@ router.on(['POST', 'PUT'], '/object' + OBJ, uploadPrecheck, uploadLimit, async (
   return c.json(await uploadObject(c.get('claims'), c.get('bucket'), name, data, mimetype, cacheControl, upsert))
 })
 
-router.delete('/object/:bucket', async (c) => {
+router.delete('/object/:bucket', jsonLimit, async (c) => {
   const { prefixes } = await body(c)
   if (!Array.isArray(prefixes) || !prefixes.every((p) => typeof p === 'string'))
     throw new StorageError(400, 'InvalidRequest', 'prefixes must be an array of strings')

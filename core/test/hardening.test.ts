@@ -238,6 +238,53 @@ describe('limits and health', () => {
     expect(upload.status).toBeLessThan(500)
   })
 
+  it('the storage JSON routes refuse bodies over 1 MiB with the storage 413', async () => {
+    const big = JSON.stringify({ expiresIn: 60, prefixes: ['x'], prefix: 'x'.repeat(1024 * 1024) })
+    const headers = { apikey: anonKey, authorization: `Bearer ${serviceKey}`, 'content-type': 'application/json' }
+    for (const [method, path] of [['POST', '/storage/v1/object/sign/no-bucket/x.txt'], ['POST', '/storage/v1/object/list/no-bucket'],
+      ['DELETE', '/storage/v1/object/no-bucket']]) {
+      const res = await app.request(path, { method, headers, body: big })
+      expect(res.status, `${method} ${path}`).toBe(413)
+      expect(await res.json()).toEqual({ statusCode: '413', error: 'Payload too large', message: 'The object exceeded the maximum allowed size' })
+    }
+  })
+
+  it('the /rest/v1 and /functions/v1 forwards refuse bodies over 20 MiB, declared or chunked', async () => {
+    const cap = 20 * 1024 * 1024
+    // an upstream that reads the whole body before it answers, as PostgREST and the functions do
+    const up = createServer((req, res) => {
+      req.on('error', () => {}) // core aborts an over-cap chunked body mid-stream
+      req.resume().on('end', () => res.end('ok'))
+    })
+    await new Promise<void>((r) => up.listen(0, '127.0.0.1', r))
+    const saved = { rest: config.pgrstUrl, fn: config.fnUrl }
+    config.pgrstUrl = config.fnUrl = `http://127.0.0.1:${(up.address() as { port: number }).port}`
+    const chunked = (n: number) => new ReadableStream<Uint8Array>({
+      pull(ctl) {
+        const k = Math.min(n, 1024 * 1024)
+        if (!k) return ctl.close()
+        n -= k
+        ctl.enqueue(new Uint8Array(k))
+      },
+    })
+    const send = (path: string, body: BodyInit, headers: Record<string, string> = {}) =>
+      app.request(path, { method: 'POST', headers, body, duplex: 'half' } as RequestInit)
+    try {
+      for (const path of ['/rest/v1/items', '/functions/v1/hello']) {
+        const declared = await send(path, new Uint8Array(cap + 1), { 'content-length': String(cap + 1) })
+        expect(declared.status, `${path} declared`).toBe(413)
+        expect(await declared.json()).toEqual({ error: 'request body too large' })
+        const streamed = await send(path, chunked(cap + 1))
+        expect(streamed.status, `${path} chunked`).toBe(413)
+        expect(await streamed.json()).toEqual({ error: 'request body too large' })
+        expect((await send(path, chunked(cap))).status, `${path} at the cap`).toBe(200)
+      }
+    } finally {
+      Object.assign(config, { pgrstUrl: saved.rest, fnUrl: saved.fn })
+      await new Promise((r) => up.close(r))
+    }
+  })
+
   it('AUTH_DISABLE_SIGNUP answers 422 signup_disabled and creates no user', async () => {
     const saved = config.authDisableSignup
     config.authDisableSignup = true
