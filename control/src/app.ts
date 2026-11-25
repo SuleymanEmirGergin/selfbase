@@ -21,7 +21,9 @@ app.notFound(notFound)
 // Studio's actions are single clicks: no page may frame it (cookies are SameSite=Strict, but sslip.io is not on the
 // PSL, so its sibling hosts are same-site). overwrite: false keeps a header the answer already has: core's sandbox CSP
 // on a file forwarded through the admin API (forward.ts).
-app.use('*', secureHeaders({ xFrameOptions: 'DENY', contentSecurityPolicy: { frameAncestors: ["'none'"] }, overwrite: false }))
+// HSTS without includeSubDomains: a paused custom domain answers here too, and its other hosts are not ours to force
+app.use('*', secureHeaders({ xFrameOptions: 'DENY', contentSecurityPolicy: { frameAncestors: ["'none'"] },
+  strictTransportSecurity: 'max-age=15552000', overwrite: false }))
 app.use('*', paused) // before any route: only PUBLIC_URL's host is served
 app.get('/health', (c) => c.json({ ok: true }))
 

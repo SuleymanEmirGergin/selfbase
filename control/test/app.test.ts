@@ -47,6 +47,8 @@ test('every answer carries the anti-framing, nosniff and referrer headers', asyn
     expect(res.headers.get('content-security-policy'), path).toBe("frame-ancestors 'none'")
     expect(res.headers.get('x-content-type-options'), path).toBe('nosniff')
     expect(res.headers.get('referrer-policy'), path).toBe('no-referrer')
+    // no includeSubDomains: a paused custom domain's answer must not force HTTPS on that domain's other hosts
+    expect(res.headers.get('strict-transport-security'), path).toBe('max-age=15552000')
   }
 })
 
