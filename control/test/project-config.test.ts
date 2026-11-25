@@ -310,9 +310,14 @@ describe.each(MOUNTS)('%s/projects/:ref/config/auth', (mount) => {
   test('external_google_enabled follows the client id: true needs one, false forgets it', async () => {
     const q = await project(acme.id)
     expect((await patch(owner.token, mount, q.ref, { external_google_enabled: true })).status).toBe(400)
-    expect((await patch(owner.token, mount, q.ref, { external_google_enabled: true, external_google_client_id: 'cid.example.test' })).status).toBe(200)
+    expect((await patch(owner.token, mount, q.ref,
+      { external_google_enabled: true, external_google_client_id: 'cid.example.test', external_google_secret: 'test-google-m7' })).status).toBe(200)
     expect((await patch(owner.token, mount, q.ref, { external_google_enabled: false, external_google_client_id: 'cid.example.test' })).status).toBe(400)
+    expect((await patch(owner.token, mount, q.ref, { external_google_enabled: false, external_google_secret: 'test-google-m7b' })).status).toBe(400)
+    expect((await getSecrets(pool, q)).GOOGLE_CLIENT_SECRET).toBe('test-google-m7')
     expect((await patch(owner.token, mount, q.ref, { external_google_enabled: false })).status).toBe(200)
+    // m-7: the secret goes with the id, so a later id is never paired with the old secret
+    expect(await getSecrets(pool, q)).not.toHaveProperty('GOOGLE_CLIENT_SECRET')
     expect(await (await get(owner.token, mount, q.ref)).json()).toMatchObject({ external_google_enabled: false, external_google_client_id: '' })
   })
 

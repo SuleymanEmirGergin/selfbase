@@ -194,7 +194,10 @@ both('patch', PATH, 'v1-update-auth-service-config', async (c) => {
   const givenId = 'GOOGLE_CLIENT_ID' in patch
   if (google === false) {
     if (patch.GOOGLE_CLIENT_ID) throw bad('external_google_enabled is false while external_google_client_id is set')
+    if (secrets.GOOGLE_CLIENT_SECRET) throw bad('external_google_enabled is false while external_google_secret is set')
+    // the secret goes with the id: a later client id is never paired with the old secret
     patch.GOOGLE_CLIENT_ID = null
+    secrets.GOOGLE_CLIENT_SECRET = ''
   }
   if (google === true && givenId && !patch.GOOGLE_CLIENT_ID) throw noGoogleId()
   if (Object.keys(b).length) {
