@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.ts",
-    "test": "node --test test/template.test.ts test/spec.test.ts test/refusal.test.ts",
+    "test": "node --test test/template.test.ts test/spec.test.ts test/refusal.test.ts test/ipv6.test.ts",
     "test:docker": "node --test --test-concurrency=1 test/ops.test.ts test/proxy.test.ts",
     "typecheck": "tsc --noEmit"
   },
