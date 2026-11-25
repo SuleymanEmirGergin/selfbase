@@ -73,8 +73,8 @@ async function googleProfile(code: string): Promise<GoogleProfile | null> {
   }
 }
 
-/** The user behind a Google account: by identity, else by email (linked), else a new confirmed user. */
-async function googleUser(sub: string, email: string, p: GoogleProfile): Promise<UserRow> {
+/** The user behind a Google account: by identity, else by email (linked), else a new confirmed user (null: signups closed). */
+async function googleUser(sub: string, email: string, p: GoogleProfile): Promise<UserRow | null> {
   const name = typeof p.name === 'string' ? p.name : undefined
   const picture = typeof p.picture === 'string' ? p.picture : undefined
   const data = { iss: 'https://accounts.google.com', sub, provider_id: sub, email, email_verified: true, phone_verified: false,
@@ -87,6 +87,7 @@ async function googleUser(sub: string, email: string, p: GoogleProfile): Promise
   let existing = await findByEmail(email)
   // a banned user is returned untouched: nothing is linked or confirmed, the caller refuses the sign-in
   if (existing && isBanned(existing)) return existing
+  if (!existing && config.authDisableSignup) return null
   const user = existing ?? (await createUser({ email, user_metadata: data, provider: 'google' }).catch(async (err) => {
     // a concurrent first login created it: link to that user
     if (err.code === '23505' && (existing = await findByEmail(email))) return existing
@@ -141,6 +142,7 @@ router.get('/callback', async (c) => {
   if (typeof p.sub !== 'string' || typeof p.email !== 'string' || p.email_verified !== true)
     return fail('access_denied', 'provider_email_needs_verification', 'Google account email is not verified')
   const user = await googleUser(p.sub, p.email.toLowerCase(), p)
+  if (!user) return fail('access_denied', 'signup_disabled', 'Signups not allowed for this instance')
   if (isBanned(user)) return fail('access_denied', 'user_banned', 'User is banned')
   return c.redirect(withFragment(target, sessionParams(await issueSession(user))), 302)
 })

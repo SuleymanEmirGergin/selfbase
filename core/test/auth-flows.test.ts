@@ -593,6 +593,27 @@ describe('google oauth', () => {
     expect(user.raw_app_meta_data.providers).toEqual(['email', 'google'])
   })
 
+  it('AUTH_DISABLE_SIGNUP refuses a first Google login that would create a user; a known email user is still linked', async () => {
+    useFakeGoogle()
+    config.authDisableSignup = true
+    try {
+      const e = email()
+      googleUser = { sub: String(randomInt(1e9, 9e9)), email: e, email_verified: true }
+      const res = await googleLogin()
+      expect(res.status).toBe(302)
+      expect(Object.fromEntries(fragment(res))).toMatchObject({ error: 'access_denied', error_code: 'signup_disabled',
+        error_description: 'Signups not allowed for this instance' })
+      expect((await pool.query('select 1 from auth.users where email = $1', [e])).rowCount).toBe(0)
+      config.authDisableSignup = false
+      const s = await session()
+      config.authDisableSignup = true
+      googleUser = { sub: String(randomInt(1e9, 9e9)), email: s.user.email, email_verified: true }
+      expect((await verify(fragment(await googleLogin()).get('access_token')!)).sub).toBe(s.user.id)
+    } finally {
+      config.authDisableSignup = false
+    }
+  })
+
   it('unverified Google email is refused', async () => {
     useFakeGoogle()
     const e = email()

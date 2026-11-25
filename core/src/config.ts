@@ -31,7 +31,7 @@ export const config = {
   siteUrl: env.SITE_URL || 'http://localhost:5173',
   authRedirectAllowlist: list(env.AUTH_REDIRECT_ALLOWLIST),
   authConfirmEmail: bool(env.AUTH_CONFIRM_EMAIL, true),
-  // POST /signup answers 422 signup_disabled; only that route: OAuth and OTP sign-ins can still create users
+  // no new users from POST /signup, /otp or a first Google login (422 / redirect signup_disabled), as in GoTrue
   authDisableSignup: bool(env.AUTH_DISABLE_SIGNUP, false),
   authPhoneEnabled: bool(env.AUTH_PHONE_ENABLED, false),
   authMinPassword: Number(env.AUTH_MIN_PASSWORD || 6),

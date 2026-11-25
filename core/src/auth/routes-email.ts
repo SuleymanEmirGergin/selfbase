@@ -25,6 +25,7 @@ router.post('/otp', async (c) => {
   let user = await findByEmail(email)
   // supabase-js defaults create_user to true; the new user is confirmed by the magic link
   if (!user && body.create_user !== false) {
+    if (config.authDisableSignup) throw authError(422, 'signup_disabled', 'Signups not allowed for this instance')
     const data = body.data && typeof body.data === 'object' ? body.data : {}
     user = await createUser({ email, user_metadata: data, provider: 'email' }).catch((err) => {
       if (err.code === '23505') return findByEmail(email)
