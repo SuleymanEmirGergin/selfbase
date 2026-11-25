@@ -52,6 +52,11 @@ it('BASE_DOMAIN and TEST_HOST must be hostnames, and no IP literal is one', () =
   expect(loadConfig({ ...plain, BASE_DOMAIN: 'localhost' })).toMatchObject({ baseDomain: 'localhost', testHost: 'sb-test.localhost',
     publicUrl: 'https://selfbase.localhost' })
   expect(loadConfig({ ...plain, BASE_DOMAIN: 'localhost', TEST_HOST: 'localhost' }).testHost).toBe('localhost')
+  // TEST_HOST sits under BASE_DOMAIN (as install-check requires): localhost only on a localhost install
+  expect(() => loadConfig({ ...plain, TEST_HOST: 'localhost' })).toThrow('config: TEST_HOST must sit under BASE_DOMAIN')
+  expect(() => loadConfig({ ...plain, TEST_HOST: 'sb-test.other.test' })).toThrow('config: TEST_HOST must sit under BASE_DOMAIN')
+  expect(() => loadConfig({ ...plain, TEST_HOST: 'sb-testexample.test' })).toThrow('config: TEST_HOST must sit under BASE_DOMAIN')
+  expect(loadConfig({ ...plain, TEST_HOST: 'try.sb.example.test' }).testHost).toBe('try.sb.example.test')
   for (const bare of ['single', 'local', 'localhost.'])
     expect(() => loadConfig({ ...plain, BASE_DOMAIN: bare }), bare).toThrow(/BASE_DOMAIN/)
 })

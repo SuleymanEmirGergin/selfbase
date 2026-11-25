@@ -70,6 +70,8 @@ export function loadConfig(input: Record<string, string | undefined> = process.e
   const legacyHostnames = Object.keys(legacyOrgs)
   const testHost = env.TEST_HOST || `sb-test.${base}`
   if (!serverHost(testHost)) fail('TEST_HOST must be a lowercase hostname')
+  // as install-check requires; it also keeps TEST_HOST=localhost to a localhost install
+  if (testHost !== base && !testHost.endsWith(`.${base}`)) fail('TEST_HOST must sit under BASE_DOMAIN')
   const publicUrl = env.PUBLIC_URL || `https://selfbase.${base}`
   if (!/^https?:$/.test(URL.parse(publicUrl)?.protocol ?? '') || !URL.parse(publicUrl)?.hostname) fail('PUBLIC_URL must be an http(s) URL with a hostname')
   const proxyMode = oneOf('PROXY_MODE', 'coolify', ['coolify', 'own'])
