@@ -100,7 +100,7 @@ describe.each(MOUNTS)('%s/projects/:ref/config/auth', (mount) => {
   })
 
   test('GET has every field of the response schema: ours from the stored config, the rest null, the secrets null', async () => {
-    const res = await get(reader.token, mount, p.ref)
+    const res = await get(admin.token, mount, p.ref)
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(Object.keys(body).sort()).toEqual([...SCHEMA_FIELDS].sort())
@@ -179,7 +179,7 @@ describe.each(MOUNTS)('%s/projects/:ref/config/auth', (mount) => {
       AUTH_OTP_EXPIRY: '600', AUTH_EMAIL_INTERVAL: '30', AUTH_REFRESH_REUSE_INTERVAL: '0', SMTP_HOST: 'smtp.example.test', SMTP_PORT: '465',
       SMTP_USER: 'mailer', SMTP_FROM: 'no-reply@example.test', AUTH_PHONE_ENABLED: 'true',
     })
-    expect(await (await get(reader.token, mount, p.ref)).json()).toMatchObject({
+    expect(await (await get(admin.token, mount, p.ref)).json()).toMatchObject({
       site_url: 'https://app.example.test', disable_signup: true, mailer_autoconfirm: true, mailer_secure_email_change_enabled: false,
       password_min_length: 10, mailer_otp_exp: 600, smtp_max_frequency: 30, security_refresh_token_reuse_interval: 0, smtp_port: '465',
       smtp_admin_email: 'no-reply@example.test', external_phone_enabled: true,
@@ -229,6 +229,20 @@ describe.each(MOUNTS)('%s/projects/:ref/config/auth', (mount) => {
       expect((await pool.query(`select section from control.project_config where project_id = $1`, [q.id])).rows).toEqual([])
       expect(await applies(q.id)).toEqual([])
     }
+  })
+
+  test('m-4: smtp_user and smtp_admin_email are shown to project.manage only', async () => {
+    const q = await project(acme.id)
+    expect((await patch(owner.token, mount, q.ref, { smtp_user: 'mailer-m4', smtp_admin_email: 'm4@example.test', smtp_host: 'smtp.example.test' })).status)
+      .toBe(200)
+    for (const u of [reader, dev]) {
+      expect(await (await get(u.token, mount, q.ref)).json()).toMatchObject({ smtp_user: null, smtp_admin_email: null, smtp_host: 'smtp.example.test' })
+    }
+    expect(await (await get(admin.token, mount, q.ref)).json()).toMatchObject({ smtp_user: 'mailer-m4', smtp_admin_email: 'm4@example.test' })
+    // project-scoped: an administrator of a sees them on a, a developer of a does not
+    expect((await patch(owner.token, mount, a.ref, { smtp_user: 'mailer-m4-a' })).status).toBe(200)
+    expect((await (await get(scoped.token, mount, a.ref)).json()).smtp_user).toBe('mailer-m4-a')
+    expect((await (await get(scopedDev.token, mount, a.ref)).json()).smtp_user).toBeNull()
   })
 
   test('m-3: smtp_host as a loopback, private, link-local or metadata address is refused; a public one is not', async () => {

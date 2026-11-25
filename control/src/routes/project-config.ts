@@ -4,13 +4,16 @@
 // audit row names body keys only).
 import { isIP } from 'node:net'
 import { isBlocked } from 'selfbase-core/src/netguard.ts'
+import type { Context } from 'hono'
 import { isJson } from '../audit.ts'
+import { authorize } from '../authz.ts'
 import { HOSTNAME_RE } from '../config.ts'
 import { pool } from '../db.ts'
 import { ApiError } from '../errors.ts'
 import { hostsOf } from '../hosts.ts'
 import { CONFIG_DEFAULTS, projectConfig, setConfig } from '../project-env.ts'
 import { applyCore, bad, body, projectFor, type ProjectRow } from './platform-projects.ts'
+import type { Env } from '../session.ts'
 import { both } from './shared.ts'
 
 type Field = { env: string; type: 'bool' | 'int' | 'string'; invert?: boolean; min?: number; max?: number; check?: (v: string) => boolean
@@ -121,8 +124,8 @@ const NULLS = Object.fromEntries((
   'sms_twilio_verify_message_service_sid sms_vonage_api_key sms_vonage_api_secret sms_vonage_from ' +
   'smtp_sender_name oauth_server_authorization_path').split(' ').map((k) => [k, null]))
 
-/** The stored settings in the response schema's shape; secrets are null. */
-async function authConfig(p: ProjectRow) {
+/** The stored settings in the response schema's shape; secrets are null, and the SMTP login without `manage`. */
+async function authConfig(p: ProjectRow, manage: boolean) {
   const [cfg, hosts] = await Promise.all([projectConfig(pool, p.id), hostsOf(pool, p.id)])
   // as buildEnv: a stored value, else the default ('' counts as unset for booleans and numbers, as core reads them)
   const raw = (env: string) => (cfg[env] === undefined || cfg[env] === null ? CONFIG_DEFAULTS[env] ?? '' : String(cfg[env]))
@@ -132,9 +135,14 @@ async function authConfig(p: ProjectRow) {
     out[name] = f.type === 'bool' ? (v === 'true') !== !!f.invert : f.type === 'int' ? (/^\d+$/.test(v) ? Number(v) : null) : v
   }
   out.site_url = raw('SITE_URL') || `https://${hosts[0]}`
+  if (!manage) out.smtp_user = out.smtp_admin_email = null
   return { ...out, smtp_pass: null, external_google_secret: null, refresh_token_rotation_enabled: true,
     external_google_enabled: !!raw('GOOGLE_CLIENT_ID') }
 }
+
+// half of the SMTP credential pair (and the mailbox) is for those who may change it
+const mayManage = (c: Context<Env>, p: ProjectRow) => authorize(c, 'project.manage', { orgId: p.org_id, projectId: p.id })
+  .then(() => true, (e) => { if (e instanceof ApiError && e.status === 403) return false; throw e })
 
 /** The env form of one PATCH value; the error names the field, never the value. */
 function envValue(name: string, f: Field, v: unknown): string {
@@ -159,7 +167,10 @@ const noGoogleId = () => bad('external_google_enabled needs external_google_clie
 
 const PATH = '/projects/:ref/config/auth'
 
-both('get', PATH, 'v1-get-auth-service-config', async (c) => c.json(await authConfig(await projectFor(c, 'project.read'))))
+both('get', PATH, 'v1-get-auth-service-config', async (c) => {
+  const p = await projectFor(c, 'project.read')
+  return c.json(await authConfig(p, await mayManage(c, p)))
+})
 
 both('patch', PATH, 'v1-update-auth-service-config', async (c) => {
   const p = await projectFor(c, 'project.manage')
@@ -206,5 +217,5 @@ both('patch', PATH, 'v1-update-auth-service-config', async (c) => {
       await setConfig(tx, p, 'auth', patch, secrets, c.get('user').id)
     })
   }
-  return c.json(await authConfig(p))
+  return c.json(await authConfig(p, true))
 })
