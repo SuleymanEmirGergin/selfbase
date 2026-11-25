@@ -410,11 +410,23 @@ test('M6: the config and secrets commit with the apply job: when the job insert 
 })
 
 test('setConfig writes third-party secrets only: a platform secret name throws and changes nothing', async () => {
-  const before = await getSecrets(pool, b)
+  const q = await project(acme.id)
+  await setConfig(pool, q, 'auth', { SMTP_USER: 'before' }, {}, admin.id)
+  const row = () => pool.query('select data, version, updated_by, updated_at from control.project_config where project_id = $1', [q.id])
+  const before = { config: (await row()).rows, secrets: await getSecrets(pool, q) }
+  expect(before.config).toHaveLength(1)
   for (const name of ['JWT_SECRET', 'POSTGRES_PASSWORD', 'SERVICE_ROLE_KEY', 'ANYTHING']) {
-    await expect(setConfig(pool, b, 'auth', {}, { [name]: 'test-overwrite' }, owner.id)).rejects.toThrow(name)
+    // in a transaction, as the route calls it: the throw comes after the config upsert, so it must roll that back
+    const c = await pool.connect()
+    try {
+      await c.query('begin')
+      await expect(setConfig(c, q, 'auth', { SMTP_USER: 'changed' }, { [name]: 'test-overwrite' }, owner.id)).rejects.toThrow(name)
+      await c.query('rollback')
+    } finally {
+      c.release()
+    }
   }
-  expect(await getSecrets(pool, b)).toEqual(before)
+  expect({ config: (await row()).rows, secrets: await getSecrets(pool, q) }).toEqual(before)
 })
 
 test('loadProjectEnv reads one snapshot: a new SMTP host and password committed between its reads never pair up with the old ones', async () => {
