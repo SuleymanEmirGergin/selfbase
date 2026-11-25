@@ -777,7 +777,9 @@ rc=0; out=$(cramped "$small" 1 '' 'psql() { case "$*" in *"to_regclass('"'"'self
 check 'm1: a failed v1-ledger probe exits 1' [ "$rc" = 1 ]; [ "$rc" = 1 ] || echo "$out" >&2
 check 'm1: pg_restore never ran (the database is as it was)' [ "$(emarker)" = after-backup ]
 check 'm1: the ledger is still in selfbase' [ "$(sql db-empty "select to_regclass('selfbase.platform_migrations') is not null")" = t ]
-check 'm1: and the cron step is undone' [ "$(ejob)" = t ]
+check 'm1: the cron job stays active' [ "$(ejob)" = t ]
+# fix round 1 #4: the probe runs before the cron step, so nothing was changed to undo
+check 'm1: the cron step never ran (the probe comes first)' bash -c '! grep -qE "set inactive for the restore|set active again" <<< "$1"' _ "$out"
 sql db-empty "drop table if exists selfbase.platform_migrations; $([ "$had" = 1 ] || echo 'drop schema if exists selfbase;')
   update cron.job set active = true where jobname = 'e_job'; update public.e_marker set v = 'after-backup'" > /dev/null
 # round 6 m2: a psql that ignores TERM is killed by its bound (timeout's 137): the restore says the database did not

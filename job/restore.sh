@@ -48,12 +48,13 @@
 #      (ROTATE_KEYS): its two statements run after the commit without these bounds (a time bound for them is wave 2).
 #      A step that finds no time left is skipped: an undo skipped or failed is exit 8 (said, with the SQL to run by
 #      hand); a temp dir left is removed by the next restore
+#   1d. the dump's table of contents is read (exit 10 when it cannot be) and, for a v1 dump (step 4), the new
+#      project's ledger probed (exit 1 when the probe fails): before step 2, so either failure changes nothing
 #   2. cron: every active job is set inactive (committed) and running job sessions are terminated, so no job runs
 #      during the restore; the restore brings back the backup's job states (on a failure before pg_restore starts the
 #      jobs set inactive here are set active again)
 #   3. pg_restore --clean --if-exists --single-transaction --exit-on-error: every object in the dump is dropped and
-#      recreated in ONE transaction; any failure from its start is exit 8 (above). A dump whose table of contents
-#      cannot be read fails before it, nothing restored (exit 10)
+#      recreated in ONE transaction; any failure from its start is exit 8 (above)
 #   4. a dump whose table of contents has no selfbase.platform_migrations (a v1 database): the ledger the new
 #      project's core created is moved aside before step 3 (it would keep --clean from dropping schema selfbase) and
 #      dropped after it (moved back on a failure before step 3 starts), so core adopts the restored database at its
@@ -331,6 +332,15 @@ watched '' tar --no-same-owner --no-same-permissions --no-unquote -xzf "$dir/sto
   { echo "restore: $rel/storage.tar.gz could not be extracted; nothing was changed" >&2; exit 1; }
 [ -z "$(find "$t" ! -type f ! -type d -print -quit)" ] ||
   { echo "restore: the extracted storage holds something other than files and directories; nothing was changed" >&2; exit 1; }
+# read before the restore: a TOC that cannot be listed is a dump that cannot be restored either
+toc=$(pg_restore -l "$dir/db.dump") ||
+  { echo "restore: FAILED: the table of contents of $rel/db.dump cannot be read; nothing was restored" >&2; exit 10; }
+v1=0
+grep -qE ' TABLE selfbase platform_migrations ' <<< "$toc" || v1=1
+# before the cron step, so a probe that fails has changed nothing: a failure (exit 1), never "no ledger" (pg_restore
+# --clean would run with the ledger in selfbase)
+ledger=f
+[ "$v1" = 0 ] || ledger=$(qt -c "select pg_catalog.to_regclass('selfbase.platform_migrations') is not null") || exit 1
 jobs=$(qt -c "select case when pg_catalog.to_regclass('cron.job') is null then '' else (select coalesce(pg_catalog.string_agg(jobid::text, ','), '')
   from (select jobid from cron.job where active) j) end")
 if [ -n "$jobs" ]; then
@@ -339,14 +349,6 @@ if [ -n "$jobs" ]; then
 fi
 qt -c "select pg_catalog.pg_terminate_backend(pid) from pg_catalog.pg_stat_activity
       where (application_name = 'pg_cron' or backend_type = 'pg_cron') and pid <> pg_catalog.pg_backend_pid()" > /dev/null
-# read before the restore: a TOC that cannot be listed is a dump that cannot be restored either
-toc=$(pg_restore -l "$dir/db.dump") ||
-  { echo "restore: FAILED: the table of contents of $rel/db.dump cannot be read; nothing was restored" >&2; exit 10; }
-v1=0
-grep -qE ' TABLE selfbase platform_migrations ' <<< "$toc" || v1=1
-# a probe that fails is a failure (exit 1), never "no ledger": pg_restore --clean would run with the ledger in selfbase
-ledger=f
-[ "$v1" = 0 ] || ledger=$(qt -c "select pg_catalog.to_regclass('selfbase.platform_migrations') is not null") || exit 1
 if [ "$ledger" = t ]; then
   # held first: a failure or signal as the move commits still finds it (the undo's "if exists" covers one that did not)
   held=1
