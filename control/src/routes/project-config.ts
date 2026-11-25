@@ -3,6 +3,7 @@
 // answers once both are stored (the job runs after). Secrets are write-only: never answered, logged or audited (the
 // audit row names body keys only).
 import { isIP } from 'node:net'
+import { isJson } from '../audit.ts'
 import { HOSTNAME_RE } from '../config.ts'
 import { pool } from '../db.ts'
 import { ApiError } from '../errors.ts'
@@ -158,6 +159,8 @@ both('get', PATH, 'v1-get-auth-service-config', async (c) => c.json(await authCo
 
 both('patch', PATH, 'v1-update-auth-service-config', async (c) => {
   const p = await projectFor(c, 'project.manage')
+  // the audit row names a body's keys only for JSON: it is the one record of which secret changed
+  if (!isJson(c)) throw new ApiError(415, 'unsupported_media_type', 'content-type must be application/json')
   const b = await body(c)
   // own keys only: FIELDS['constructor'] and the like are inherited, never a field
   const unknown = Object.keys(b).find((k) => !Object.hasOwn(FIELDS, k) && !Object.hasOwn(SECRETS, k) && !DERIVED.includes(k))

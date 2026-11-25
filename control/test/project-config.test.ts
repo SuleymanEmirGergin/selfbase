@@ -3,6 +3,7 @@
 import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest'
+import { app } from '../src/app.ts'
 import { config } from '../src/config.ts'
 import { resetRateLimits } from '../src/core.ts'
 import { pool } from '../src/db.ts'
@@ -228,6 +229,17 @@ describe.each(MOUNTS)('%s/projects/:ref/config/auth', (mount) => {
       expect((await pool.query(`select section from control.project_config where project_id = $1`, [q.id])).rows).toEqual([])
       expect(await applies(q.id)).toEqual([])
     }
+  })
+
+  test('m-2: a PATCH body that is not application/json is 415 and changes nothing', async () => {
+    const q = await project(acme.id)
+    for (const type of ['text/plain', 'application/x-www-form-urlencoded', undefined]) {
+      const res = await app.request(url(mount, q.ref), { method: 'PATCH', body: JSON.stringify({ smtp_user: 'via-text' }),
+        headers: { authorization: `Bearer ${owner.token}`, ...(type ? { 'content-type': type } : {}) } })
+      expect(res.status, String(type)).toBe(415)
+    }
+    expect((await pool.query(`select 1 from control.project_config where project_id = $1`, [q.id])).rowCount).toBe(0)
+    expect(await applies(q.id)).toEqual([])
   })
 
   test('a field we do not store: 400 not_supported naming it, nothing stored', async () => {

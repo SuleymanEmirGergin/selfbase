@@ -12,7 +12,7 @@ import type { Env } from './session.ts'
 export const BODY_LIMIT = 256 * 1024
 /** Route patterns that take larger bodies (uploads, imports) and enforce their own limit; the tasks adding them list them. */
 export const largeBodyRoutes = new Set<string>()
-const isJson = (c: Context) => !!c.req.header('content-type')?.toLowerCase().startsWith('application/json')
+export const isJson = (c: Context) => !!c.req.header('content-type')?.toLowerCase().startsWith('application/json')
 /** A file upload through the admin forward: any type (a .json file too) streams under the project's upload limit. */
 export const isUpload = (c: Context) => /^\/platform\/projects\/[^/]+\/admin\/files\//.test(c.req.path)
 const limit = bodyLimit({
