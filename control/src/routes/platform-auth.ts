@@ -210,7 +210,8 @@ platformAuth.post('/access-tokens', async (c) => {
   const { token, hash } = newAccessToken()
   // One transaction, in core's lock order: core's per-user lock (logout and session revokes take it), then the user's
   // row FOR SHARE (a password write, whose trigger ends the tokens, cannot commit in between), then the cookie's
-  // session still live under both, then the insert. A logout or reset either sees this token, or this mint sees it.
+  // session still live under both, then the insert. A logout or reset that commits first makes this mint refuse; a reset
+  // that commits after ends the token by its trigger. A logout after the mint does not: a token outlives its session.
   const id = await tx(async (client) => {
     await lockUser(client, c.get('user').id)
     await client.query('select 1 from auth.users where id = $1 for share', [c.get('user').id])

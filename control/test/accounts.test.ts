@@ -561,7 +561,7 @@ describe('the password route', () => {
     expect((await put(jwt, { password: PASSWORD, current_password: 'a-brand-new-password' })).status).toBe(200)
   })
 
-  test('a token mint racing a logout of the same session leaves no working token', async () => {
+  test('a token mint waits for a logout in progress of the same session, then is refused', async () => {
     const stolen = await login(OWNER, PASSWORD)
     const sid = await sessionOfJwt(accessOf(stolen))
     const userId = (await pool.query('select id from auth.users where email = $1', [OWNER])).rows[0].id
