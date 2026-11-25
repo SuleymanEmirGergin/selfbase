@@ -15,6 +15,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
     volumes:
       - pgdata:/var/lib/postgresql/data
+    # a clean shutdown (checkpoint) on a stop, recreate or delete; Docker's default would SIGKILL it after 10 s
+    stop_grace_period: 1m
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "postgres", "-h", "localhost"]
       interval: 5s
