@@ -372,6 +372,8 @@ check 'M-6: a restore of the quarantine name is refused (exit 2)' [ "$rc" = 2 ];
 JOB_ENV=(-e BACKUP_SUBDIR=quar)
 rc=0; out=$(job db "$P-storage" bash /scripts/backup.sh 2>&1) || rc=$?
 check 'M-6: the next run removes the leftover' bash -c '[ "$1" = 0 ]' _ "$rc"
+# round 2: and says it deleted that backup first, as control reads it, so a row a failed run kept goes now
+check 'M-6: it reports the swept leftover deleted, under its backup name' grep -qx 'backup: deleted quar/20200101-000000 (left by an earlier run)' <<< "$out"
 check 'M-6: (it is gone, and only timestamp dirs are left)' in_backups '! ls -A /backups/quar | grep -qvE "^[0-9]{8}-[0-9]{6}$"'
 # m-6: prune-only still prints pruned when the retention fails (the stand-in mv), so control reads the deleted lines
 in_backups 'mkdir -p /backups/export-pf/20200101-000000 /backups/export-pf/20200102-000000'

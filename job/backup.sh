@@ -59,13 +59,14 @@ min_free=${BACKUP_MIN_FREE_MIB:-}
 # (export-<ref>) too, by EXPORT_RETENTION_DAYS: an export is taken to be moved or imported within days (R3).
 # A backup to delete is first renamed to .deleting-<ts> (no listing, count or restore takes that name) and reported
 # deleted right then, so control drops its row even when the delete then fails half way; the next run removes what
-# is left.
+# is left, and reports that backup deleted again first (control drops a row a failed or stopped run kept).
 retain() {
   local days cutoff n=0 d why bad=0 q
   [[ $sub == export-* ]] && days=$export_keep || days=$keep
   cutoff=$(date -u -d "-$days days" +%Y%m%d-%H%M%S)
   for q in "$backups"/.deleting-*; do
     [ -e "$q" ] || continue
+    echo "backup: deleted $sub/${q##*/.deleting-} (left by an earlier run)"
     rm -rf "$q" || { echo "backup: WARNING: could not remove the leftover $sub/${q##*/}" >&2; bad=1; }
   done
   for d in $(ls "$backups" | grep -E '^[0-9]{8}-[0-9]{6}$' | sort -r || true); do

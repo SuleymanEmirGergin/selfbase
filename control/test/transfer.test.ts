@@ -508,6 +508,17 @@ describe('backup and export', () => {
       location: `${p.ref}/20261122-031500`, started_at: expect.any(String), finished_at: expect.any(String) })])
   })
 
+  test('a deleted line for a backup whose row is already gone (a quarantine swept on a later run) is no error', async () => {
+    const p = await project(acme.id, { name: 'swept' })
+    await pool.query(`insert into control.backups (project_id, kind, status, location) values ($1, 'logical', 'succeeded', $2)`, [p.id, `${p.ref}/20200102-000000`])
+    fake.jobResult = (ref) => ({ status: 'succeeded', exitCode: 0, tail: `backup: deleted ${ref}/20200101-000000 (left by an earlier run)\n`
+      + `backup: deleted ${ref}/20200102-000000 (left by an earlier run)\nbackup: size 7 bytes\nbackup: wrote ${ref}/20261122-031500\n` })
+    const { job_id } = await (await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/backups`)).json()
+    workers()
+    expect((await finished(job_id)).status).toBe('succeeded')
+    expect((await pool.query('select location from control.backups where project_id = $1', [p.id])).rows).toEqual([{ location: `${p.ref}/20261122-031500` }])
+  })
+
   test('a paused project cannot be backed up or exported', async () => {
     const p = await project(acme.id, { name: 'paused', status: 'INACTIVE' })
     expect((await withToken(owner.token, 'POST', `/platform/projects/${p.ref}/backups`)).status).toBe(409)
