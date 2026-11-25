@@ -9,7 +9,7 @@ import { pool } from '../db.ts'
 import { configSections, EnvFileError, parseV1Env, stripImported } from '../envfile.ts'
 import { ApiError } from '../errors.ts'
 import { checkBackupSpace, checkProjectBackup } from '../disk.ts'
-import { createProject } from '../jobs/index.ts'
+import { allows, createProject, type Statuses } from '../jobs/index.ts'
 import { backupDirOf } from '../jobs/transfer.ts'
 import { ManifestError, MIN_PASSPHRASE, openManifest, sealManifest } from '../manifest.ts'
 import { getSecrets } from '../secrets.ts'
@@ -23,7 +23,7 @@ const ENV_FILE_MAX = 64 * 1024
 const CARRIED = ['JWT_SECRET', 'ANON_KEY', 'SERVICE_ROLE_KEY', 'SMTP_PASS', 'GOOGLE_CLIENT_SECRET', 'AUTH_SMS_HOOK_SECRET']
 const ROTATED = ['JWT_SECRET', 'ANON_KEY', 'SERVICE_ROLE_KEY']
 const SECTIONS = ['auth', 'postgrest', 'storage', 'realtime', 'database', 'pooler', 'functions']
-const CAN_BACKUP = (s: string) => s === 'ACTIVE_HEALTHY' || s === 'ACTIVE_UNHEALTHY'
+const CAN_BACKUP: Statuses = { in: ['ACTIVE_HEALTHY', 'ACTIVE_UNHEALTHY'] }
 
 // Manual backups and exports of one project: 3 an hour, each a full dump on the backup volume (runtime I2). One at a
 // time is already lifecycle's rule (409 project_busy); scheduled backups (created_by null) do not count.
@@ -60,7 +60,7 @@ platformTransfer.post('/projects/:ref/export', async (c) => {
   const p = await projectFor(c, 'project.manage')
   const { passphrase } = await body(c)
   // the cheap refusals before scrypt (lifecycle checks the same again when it enqueues)
-  if (!CAN_BACKUP(p.status)) throw new ApiError(409, 'invalid_status', `this cannot be done while the project is ${p.status}`)
+  if (!allows(CAN_BACKUP, p.status)) throw new ApiError(409, 'invalid_status', `this cannot be done while the project is ${p.status}`)
   if ((await pool.query(`select 1 from control.jobs where project_id = $1 and status in ('pending', 'running')`, [p.id])).rowCount) {
     throw new ApiError(409, 'project_busy', 'another operation is running on this project; try again when it ends')
   }

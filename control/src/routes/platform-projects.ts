@@ -12,7 +12,7 @@ import { ApiError } from '../errors.ts'
 import { forwardAdmin } from '../forward.ts'
 import { addDomain, newHostsThisWeek, removeDomain } from '../hosts.ts'
 import { REF_RE } from '../ids.ts'
-import { createProject, enqueueCoalesced, enqueueIfIdle, stepsOf, type Project } from '../jobs/index.ts'
+import { allows, createProject, enqueueCoalesced, enqueueIfIdle, stepsOf, type Project, type Statuses } from '../jobs/index.ts'
 import { LOG_SERVICES, projectLogs } from '../logs.ts'
 import { projectConfig } from '../project-env.ts'
 import { provisioner } from '../provisioner.ts'
@@ -106,16 +106,23 @@ export function projectSize(size: unknown): Size {
   return size as Size
 }
 
-/** One lifecycle job, when the status allows it and no other job is pending or running. */
-export async function lifecycle(c: Context<Env>, p: ProjectRow, type: string, allowed: (status: string) => boolean,
+/**
+ * One lifecycle job, when the status allows it and no other job is pending or running. The insert checks the status
+ * under the enqueue lock: `p` may be stale (a delete or pause that finished since the route read it).
+ */
+export async function lifecycle(c: Context<Env>, p: ProjectRow, type: string, allowed: Statuses,
   payload: Record<string, unknown> = {}): Promise<string> {
-  if (!allowed(p.status)) throw new ApiError(409, 'invalid_status', `this cannot be done while the project is ${p.status}`)
-  const id = await enqueueIfIdle(pool, { type, projectId: p.id, payload, createdBy: c.get('user').id })
-  if (!id) throw new ApiError(409, 'project_busy', 'another operation is running on this project; try again when it ends')
-  return id
+  const id = await enqueueIfIdle(pool, { type, projectId: p.id, payload, createdBy: c.get('user').id, statuses: allowed })
+  if (id) return id
+  // refused: read the status now only to say why
+  const status = (await pool.query(`select status from control.projects where id = $1`, [p.id])).rows[0]?.status ?? 'REMOVED'
+  if (!allows(allowed, status)) throw new ApiError(409, 'invalid_status', `this cannot be done while the project is ${status}`)
+  throw new ApiError(409, 'project_busy', 'another operation is running on this project; try again when it ends')
 }
-export const canPause = (s: string) => !['INACTIVE', 'REMOVE_FAILED'].includes(s)
-export const canRestore = (s: string) => ['INACTIVE', 'RESTORE_FAILED'].includes(s)
+export const canPause: Statuses = { notIn: ['INACTIVE', 'REMOVE_FAILED', 'REMOVED'] }
+export const canRestore: Statuses = { in: ['INACTIVE', 'RESTORE_FAILED'] }
+export const canUpgrade: Statuses = { in: ['ACTIVE_HEALTHY', 'ACTIVE_UNHEALTHY'] }
+export const canDelete: Statuses = { notIn: ['REMOVED'] }
 /** Restore is admitted again by its job; this answers a refusal at once instead of as a failed job. */
 export const preAdmit = (p: ProjectRow) => admit(pool, { size: p.size as Size, excludeProjectId: p.id })
 
@@ -183,19 +190,19 @@ platformProjects.post('/projects/:ref/pause', async (c) => {
 
 platformProjects.post('/projects/:ref/restore', async (c) => {
   const p = await projectFor(c, 'project.manage')
-  if (canRestore(p.status)) await preAdmit(p)
+  if (allows(canRestore, p.status)) await preAdmit(p)
   return c.json({ job_id: await lifecycle(c, p, 'project.restore', canRestore) }, 202)
 })
 
 platformProjects.post('/projects/:ref/upgrade', async (c) => {
   const p = await projectFor(c, 'project.manage')
-  return c.json({ job_id: await lifecycle(c, p, 'project.upgrade', (s) => s === 'ACTIVE_HEALTHY' || s === 'ACTIVE_UNHEALTHY') }, 202)
+  return c.json({ job_id: await lifecycle(c, p, 'project.upgrade', canUpgrade) }, 202)
 })
 
 platformProjects.delete('/projects/:ref', async (c) => {
   const p = await projectFor(c, 'project.manage')
   if ((await body(c)).confirm_name !== p.name) throw bad('confirm_name must be the project name')
-  return c.json({ job_id: await lifecycle(c, p, 'project.delete', () => true) }, 202)
+  return c.json({ job_id: await lifecycle(c, p, 'project.delete', canDelete) }, 202)
 })
 
 // ---- api keys ----

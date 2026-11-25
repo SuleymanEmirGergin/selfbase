@@ -74,17 +74,30 @@ function checkPayload(v: unknown, path: string): void {
   }
 }
 
-type EnqueueInput = { type: string; projectId?: string; payload: Record<string, unknown>; createdBy: string | null }
+/** The project statuses a job may be queued in: these, or every status but these. */
+export type Statuses = { in: string[] } | { notIn: string[] }
+export const allows = (s: Statuses, status: string) => ('in' in s ? s.in.includes(status) : !s.notIn.includes(status))
 
-async function insertJob(db: Db, j: EnqueueInput, ifIdle: boolean): Promise<string | null> {
+/** `statuses`: the project must be in one when the row is inserted (checked by the insert, not by an earlier read). */
+type EnqueueInput = { type: string; projectId?: string; payload: Record<string, unknown>; createdBy: string | null; statuses?: Statuses }
+
+/** The payload as stored: a job type past version 1 records its version (run() compares it). */
+function storedPayload(j: EnqueueInput): Record<string, unknown> {
   const def = defs.get(j.type)
   if (!def) throw new Error(`unknown job type ${j.type}`)
+  return def.version === 1 ? j.payload : { ...j.payload, job_version: def.version }
+}
+
+async function insertJob(db: Db, j: EnqueueInput, ifIdle: boolean): Promise<string | null> {
   checkPayload(j.payload, 'payload')
-  const payload = def.version === 1 ? j.payload : { ...j.payload, job_version: def.version }
+  const s = j.statuses
   return (await db.query(
     `insert into control.jobs (type, project_id, lane, step, payload, created_by) select $1, $2, $3, '0', $4, $5
-     where not $6 or not exists (select 1 from control.jobs where project_id = $2 and status in ('pending', 'running')) returning id`,
-    [j.type, j.projectId ?? null, def.lane, payload, j.createdBy, ifIdle],
+     where (not $6 or not exists (select 1 from control.jobs where project_id = $2 and status in ('pending', 'running')))
+       and ($7::text[] is null or exists (select 1 from control.projects where id = $2 and (status = any($7)) = $8))
+     returning id`,
+    [j.type, j.projectId ?? null, defs.get(j.type)!.lane, storedPayload(j), j.createdBy, ifIdle,
+      s ? ('in' in s ? s.in : s.notIn) : null, !!s && 'in' in s],
   )).rows[0]?.id ?? null
 }
 

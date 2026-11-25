@@ -8,12 +8,12 @@ import { pool } from '../db.ts'
 import { ApiError } from '../errors.ts'
 import { adminSql } from '../forward.ts'
 import { HEALTH_SERVICES, servicesHealth } from '../health.ts'
-import { createProject } from '../jobs/index.ts'
+import { allows, createProject } from '../jobs/index.ts'
 import { projectConfig } from '../project-env.ts'
 import { provisioner } from '../provisioner.ts'
 import type { Env } from '../session.ts'
 import {
-  bad, body, canPause, canRestore, legacyKeys, lifecycle, mask, orgFor, preAdmit, projectFor, projectName, projectSize, v1Project,
+  bad, body, canDelete, canPause, canRestore, legacyKeys, lifecycle, mask, orgFor, preAdmit, projectFor, projectName, projectSize, v1Project,
   visibleProjects,
 } from './platform-projects.ts'
 
@@ -54,7 +54,7 @@ op(v1, 'get', '/projects/:ref', 'v1-get-project', async (c) => {
 
 op(v1, 'delete', '/projects/:ref', 'v1-delete-a-project', async (c) => {
   const p = await projectFor(c, 'project.manage')
-  await lifecycle(c, p, 'project.delete', () => true)
+  await lifecycle(c, p, 'project.delete', canDelete)
   // Supabase's numeric project id has no counterpart: a neutral 0
   return c.json({ id: 0, ref: p.ref, name: p.name })
 })
@@ -67,7 +67,7 @@ op(v1, 'post', '/projects/:ref/pause', 'v1-pause-a-project', async (c) => {
 op(v1, 'post', '/projects/:ref/restore', 'v1-restore-a-project', async (c) => {
   const p = await projectFor(c, 'project.manage')
   try {
-    if (canRestore(p.status)) await preAdmit(p)
+    if (allows(canRestore, p.status)) await preAdmit(p)
   } catch (e) {
     if (e instanceof AdmissionError) throw new ApiError(400, e.code, e.message)
     throw e
