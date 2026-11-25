@@ -43,7 +43,7 @@ export const en = {
   'apiErr.invalid_path': 'That path is not valid.',
   'apiErr.invalid_backup_dir': 'That backup is not one of this organization’s.',
   'apiErr.email_not_ascii': 'The email address can only use ASCII characters; letters such as ş, ğ or ı are not supported.',
-  'apiErr.logout_failed': 'You could not be signed out, so you are still signed in. Try again.',
+  'apiErr.logout_failed': 'Sign-out could not be confirmed. Try again.',
   'apiErr.new_host_cap': 'This server has used its {cap} new hostnames for this week, and this project would need a new one. A hostname frees up on {date}. Until then, delete a project you do not use to free its hostname.',
   'apiErr.insufficient_memory': 'This server has {free} MiB of memory free and this project needs {needed} MiB. Pause or delete a project you do not use, or choose a smaller size.',
 

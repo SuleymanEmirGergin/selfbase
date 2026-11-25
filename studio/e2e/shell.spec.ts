@@ -404,7 +404,7 @@ test('an explicit sign-out drops next', async ({ page }) => {
 })
 
 for (const [status, body, text] of [
-  [502, { error: 'logout_failed', message: 'The session could not be ended. Try again.' }, 'Çıkış yapılamadı, oturumun hâlâ açık. Yeniden dene.'],
+  [502, { error: 'logout_failed', message: 'The session could not be ended. Try again.' }, 'Çıkış doğrulanamadı. Yeniden dene.'],
   [429, { error: 'over_request_rate_limit', message: 'Too many requests from this address. Try again in a few minutes.' }, 'Too many requests from this address.'],
 ] as const) {
   test(`a sign-out the server refuses (${status}) keeps the user signed in and says so`, async ({ page }) => {

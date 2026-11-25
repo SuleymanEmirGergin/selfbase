@@ -44,7 +44,7 @@ export const tr: Messages = {
   'apiErr.invalid_path': 'Bu yol geçerli değil.',
   'apiErr.invalid_backup_dir': 'Bu yedek bu organizasyona ait değil.',
   'apiErr.email_not_ascii': 'E-posta adresinde yalnızca ASCII karakterler olabilir. ş, ğ, ı gibi harfler desteklenmiyor.',
-  'apiErr.logout_failed': 'Çıkış yapılamadı, oturumun hâlâ açık. Yeniden dene.',
+  'apiErr.logout_failed': 'Çıkış doğrulanamadı. Yeniden dene.',
   'apiErr.new_host_cap': 'Bu sunucu bu haftaki {cap} yeni adres hakkını kullandı ve bu projeye yeni bir adres gerekiyor. {date} tarihinde bir adres hakkı açılır. O zamana kadar kullanmadığın bir projeyi silip adresini serbest bırakabilirsin.',
   'apiErr.insufficient_memory': 'Bu sunucuda {free} MiB boş bellek var ama bu proje {needed} MiB istiyor. Kullanmadığın bir projeyi duraklat ya da sil. Daha küçük bir boyut da seçebilirsin.',
 
