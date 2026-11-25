@@ -66,14 +66,19 @@ describe('guarded sockets', () => {
   let port = 0
   let hits = 0
   beforeAll(async () => {
-    srv = createServer((_req, res) => {
+    srv = createServer((req, res) => {
       hits++
+      if (req.url === '/big') return void res.end(Buffer.alloc(1024 * 1024 + 1, 'a'))
+      if (req.url === '/slow') return // never answers
       res.end('ok')
     })
     await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r))
     port = (srv.address() as { port: number }).port
   })
-  afterAll(() => new Promise<void>((r) => srv.close(() => r())))
+  afterAll(() => new Promise<void>((r) => {
+    srv.closeAllConnections()
+    srv.close(() => r())
+  }))
 
   it('a name connects through guardedLookup to the address it checked (no system DNS knows svc.test)', async () => {
     const reply = await guardedRequest(`http://svc.test:${port}/`, {}, new Set(['svc.test']), stub({ 'svc.test': ['127.0.0.1'] }))
@@ -86,5 +91,13 @@ describe('guarded sockets', () => {
     const before = hits
     await expect(guardedRequest(`http://again.test:${port}/`, {}, new Set(), r)).rejects.toBeInstanceOf(Blocked)
     expect(hits).toBe(before)
+  })
+
+  it('reads a reply up to 1 MiB and gives up after timeoutMs', async () => {
+    const allow = new Set(['127.0.0.1'])
+    await expect(guardedRequest(`http://127.0.0.1:${port}/big`, {}, allow)).rejects.toThrow('response larger than 1 MiB')
+    const t0 = Date.now()
+    await expect(guardedRequest(`http://127.0.0.1:${port}/slow`, { timeoutMs: 200 }, allow)).rejects.toMatchObject({ name: 'AbortError' })
+    expect(Date.now() - t0).toBeLessThan(2000)
   })
 })
