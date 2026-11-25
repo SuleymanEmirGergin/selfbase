@@ -42,9 +42,10 @@ ts=$(date -u +%Y%m%d-%H%M%S)
 tmp="$backups/.tmp-$ts"
 # the writer capped() runs (its process group), stopped and reaped before the temp dir goes; a signal is a failure the
 # trap sees (bash runs the EXIT trap on one with $? of the last command, often 0)
-w='' moved=0
+# moving: set just before the rename; the trap then reads its outcome from the disk (a signal can land as mv finishes)
+w='' moving=0
 trap 'rc=$?; [ -z "$w" ] || { kill -TERM -- "-$w" 2> /dev/null || true; wait "$w" 2> /dev/null || true; }
-  if [ $rc != 0 ] && [ $moved = 1 ]; then echo "backup: STOPPED (exit $rc) after $sub/$ts was written: it is whole, but control has not recorded it" >&2
+  if [ $rc != 0 ] && [ $moving = 1 ] && [ -d "$backups/$ts" ] && [ ! -e "$tmp" ]; then echo "backup: STOPPED (exit $rc) after $sub/$ts was written: it is whole, but control has not recorded it" >&2
   elif [ $rc != 0 ]; then rm -rf "$tmp"; echo "backup: FAILED (exit $rc); no backup written for $sub/$ts" >&2; fi' EXIT
 trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 
@@ -190,8 +191,8 @@ for f in $files; do
     { echo "backup: the MANIFEST entry of $f could not be made" >&2; exit 1; }
   echo "$f $size $sum"
 done > "$tmp/MANIFEST"
+moving=1
 mv "$tmp" "$backups/$ts"
-moved=1
 # the backup is whole and in place: from here a failure is a warning (exit 0), never "no backup written", and the
 # wrote line control records the backup by still comes last
 retain || echo "backup: WARNING: the retention of $sub did not finish; older backups may be left" >&2

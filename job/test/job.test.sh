@@ -61,7 +61,7 @@ check 'M2: no function of restore.sh shadows a global its cleanup reads' [ -z "$
 # finds neither (the window is a few builtins wide, too narrow to hit from a test: the order is checked here)
 first=$(sed -n '/^reap() {/,/^}/p' job/restore.sh | grep -v '^[[:space:]]*#' | grep -oE "committed|^  w=''" | head -n1)
 check '1: reap records the commit before it clears the writer' [ "$first" = committed ]
-s=$(shadows backup.sh rc w tmp sub ts)
+s=$(shadows backup.sh rc w tmp sub ts backups moving)
 check 'M2: no function of backup.sh shadows a global its trap reads' [ -z "$s" ]; [ -z "$s" ] || echo "shadowed: $s" >&2
 
 echo "# building $IMAGE and starting $P"
@@ -342,6 +342,14 @@ check 'm-5: it says the backup is whole but not recorded, never that no backup w
   'grep -qE "backup: STOPPED \(exit 143\) after late/[0-9]{8}-[0-9]{6} was written: it is whole, but control has not recorded it" <<< "$1" &&
   ! grep -q "no backup written" <<< "$1"' _ "$out"
 check 'm-5: and the backup is in place' in_backups '[ -f "$(ls -d /backups/late/[0-9]*-[0-9]* | head -n1)/MANIFEST" ]'
+# round 2: a TERM that lands as the rename itself finishes (a stand-in mv signals right after it) is the same case
+JOB_ENV=(-e BACKUP_SUBDIR=latemv)
+rc=0; out=$(job db "$P-storage" bash -c 'mv() { case "$1" in */.tmp-*) command mv "$@" && kill -TERM $$; return ;; esac; command mv "$@"; }
+  export -f mv; bash /scripts/backup.sh' 2>&1) || rc=$?
+check 'm-5: a TERM as the rename finishes exits 143' [ "$rc" = 143 ]; [ "$rc" = 143 ] || echo "$out" >&2
+check 'm-5: it says that backup is whole but not recorded, never that no backup was written' bash -c \
+  'grep -qE "backup: STOPPED \(exit 143\) after latemv/[0-9]{8}-[0-9]{6} was written" <<< "$1" && ! grep -q "no backup written" <<< "$1"' _ "$out"
+check 'm-5: (it is in place)' in_backups '[ -f "$(ls -d /backups/latemv/[0-9]*-[0-9]* | head -n1)/MANIFEST" ]'
 
 # M-7: a size or sum the MANIFEST cannot get (a stand-in stat or sha256sum fails) fails the backup: nothing renamed
 for tool in stat sha256sum; do
