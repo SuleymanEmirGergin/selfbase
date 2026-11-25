@@ -64,7 +64,8 @@ export async function enqueueExportPrunes(db: pg.Pool): Promise<void> {
       if ((e as NodeJS.ErrnoException).code !== 'ENOENT') console.error(`schedule: export-${ref} cannot be read: ${(e as Error).message}`)
       continue
     }
-    if (names.some((n) => /^\d{8}-\d{6}$/.test(n) && n < cutoff)) {
+    // a .deleting-<ts> is what a delete that failed half way left (backup.sh quarantine): the prune removes it
+    if (names.some((n) => (/^\d{8}-\d{6}$/.test(n) && n < cutoff) || n.startsWith('.deleting-'))) {
       await enqueueCoalesced(db, { type: 'project.prune', projectId: id, payload: {}, createdBy: null })
     }
   }

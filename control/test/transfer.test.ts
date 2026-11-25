@@ -1160,6 +1160,14 @@ describe("I3: exports past their window leave the disk, a deleted project's too"
     expect(jobs).not.toContain(none.id)
   })
 
+  test('an export directory left holding only a .deleting-<ts> quarantine is pruned too', async () => {
+    const left = await project(acme.id, { name: 'prune-left', status: 'REMOVED' })
+    exportDir(left.ref, `.deleting-${stamp(30)}`)
+    await enqueueExportPrunes(pool)
+    const jobs = (await pool.query(`select project_id from control.jobs where type = 'project.prune'`)).rows.map((r) => r.project_id)
+    expect(jobs).toContain(left.id)
+  })
+
   test('the job prunes export-<ref> only, with the retention settings, and drops the rows of what it deleted', async () => {
     const gone = await project(acme.id, { name: 'prune-run', status: 'REMOVED' })
     const old = `export-${gone.ref}/${stamp(30)}`
