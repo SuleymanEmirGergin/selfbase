@@ -2,6 +2,7 @@
 // stored per section in project_config under v1's env names; only the names below reach a container, so a
 // config row can never set a secret, REGISTRY or anything the template does not read. REGISTRY,
 // TEMPLATE_VERSION, DB_SHARED_BUFFERS, DB_MAX_CONNECTIONS and POOL_SIZE are added by the provisioner.
+import type pg from 'pg'
 import { config as node } from './config.ts'
 import type { Db } from './db.ts'
 import { hostsOf } from './hosts.ts'
@@ -94,8 +95,23 @@ export async function setConfig(db: Db, project: { id: string; ref: string }, se
   }
 }
 
-/** The env and hosts of a project as stored now. */
-export async function loadProjectEnv(db: Db, project: { id: string; ref: string }) {
-  const hosts = await hostsOf(db, project.id)
-  return { hosts, env: buildEnv(project, await getSecrets(db, project), await projectConfig(db, project.id), hosts) }
+/**
+ * The env and hosts of a project as stored now, read in one snapshot: a change committed between the reads (a new
+ * SMTP host and password) must never pair the new host with the old password.
+ */
+export async function loadProjectEnv(db: pg.Pool, project: { id: string; ref: string }) {
+  const c = await db.connect()
+  try {
+    await c.query('begin isolation level repeatable read read only')
+    const hosts = await hostsOf(c, project.id)
+    const secrets = await getSecrets(c, project)
+    const config = await projectConfig(c, project.id)
+    await c.query('commit')
+    return { hosts, env: buildEnv(project, secrets, config, hosts) }
+  } catch (e) {
+    await c.query('rollback').catch(() => {})
+    throw e
+  } finally {
+    c.release()
+  }
 }

@@ -2,6 +2,7 @@
 // secrets, the core recreate, per-field merges.
 import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
+import pg from 'pg'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest'
 import { app } from '../src/app.ts'
 import { config } from '../src/config.ts'
@@ -414,6 +415,46 @@ test('setConfig writes third-party secrets only: a platform secret name throws a
     await expect(setConfig(pool, b, 'auth', {}, { [name]: 'test-overwrite' }, owner.id)).rejects.toThrow(name)
   }
   expect(await getSecrets(pool, b)).toEqual(before)
+})
+
+test('loadProjectEnv reads one snapshot: a new SMTP host and password committed between its reads never pair up with the old ones', async () => {
+  const q = await project(acme.id)
+  await setConfig(pool, q, 'auth', { SMTP_HOST: 'old-smtp.example.test' }, { SMTP_PASS: 'test-pass-old' }, owner.id)
+  // hold loadProjectEnv's config read (its secrets are read by then) until the change below has committed
+  let reached!: () => void
+  let resume!: () => void
+  const atConfigRead = new Promise<void>((r) => { reached = r })
+  const resumed = new Promise<void>((r) => { resume = r })
+  const query = pg.Client.prototype.query as (...a: unknown[]) => unknown
+  const spy = vi.spyOn(pg.Client.prototype, 'query').mockImplementation(function (this: pg.Client, ...args: unknown[]) {
+    const text = typeof args[0] === 'string' ? args[0] : ''
+    if (text.startsWith('select data from control.project_config') && (args[1] as unknown[])?.[0] === q.id) {
+      spy.mockRestore()
+      reached()
+      return resumed.then(() => query.apply(this, args))
+    }
+    return query.apply(this, args)
+  } as never)
+  try {
+    const loading = loadProjectEnv(pool, q)
+    await atConfigRead
+    const c = await pool.connect()
+    try {
+      await c.query('begin')
+      await setConfig(c, q, 'auth', { SMTP_HOST: 'new-smtp.example.test' }, { SMTP_PASS: 'test-pass-new' }, owner.id)
+      await c.query('commit')
+    } finally {
+      c.release()
+    }
+    resume()
+    const { env } = await loading
+    expect({ host: env.SMTP_HOST, pass: env.SMTP_PASS }).toEqual({ host: 'old-smtp.example.test', pass: 'test-pass-old' })
+  } finally {
+    spy.mockRestore()
+    resume()
+  }
+  const { env } = await loadProjectEnv(pool, q)
+  expect({ host: env.SMTP_HOST, pass: env.SMTP_PASS }).toEqual({ host: 'new-smtp.example.test', pass: 'test-pass-new' })
 })
 
 test('both mounts are the same handler: a write through one reads back through the other', async () => {
