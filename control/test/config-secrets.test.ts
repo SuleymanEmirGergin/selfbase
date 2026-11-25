@@ -37,3 +37,12 @@ it('I3: the retention settings are whole numbers (a fraction would break make_in
   }
   for (const bad of ['0', '2.5', '-3']) expect(() => loadConfig({ ...plain, BACKUP_MAX_COUNT: bad }), bad).toThrow('config: BACKUP_MAX_COUNT must be a whole number from 1')
 })
+
+it('BASE_DOMAIN and TEST_HOST must be hostnames, and no IP literal is one', () => {
+  for (const bad of ['example .test', 'https://example.test', 'example.test/', 'EXAMPLE.test', '203.0.113.5', 'single'])
+    expect(() => loadConfig({ ...plain, BASE_DOMAIN: bad }), bad).toThrow(/BASE_DOMAIN/)
+  for (const bad of ['sb test.example.test', 'sb-test.example.test:443', '203.0.113.5'])
+    expect(() => loadConfig({ ...plain, TEST_HOST: bad }), bad).toThrow(/TEST_HOST/)
+  expect(() => loadConfig({ ...plain, LEGACY_HOSTNAMES: '203.0.113.5' })).toThrow(/LEGACY_HOSTNAMES/)
+  expect(loadConfig({ ...plain, BASE_DOMAIN: '203.0.113.5.sslip.io' }).testHost).toBe('sb-test.203.0.113.5.sslip.io')
+})

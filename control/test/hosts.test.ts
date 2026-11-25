@@ -282,7 +282,8 @@ describe('domains', () => {
 
   test('a hostname that is not a DNS name is refused', async () => {
     const a = await project()
-    for (const h of ['a`) || Host(`evil', 'no_underscore.com', 'single', '-a.com', ''])
+    // an IP literal is no name a certificate is issued for, and would spend a slot of the weekly cap
+    for (const h of ['a`) || Host(`evil', 'no_underscore.com', 'single', '-a.com', '', '203.0.113.5', '10.0.0.1', 'a.b.123'])
       expect((await refusal(addDomain(pool, a.projectId, h, 'custom'))).code).toBe('invalid_hostname')
   })
 

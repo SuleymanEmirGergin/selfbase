@@ -8,7 +8,8 @@ export type Config = ReturnType<typeof loadConfig>
 
 // organization slugs as platform-orgs.ts makes them
 const SLUG_RE = /^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$/
-export const HOSTNAME_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
+// the last label is never all digits: no TLD is, so an IP literal (203.0.113.5) is refused
+export const HOSTNAME_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+(?![0-9]+$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
 const LABELS_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
 
 export function loadConfig(input: Record<string, string | undefined> = process.env) {
@@ -53,6 +54,7 @@ export function loadConfig(input: Record<string, string | undefined> = process.e
   const jwtSecret = need('CONTROL_JWT_SECRET')
   if (jwtSecret.length < 32) fail('CONTROL_JWT_SECRET must be at least 32 characters')
   const base = need('BASE_DOMAIN')
+  if (!HOSTNAME_RE.test(base)) fail('BASE_DOMAIN must be a lowercase hostname such as example.com')
   // host=org_slug: the name may be added by that organization only; a bare host is the default organization's
   const legacyOrgs: Record<string, string> = {}
   for (const entry of (env.LEGACY_HOSTNAMES || '').split(',').map((h) => h.trim()).filter(Boolean)) {
@@ -63,6 +65,8 @@ export function loadConfig(input: Record<string, string | undefined> = process.e
     legacyOrgs[host.toLowerCase()] = slug
   }
   const legacyHostnames = Object.keys(legacyOrgs)
+  const testHost = env.TEST_HOST || `sb-test.${base}`
+  if (!HOSTNAME_RE.test(testHost)) fail('TEST_HOST must be a lowercase hostname')
   const publicUrl = env.PUBLIC_URL || `https://selfbase.${base}`
   if (!/^https?:$/.test(URL.parse(publicUrl)?.protocol ?? '') || !URL.parse(publicUrl)?.hostname) fail('PUBLIC_URL must be an http(s) URL with a hostname')
   const proxyMode = oneOf('PROXY_MODE', 'coolify', ['coolify', 'own'])
@@ -104,7 +108,7 @@ export function loadConfig(input: Record<string, string | undefined> = process.e
     projectSubnetPool: env.PROJECT_SUBNET_POOL || '10.207.0.0/16',
     maxNewHostsPerWeek: num('MAX_NEW_HOSTS_PER_WEEK', 3),
     branchHostSlots: num('BRANCH_HOST_SLOTS', 2),
-    testHost: env.TEST_HOST || `sb-test.${base}`,
+    testHost,
     // hostnames under BASE_DOMAIN that already hold a certificate (v1's host); the only legacy names allowed there
     legacyHostnames,
     // the organization slug each legacy name belongs to (hosts.ts)
