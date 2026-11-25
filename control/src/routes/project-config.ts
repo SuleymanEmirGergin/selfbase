@@ -180,11 +180,15 @@ both('patch', PATH, 'v1-update-auth-service-config', async (c) => {
   if (google === true && givenId && !patch.GOOGLE_CLIENT_ID) throw noGoogleId()
   if (Object.keys(b).length) {
     await applyCore(c, p, async (tx) => {
-      if (google === true && !givenId) {
-        const stored = (await tx.query(`select data->>'GOOGLE_CLIENT_ID' as id from control.project_config
-          where project_id = $1 and section = 'auth' for update`, [p.id])).rows[0]?.id
-        if (!stored) throw noGoogleId()
-      }
+      const stored: Record<string, unknown> = (await tx.query(`select data from control.project_config
+        where project_id = $1 and section = 'auth' for update`, [p.id])).rows[0]?.data ?? {}
+      if (google === true && !givenId && !stored.GOOGLE_CLIENT_ID) throw noGoogleId()
+      // core sends SMTP_PASS to SMTP_HOST as SMTP_USER: a new host or user must not inherit the stored password
+      // (the body sets a new one or clears it)
+      const moved = ['SMTP_HOST', 'SMTP_USER'].some((k) => k in patch && patch[k] && patch[k] !== (stored[k] ?? ''))
+      if (moved && !('SMTP_PASS' in secrets)
+        && (await tx.query(`select 1 from control.project_secrets where project_id = $1 and name = 'SMTP_PASS'`, [p.id])).rowCount)
+        throw new ApiError(400, 'smtp_pass_required', 'smtp_pass is required when smtp_host or smtp_user changes')
       await setConfig(tx, p, 'auth', patch, secrets, c.get('user').id)
     })
   }

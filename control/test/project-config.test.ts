@@ -189,6 +189,29 @@ describe.each(MOUNTS)('%s/projects/:ref/config/auth', (mount) => {
       .toMatchObject({ password_min_length: 6, site_url: `https://${p.ref}.${config.baseDomain}`, disable_signup: true })
   })
 
+  test('I-1: with a stored smtp_pass, a new smtp_host or smtp_user needs smtp_pass in the same body; the port alone does not', async () => {
+    const q = await project(acme.id)
+    const cfg = async () => (await pool.query(`select data from control.project_config where project_id = $1 and section = 'auth'`, [q.id])).rows[0]?.data
+    expect((await patch(owner.token, mount, q.ref, { smtp_host: 'smtp.one.example.test', smtp_user: 'u1', smtp_pass: 'test-pass-1' })).status).toBe(200)
+    const stored = await cfg()
+    for (const change of [{ smtp_host: 'smtp.other.example.test' }, { smtp_user: 'u2' }, { smtp_host: 'smtp.other.example.test', smtp_user: 'u1' }]) {
+      const res = await patch(owner.token, mount, q.ref, { ...change, smtp_port: '2525' })
+      expect(res.status, JSON.stringify(change)).toBe(400)
+      expect((await res.json()).error).toBe('smtp_pass_required')
+      expect(await cfg()).toEqual(stored)
+    }
+    expect((await getSecrets(pool, q)).SMTP_PASS).toBe('test-pass-1')
+    // the same host and user, or the port alone: no password needed
+    expect((await patch(owner.token, mount, q.ref, { smtp_host: 'smtp.one.example.test', smtp_user: 'u1' })).status).toBe(200)
+    expect((await patch(owner.token, mount, q.ref, { smtp_port: '2525' })).status).toBe(200)
+    // a new host with its password
+    expect((await patch(owner.token, mount, q.ref, { smtp_host: 'smtp.two.example.test', smtp_pass: 'test-pass-2' })).status).toBe(200)
+    expect((await getSecrets(pool, q)).SMTP_PASS).toBe('test-pass-2')
+    // or with the stored password cleared: nothing is left to send anywhere
+    expect((await patch(owner.token, mount, q.ref, { smtp_host: 'smtp.three.example.test', smtp_pass: '' })).status).toBe(200)
+    expect(await getSecrets(pool, q)).not.toHaveProperty('SMTP_PASS')
+  })
+
   test('a field we do not store: 400 not_supported naming it, nothing stored', async () => {
     for (const extra of [{ mfa_max_enrolled_factors: 3 }, { external_github_enabled: true }, { refresh_token_rotation_enabled: false }]) {
       const res = await patch(owner.token, mount, p.ref, { smtp_user: 'not-stored', ...extra })
@@ -284,9 +307,9 @@ describe.each(MOUNTS)('%s/projects/:ref/config/auth', (mount) => {
   test('two concurrent PATCHes on different fields both survive', async () => {
     const q = await project(acme.id)
     const results = await Promise.all([
-      patch(owner.token, mount, q.ref, { site_url: 'https://one.example.test', smtp_pass: 'test-pass-one' }),
+      patch(owner.token, mount, q.ref, { site_url: 'https://one.example.test', external_google_secret: 'test-secret-three' }),
       patch(admin.token, mount, q.ref, { disable_signup: true, external_google_client_id: 'cid-two.example.test' }),
-      patch(owner.token, mount, q.ref, { smtp_host: 'smtp.three.example.test', external_google_secret: 'test-secret-three' }),
+      patch(owner.token, mount, q.ref, { smtp_host: 'smtp.three.example.test', smtp_pass: 'test-pass-one' }),
     ])
     expect(results.map((r) => r.status)).toEqual([200, 200, 200])
     expect(await (await get(owner.token, mount, q.ref)).json()).toMatchObject({
