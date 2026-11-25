@@ -39,6 +39,17 @@ test('/platform, /v1 and /health are never answered with index.html', async () =
   }
 })
 
+// framing would turn Studio's click-only actions (pause, remove member, role) into clickjacking targets
+test('every answer carries the anti-framing, nosniff and referrer headers', async () => {
+  for (const path of ['/', '/assets/app.js', '/platform/nope', '/v1/projects', '/health']) {
+    const res = await app.request(path)
+    expect(res.headers.get('x-frame-options'), path).toBe('DENY')
+    expect(res.headers.get('content-security-policy'), path).toBe("frame-ancestors 'none'")
+    expect(res.headers.get('x-content-type-options'), path).toBe('nosniff')
+    expect(res.headers.get('referrer-policy'), path).toBe('no-referrer')
+  }
+})
+
 test('errors have the shape {error, message}', async () => {
   const { ApiError } = await import('../src/errors.ts')
   const { Hono } = await import('hono')

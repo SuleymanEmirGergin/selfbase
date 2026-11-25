@@ -173,6 +173,15 @@ describe('admin forwarding', () => {
     expect(res.headers.get('content-disposition')).toBe('attachment; filename="x.bin"')
   }, 30000)
 
+  test("a file download keeps core's sandbox CSP and still gets control's other security headers", async () => {
+    const res = await withToken(dev.token, 'GET', `${A()}/files/media/page.html`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-security-policy')).toBe("default-src 'none'; sandbox")
+    expect(res.headers.get('x-frame-options')).toBe('DENY')
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff')
+    expect(res.headers.get('referrer-policy')).toBe('no-referrer')
+  })
+
   test('JSON bodies are still capped at 256 KiB', async () => {
     const res = await withToken(dev.token, 'POST', `${A()}/rows/public/notes`, { values: { note: 'x'.repeat(300 * 1024) } })
     expect(res.status).toBe(413)

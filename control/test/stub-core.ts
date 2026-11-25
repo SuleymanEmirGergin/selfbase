@@ -25,7 +25,11 @@ export async function stubCore() {
         if (query === 'select 1 as a') return res.end(JSON.stringify({ columns: ['a'], rows: [[1]], rowCount: 1, durationMs: 1 }))
         return res.end(JSON.stringify({ error: { message: 'syntax error at or near "selec"', position: 1, hint: null } }))
       }
-      if (req.url?.startsWith('/admin/files/')) res.setHeader('content-disposition', 'attachment; filename="x.bin"')
+      if (req.url?.startsWith('/admin/files/')) {
+        res.setHeader('content-disposition', 'attachment; filename="x.bin"')
+        // core's storage download policy (core/src/storage/objects.ts)
+        res.setHeader('content-security-policy', "default-src 'none'; sandbox")
+      }
       if (req.url === '/admin/moved') res.writeHead(302, { location: 'http://sb-internal-core:8081/admin/elsewhere' })
       res.end(JSON.stringify({ ok: true, bytes }))
     })
