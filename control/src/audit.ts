@@ -2,11 +2,12 @@
 // never its values: tokens, passwords and secrets travel in bodies.
 import type { Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
+import { getCookie } from 'hono/cookie'
 import { createMiddleware } from 'hono/factory'
 import { pool } from './db.ts'
 import { clientIp, take } from './core.ts'
 import { ApiError } from './errors.ts'
-import { apiRoute, PUBLIC } from './session.ts'
+import { ACCESS_COOKIE, apiRoute, checkOrigin, PUBLIC, REFRESH_COOKIE } from './session.ts'
 import type { Env } from './session.ts'
 
 export const BODY_LIMIT = 256 * 1024
@@ -51,7 +52,10 @@ const CORE_LIMITED = /^\/platform\/(login|refresh)$/
 export const publicLimit = createMiddleware(async (c, next) => {
   const write = c.req.method !== 'GET' && c.req.method !== 'HEAD' && c.req.method !== 'OPTIONS'
   if (!write || !PUBLIC.test(c.req.path) || CORE_LIMITED.test(c.req.path)) return next()
-  const ok = c.req.path === '/platform/logout' ? take('refresh', `logout:${clientIp(c)}`) : take('signIn', `public:${clientIp(c)}`)
+  const logout = c.req.path === '/platform/logout'
+  // a foreign Origin is refused before it is counted: another site's page must not use up an address's logouts
+  if (logout) checkOrigin(c)
+  const ok = logout ? take('refresh', `logout:${clientIp(c)}`) : take('signIn', `public:${clientIp(c)}`)
   if (!ok) throw new ApiError(429, 'over_request_rate_limit', 'Too many requests from this address. Try again in a few minutes.')
   return next()
 })
@@ -71,6 +75,8 @@ export const audit = createMiddleware<Env>(async (c, next) => {
   // publicLimit, so these refusals are unlimited), when no route answers the path, or when a rate limit refused it.
   // Failed sign-ins (400 from core) keep their row: core's signIn bucket bounds them.
   if (!c.get('user') && ([401, 403, 429].includes(c.res.status) || !apiRoute(c))) return
+  // a logout with no session cookie ended nothing: it answers 200, and a row each would let anyone fill the log
+  if (c.req.path === '/platform/logout' && !getCookie(c, ACCESS_COOKIE) && !getCookie(c, REFRESH_COOKIE)) return
   const path = c.get('audit')?.path
   await writeAudit(c, { status: c.res.status, body_keys: bodyKeys, ...(path ? { path } : {}) })
 })
